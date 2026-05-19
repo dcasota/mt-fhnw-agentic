@@ -4,6 +4,7 @@ mod check;
 mod config;
 mod content;
 mod doctor;
+mod export;
 mod init;
 mod journal;
 mod passport;
@@ -25,5 +26,12 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,
         Command::Config { action } => config::run(action, args.json),
+        Command::Export {
+            project,
+            format,
+            to,
+            prefix,
+            title,
+        } => export::from_args(&args.db, project, format, to, prefix, title, args.json),
     }
 }

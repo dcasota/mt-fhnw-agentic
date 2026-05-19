@@ -81,6 +81,24 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Export a project to DOCX or PDF.
+    Export {
+        /// Project ID (ULID).
+        project: String,
+        /// Output format.
+        #[arg(long, default_value = "docx", value_parser = ["docx", "pdf"])]
+        format: String,
+        /// Output path. If omitted, writes bytes to stdout.
+        #[arg(long)]
+        to: Option<std::path::PathBuf>,
+        /// Restrict to a path prefix in the working tree (e.g. "thesis-draft/").
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// Title for the first page (falls back to project name).
+        #[arg(long)]
+        title: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -12,12 +12,19 @@ description = "Export thesis content as .docx (FHNW template) / .pdf (Typst) / .
 path = "src/lib.rs"
 
 [dependencies]
-agentic-core = { workspace = true }
-anyhow       = { workspace = true }
-docx-rs      = { workspace = true }
-typst        = { workspace = true }
-typst-pdf    = { workspace = true }
-tracing      = { workspace = true }
+agentic-core   = { workspace = true }
+anyhow         = { workspace = true }
+docx-rs        = { workspace = true }
+pulldown-cmark = { workspace = true }
+rusqlite       = { workspace = true }
+typst          = { workspace = true }
+typst-pdf      = { workspace = true }
+typst-kit      = { workspace = true }
+tracing        = { workspace = true }
+chrono         = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14"
 
 [lints]
 workspace = true
