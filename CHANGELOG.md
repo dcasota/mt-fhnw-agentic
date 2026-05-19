@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (workflow only — applies to next tag push)
+
+- **Release workflow tolerates partial build-matrix failures.** The
+  `release` job now runs `if: always() && needs.build.result != 'cancelled'
+  && needs.build.result != 'skipped'` — so a single matrix entry's failure
+  no longer blocks the publish step. The 4 archives that did build still
+  reach the GitHub Release. If **every** matrix entry fails (no archives),
+  the checksum step hard-fails and no release is created — empty releases
+  are still refused. `publish-crate` runs only when `release.result ==
+  success` (unchanged behaviour relative to v0.1.0/0.1.1).
+
 ### P9 — release packaging
 - Release workflow hardened: `verify-version` job rejects tags that don't match `Cargo.toml` workspace version; per-target binary smoke test (`agentic --version` + `agentic doctor --json`) before packaging
 - crates.io publish list extended from 3 → 8 crates, ordered bottom-up (tier 0: `agentic-core`, `agentic-resources`; tier 1: `agentic-providers`, `agentic-tui`; tier 2: `agentic-checks`, `agentic-import`, `agentic-export`; tier 3: `agentic`)
