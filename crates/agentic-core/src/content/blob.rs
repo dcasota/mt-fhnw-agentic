@@ -9,12 +9,12 @@ use super::hash;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blob {
-    pub sha256:    String,
-    pub mime:      String,
-    pub encoding:  String,
-    pub content:   Vec<u8>,
+    pub sha256: String,
+    pub mime: String,
+    pub encoding: String,
+    pub content: Vec<u8>,
     pub size_bytes: i64,
-    pub lang:      Option<String>,
+    pub lang: Option<String>,
     pub created_at: String,
 }
 
@@ -29,7 +29,11 @@ pub fn put_blob(
     lang: Option<&str>,
 ) -> Result<String> {
     let sha = hash(content);
-    let encoding = if std::str::from_utf8(content).is_ok() { "utf-8" } else { "base64" };
+    let encoding = if std::str::from_utf8(content).is_ok() {
+        "utf-8"
+    } else {
+        "base64"
+    };
     conn.execute(
         "INSERT OR IGNORE INTO blobs (sha256, mime, encoding, content, size_bytes, lang) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -113,7 +117,11 @@ mod tests {
     #[test]
     fn unknown_blob() {
         let conn = open_in_memory().unwrap();
-        let err = get_blob(&conn, "0000000000000000000000000000000000000000000000000000000000000000").unwrap_err();
+        let err = get_blob(
+            &conn,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::BlobNotFound(_)));
     }
 

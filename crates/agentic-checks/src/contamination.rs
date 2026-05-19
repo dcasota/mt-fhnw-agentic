@@ -23,32 +23,42 @@ use tracing::warn;
 use crate::{CheckReport, Finding, Severity};
 
 const PREPRINT_HOSTS: &[&str] = &[
-    "arxiv", "biorxiv", "medrxiv", "ssrn", "preprints.org",
-    "researchgate", "techrxiv", "chemrxiv", "engrxiv", "psyarxiv",
+    "arxiv",
+    "biorxiv",
+    "medrxiv",
+    "ssrn",
+    "preprints.org",
+    "researchgate",
+    "techrxiv",
+    "chemrxiv",
+    "engrxiv",
+    "psyarxiv",
 ];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Signals {
     pub preprint_post_llm_inflection: bool,
-    pub semantic_scholar_unmatched:  bool,
-    pub openalex_unmatched:          bool,
-    pub crossref_unmatched:          bool,
-    pub checked_at:                  String,
+    pub semantic_scholar_unmatched: bool,
+    pub openalex_unmatched: bool,
+    pub crossref_unmatched: bool,
+    pub checked_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
     pub citation_key: String,
-    pub title:        Option<String>,
-    pub year:         Option<u16>,
-    pub doi:          Option<String>,
-    pub venue:        Option<String>,
+    pub title: Option<String>,
+    pub year: Option<u16>,
+    pub doi: Option<String>,
+    pub venue: Option<String>,
 }
 
 #[must_use]
 fn is_preprint_post_2024(year: Option<u16>, venue: Option<&str>) -> bool {
     let Some(year) = year else { return false };
-    if year < 2024 { return false }
+    if year < 2024 {
+        return false;
+    }
     let Some(venue) = venue else { return false };
     let v = venue.to_lowercase();
     PREPRINT_HOSTS.iter().any(|h| v.contains(h))
@@ -75,13 +85,27 @@ fn store_cache(conn: &Connection, key: &str, service: &str, endpoint: &str, resp
     let _ = conn.execute(
         "INSERT OR REPLACE INTO api_cache (cache_key, service, endpoint, response_json, bytes) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![key, service, endpoint, response_json, response_json.len() as i64],
+        rusqlite::params![
+            key,
+            service,
+            endpoint,
+            response_json,
+            response_json.len() as i64
+        ],
     );
 }
 
-async fn crossref_lookup(client: &Client, conn: &Connection, doi: Option<&str>, title: Option<&str>) -> bool {
+async fn crossref_lookup(
+    client: &Client,
+    conn: &Connection,
+    doi: Option<&str>,
+    title: Option<&str>,
+) -> bool {
     let url = if let Some(doi) = doi {
-        format!("https://api.crossref.org/works/{}", urlencoding::encode(doi))
+        format!(
+            "https://api.crossref.org/works/{}",
+            urlencoding::encode(doi)
+        )
     } else if let Some(title) = title {
         format!(
             "https://api.crossref.org/works?query.title={}&rows=1",
@@ -107,21 +131,39 @@ async fn crossref_lookup(client: &Client, conn: &Connection, doi: Option<&str>, 
 }
 
 fn crossref_matched(body: &str) -> bool {
-    let v: serde_json::Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return false };
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
     if let Some(msg) = v.get("message") {
-        if msg.get("DOI").is_some() { return true; }
+        if msg.get("DOI").is_some() {
+            return true;
+        }
         if let Some(items) = msg.get("items").and_then(|i| i.as_array()) {
-            if !items.is_empty() { return true; }
+            if !items.is_empty() {
+                return true;
+            }
         }
     }
     false
 }
 
-async fn openalex_lookup(client: &Client, conn: &Connection, doi: Option<&str>, title: Option<&str>) -> bool {
+async fn openalex_lookup(
+    client: &Client,
+    conn: &Connection,
+    doi: Option<&str>,
+    title: Option<&str>,
+) -> bool {
     let url = if let Some(doi) = doi {
-        format!("https://api.openalex.org/works/doi:{}", urlencoding::encode(doi))
+        format!(
+            "https://api.openalex.org/works/doi:{}",
+            urlencoding::encode(doi)
+        )
     } else if let Some(title) = title {
-        format!("https://api.openalex.org/works?search={}&per_page=1", urlencoding::encode(title))
+        format!(
+            "https://api.openalex.org/works?search={}&per_page=1",
+            urlencoding::encode(title)
+        )
     } else {
         return false;
     };
@@ -148,15 +190,27 @@ async fn openalex_lookup(client: &Client, conn: &Connection, doi: Option<&str>, 
 }
 
 fn openalex_matched(body: &str) -> bool {
-    let v: serde_json::Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return false };
-    if v.get("id").is_some() { return true; }
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if v.get("id").is_some() {
+        return true;
+    }
     if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
-        if !results.is_empty() { return true; }
+        if !results.is_empty() {
+            return true;
+        }
     }
     false
 }
 
-async fn s2_lookup(client: &Client, conn: &Connection, doi: Option<&str>, title: Option<&str>) -> bool {
+async fn s2_lookup(
+    client: &Client,
+    conn: &Connection,
+    doi: Option<&str>,
+    title: Option<&str>,
+) -> bool {
     let url = if let Some(doi) = doi {
         format!(
             "https://api.semanticscholar.org/graph/v1/paper/DOI:{}",
@@ -189,10 +243,17 @@ async fn s2_lookup(client: &Client, conn: &Connection, doi: Option<&str>, title:
 }
 
 fn s2_matched(body: &str) -> bool {
-    let v: serde_json::Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return false };
-    if v.get("paperId").is_some() { return true; }
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if v.get("paperId").is_some() {
+        return true;
+    }
     if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
-        if !data.is_empty() { return true; }
+        if !data.is_empty() {
+            return true;
+        }
     }
     false
 }
@@ -205,7 +266,10 @@ pub async fn signals_for(
     use_network: bool,
 ) -> Signals {
     let mut s = Signals {
-        preprint_post_llm_inflection: is_preprint_post_2024(reference.year, reference.venue.as_deref()),
+        preprint_post_llm_inflection: is_preprint_post_2024(
+            reference.year,
+            reference.venue.as_deref(),
+        ),
         checked_at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         ..Default::default()
     };
@@ -215,9 +279,27 @@ pub async fn signals_for(
         s.semantic_scholar_unmatched = reference.doi.is_none();
         return s;
     }
-    s.crossref_unmatched = !crossref_lookup(client, conn, reference.doi.as_deref(), reference.title.as_deref()).await;
-    s.openalex_unmatched = !openalex_lookup(client, conn, reference.doi.as_deref(), reference.title.as_deref()).await;
-    s.semantic_scholar_unmatched = !s2_lookup(client, conn, reference.doi.as_deref(), reference.title.as_deref()).await;
+    s.crossref_unmatched = !crossref_lookup(
+        client,
+        conn,
+        reference.doi.as_deref(),
+        reference.title.as_deref(),
+    )
+    .await;
+    s.openalex_unmatched = !openalex_lookup(
+        client,
+        conn,
+        reference.doi.as_deref(),
+        reference.title.as_deref(),
+    )
+    .await;
+    s.semantic_scholar_unmatched = !s2_lookup(
+        client,
+        conn,
+        reference.doi.as_deref(),
+        reference.title.as_deref(),
+    )
+    .await;
     s
 }
 
@@ -230,13 +312,22 @@ pub fn references_from_passport(conn: &Connection, project_id: &str) -> Result<V
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&entry.payload_json) else {
             continue;
         };
-        let key = v.get("citation_key").and_then(|x| x.as_str()).unwrap_or_default().to_owned();
-        if key.is_empty() || !seen.insert(key.clone()) { continue; }
+        let key = v
+            .get("citation_key")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
         refs.push(Reference {
             citation_key: key,
             title: v.get("title").and_then(|x| x.as_str()).map(str::to_owned),
-            year:  v.get("year").and_then(serde_json::Value::as_u64).and_then(|n| u16::try_from(n).ok()),
-            doi:   v.get("doi").and_then(|x| x.as_str()).map(str::to_owned),
+            year: v
+                .get("year")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u16::try_from(n).ok()),
+            doi: v.get("doi").and_then(|x| x.as_str()).map(str::to_owned),
             venue: v.get("venue").and_then(|x| x.as_str()).map(str::to_owned),
         });
     }
@@ -248,12 +339,15 @@ pub fn references_from_passport(conn: &Connection, project_id: &str) -> Result<V
 pub async fn run(conn: &Connection, project_id: &str, use_network: bool) -> Result<CheckReport> {
     let refs = references_from_passport(conn, project_id)?;
     if refs.is_empty() {
-        return Ok(CheckReport::new("contamination", vec![Finding {
-            category: "CONTAMINATION".into(),
-            severity: Severity::Info,
-            message: "no literature_corpus entries to check".into(),
-            location: None,
-        }]));
+        return Ok(CheckReport::new(
+            "contamination",
+            vec![Finding {
+                category: "CONTAMINATION".into(),
+                severity: Severity::Info,
+                message: "no literature_corpus entries to check".into(),
+                location: None,
+            }],
+        ));
     }
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -263,12 +357,24 @@ pub async fn run(conn: &Connection, project_id: &str, use_network: bool) -> Resu
     for r in &refs {
         let s = signals_for(&client, conn, r, use_network).await;
         let mut flags = Vec::new();
-        if s.preprint_post_llm_inflection { flags.push("preprint_post_2024"); }
-        if s.semantic_scholar_unmatched { flags.push("s2_unmatched"); }
-        if s.openalex_unmatched { flags.push("openalex_unmatched"); }
-        if s.crossref_unmatched { flags.push("crossref_unmatched"); }
+        if s.preprint_post_llm_inflection {
+            flags.push("preprint_post_2024");
+        }
+        if s.semantic_scholar_unmatched {
+            flags.push("s2_unmatched");
+        }
+        if s.openalex_unmatched {
+            flags.push("openalex_unmatched");
+        }
+        if s.crossref_unmatched {
+            flags.push("crossref_unmatched");
+        }
         if !flags.is_empty() {
-            let severity = if flags.len() >= 3 { Severity::Warn } else { Severity::Info };
+            let severity = if flags.len() >= 3 {
+                Severity::Warn
+            } else {
+                Severity::Info
+            };
             findings.push(Finding {
                 category: "CONTAMINATION".into(),
                 severity,
@@ -277,7 +383,11 @@ pub async fn run(conn: &Connection, project_id: &str, use_network: bool) -> Resu
             });
         }
     }
-    warn!(refs = refs.len(), findings = findings.len(), "contamination scan complete");
+    warn!(
+        refs = refs.len(),
+        findings = findings.len(),
+        "contamination scan complete"
+    );
     Ok(CheckReport::new("contamination", findings))
 }
 
@@ -318,13 +428,23 @@ mod tests {
     async fn run_offline_emits_signals_for_corpus_entries() {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "P", ProjectKind::Thesis, "en", None).unwrap();
-        passport::append(&conn, &pid, passport::Section::LiteratureCorpus,
+        passport::append(
+            &conn,
+            &pid,
+            passport::Section::LiteratureCorpus,
             r#"{"citation_key":"no_doi_2024","title":"X","year":2024,"venue":"arXiv"}"#,
-            None, None,
-        ).unwrap();
+            None,
+            None,
+        )
+        .unwrap();
         let report = run(&conn, &pid, false).await.unwrap();
         // The reference has no DOI + arXiv 2024 → all four flags fire offline.
-        assert!(report.findings.iter().any(|f| f.message.contains("preprint_post_2024")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.message.contains("preprint_post_2024"))
+        );
     }
 
     #[tokio::test]

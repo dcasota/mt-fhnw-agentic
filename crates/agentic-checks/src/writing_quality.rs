@@ -115,17 +115,26 @@ pub fn em_dash_count(text: &str) -> usize {
 
 #[must_use]
 pub fn paragraph_lengths_uniform(text: &str) -> bool {
-    let paragraphs: Vec<&str> = text.split("\n\n").filter(|p| !p.trim().is_empty()).collect();
+    let paragraphs: Vec<&str> = text
+        .split("\n\n")
+        .filter(|p| !p.trim().is_empty())
+        .collect();
     if paragraphs.len() < 5 {
         return false;
     }
-    let lengths: Vec<usize> = paragraphs.iter().map(|p| p.split_whitespace().count()).collect();
+    let lengths: Vec<usize> = paragraphs
+        .iter()
+        .map(|p| p.split_whitespace().count())
+        .collect();
     let avg = lengths.iter().sum::<usize>() as f64 / lengths.len() as f64;
     if avg == 0.0 {
         return false;
     }
-    let variance =
-        lengths.iter().map(|&l| (l as f64 - avg).powi(2)).sum::<f64>() / lengths.len() as f64;
+    let variance = lengths
+        .iter()
+        .map(|&l| (l as f64 - avg).powi(2))
+        .sum::<f64>()
+        / lengths.len() as f64;
     let cv = variance.sqrt() / avg;
     cv < 0.20
 }
@@ -178,7 +187,9 @@ pub fn check_text(text: &str, path: &str) -> Vec<Finding> {
         findings.push(Finding {
             category: "STYLE".into(),
             severity: Severity::Error,
-            message: format!("First-person pronouns found {fp_count}× -- forbidden in FHNW academic style."),
+            message: format!(
+                "First-person pronouns found {fp_count}× -- forbidden in FHNW academic style."
+            ),
             location: Some(path.to_owned()),
         });
     }
@@ -195,7 +206,10 @@ pub fn check_text(text: &str, path: &str) -> Vec<Finding> {
     }
 
     // 6. Headings as questions (BLOCKING per FHNW).
-    let q: Vec<&str> = heading_as_question().find_iter(text).map(|m| m.as_str()).collect();
+    let q: Vec<&str> = heading_as_question()
+        .find_iter(text)
+        .map(|m| m.as_str())
+        .collect();
     if !q.is_empty() {
         findings.push(Finding {
             category: "STRUCTURE".into(),
@@ -210,7 +224,10 @@ pub fn check_text(text: &str, path: &str) -> Vec<Finding> {
     }
 
     // 7. Headings as sentences.
-    let s: Vec<&str> = heading_as_sentence().find_iter(text).map(|m| m.as_str()).collect();
+    let s: Vec<&str> = heading_as_sentence()
+        .find_iter(text)
+        .map(|m| m.as_str())
+        .collect();
     if !s.is_empty() {
         findings.push(Finding {
             category: "STRUCTURE".into(),
@@ -270,14 +287,21 @@ mod tests {
     #[test]
     fn detects_first_person_german() {
         let findings = check_text("Ich habe das untersucht. Wir glauben, dass …", "ch1.md");
-        assert!(findings.iter().any(|f| f.category == "STYLE"
-            && f.message.contains("First-person")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "STYLE" && f.message.contains("First-person"))
+        );
     }
 
     #[test]
     fn detects_heading_as_question() {
         let findings = check_text("## Was ist das Problem?\n\nIntro.", "ch1.md");
-        assert!(findings.iter().any(|f| f.message.contains("Headings as questions")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("Headings as questions"))
+        );
     }
 
     #[test]
@@ -304,10 +328,16 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "T", ProjectKind::Thesis, "de", None).unwrap();
         agentic_core::worktree::put_at(
-            &conn, &pid, "thesis-draft/ch-01.md",
+            &conn,
+            &pid,
+            "thesis-draft/ch-01.md",
             b"## Wieso?\n\nIch fand das.\n",
-            "text/markdown", Some("de"), "u", "init",
-        ).unwrap();
+            "text/markdown",
+            Some("de"),
+            "u",
+            "init",
+        )
+        .unwrap();
         let report = run(&conn, &pid).unwrap();
         assert!(!report.findings.is_empty());
         // Has both: heading-as-question (Error) and first-person (Error) → FAIL.
@@ -319,10 +349,16 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "T", ProjectKind::Thesis, "de", None).unwrap();
         agentic_core::worktree::put_at(
-            &conn, &pid, "data.json",
+            &conn,
+            &pid,
+            "data.json",
             b"{\"ich\": true}",
-            "application/json", None, "u", "init",
-        ).unwrap();
+            "application/json",
+            None,
+            "u",
+            "init",
+        )
+        .unwrap();
         let report = run(&conn, &pid).unwrap();
         assert_eq!(report.findings.len(), 0);
     }

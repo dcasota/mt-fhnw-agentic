@@ -12,7 +12,12 @@ use crate::cli::PassportAction;
 pub fn run(db_path: &Path, action: PassportAction, json_out: bool) -> Result<()> {
     let conn = agentic_core::db::open(db_path)?;
     match action {
-        PassportAction::Append { project, section, payload, replaces } => {
+        PassportAction::Append {
+            project,
+            section,
+            payload,
+            replaces,
+        } => {
             let section = Section::from_str(&section)?;
             let payload_json = if payload == "-" {
                 let mut s = String::new();
@@ -25,7 +30,10 @@ pub fn run(db_path: &Path, action: PassportAction, json_out: bool) -> Result<()>
             if json_out {
                 println!("{}", json!({ "id": id }));
             } else {
-                println!("Appended passport entry {id} in section {} for project {project}", section.as_str());
+                println!(
+                    "Appended passport entry {id} in section {} for project {project}",
+                    section.as_str()
+                );
             }
         }
         PassportAction::Read { project, section } => {
@@ -38,7 +46,11 @@ pub fn run(db_path: &Path, action: PassportAction, json_out: bool) -> Result<()>
                     println!("--- entry {} (added {}) ---", e.id, e.added_at);
                     println!("{}", e.payload_json);
                 }
-                println!("\n({} current entr{}.)", entries.len(), if entries.len() == 1 { "y" } else { "ies" });
+                println!(
+                    "\n({} current entr{}.)",
+                    entries.len(),
+                    if entries.len() == 1 { "y" } else { "ies" }
+                );
             }
         }
         PassportAction::Validate { project } => {

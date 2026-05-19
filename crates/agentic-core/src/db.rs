@@ -15,13 +15,11 @@ use crate::{Error, Result};
 /// Newest schema version known to this build.
 pub const NEWEST_SCHEMA_VERSION: u32 = 1;
 
-const MIGRATIONS: &[(u32, &str, &str)] = &[
-    (
-        1,
-        "0001_initial",
-        include_str!("../migrations/0001_initial.sql"),
-    ),
-];
+const MIGRATIONS: &[(u32, &str, &str)] = &[(
+    1,
+    "0001_initial",
+    include_str!("../migrations/0001_initial.sql"),
+)];
 
 /// Open `path`, creating it if missing, and apply pending migrations.
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
@@ -33,7 +31,9 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     }
     let conn = Connection::open_with_flags(
         &path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_URI,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_URI,
     )?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
     migrate(&conn)?;
@@ -73,8 +73,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     for (version, name, sql) in MIGRATIONS {
         if *version > current {
             info!(version, name, "applying migration");
-            conn.execute_batch(sql)
-                .map_err(|source| Error::Migration { version: *version, source })?;
+            conn.execute_batch(sql).map_err(|source| Error::Migration {
+                version: *version,
+                source,
+            })?;
             debug!(version, name, "migration applied");
         }
     }

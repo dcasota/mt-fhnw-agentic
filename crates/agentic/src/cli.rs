@@ -123,9 +123,15 @@ pub struct InitArgs {
 }
 
 impl agentic_tui::wizard::WizardArgs for InitArgs {
-    fn mode(&self) -> &str { &self.mode }
-    fn working_lang(&self) -> &str { &self.working_lang }
-    fn institution(&self) -> Option<&str> { self.institution.as_deref() }
+    fn mode(&self) -> &str {
+        &self.mode
+    }
+    fn working_lang(&self) -> &str {
+        &self.working_lang
+    }
+    fn institution(&self) -> Option<&str> {
+        self.institution.as_deref()
+    }
 }
 
 #[derive(Debug, Subcommand)]

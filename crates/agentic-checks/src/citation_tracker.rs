@@ -60,9 +60,18 @@ pub fn run(conn: &Connection, project_id: &str) -> Result<CheckReport> {
                 corpus_keys.insert(key.to_lowercase());
             }
             // "Online-only" = no DOI, no ISBN, no publisher.
-            let has_doi = value.get("doi").and_then(serde_json::Value::as_str).map_or(false, |s| !s.is_empty());
-            let has_isbn = value.get("isbn").and_then(serde_json::Value::as_str).map_or(false, |s| !s.is_empty());
-            let has_publisher = value.get("publisher").and_then(serde_json::Value::as_str).map_or(false, |s| !s.is_empty());
+            let has_doi = value
+                .get("doi")
+                .and_then(serde_json::Value::as_str)
+                .map_or(false, |s| !s.is_empty());
+            let has_isbn = value
+                .get("isbn")
+                .and_then(serde_json::Value::as_str)
+                .map_or(false, |s| !s.is_empty());
+            let has_publisher = value
+                .get("publisher")
+                .and_then(serde_json::Value::as_str)
+                .map_or(false, |s| !s.is_empty());
             if !has_doi && !has_isbn && !has_publisher {
                 online_only_count += 1;
             }
@@ -141,13 +150,24 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "T", ProjectKind::Thesis, "de", None).unwrap();
         agentic_core::worktree::put_at(
-            &conn, &pid, "thesis-draft/ch.md",
+            &conn,
+            &pid,
+            "thesis-draft/ch.md",
             b"Per (Mayer, 2022), no.",
-            "text/markdown", Some("de"), "u", "init",
-        ).unwrap();
+            "text/markdown",
+            Some("de"),
+            "u",
+            "init",
+        )
+        .unwrap();
         // No corpus entry → missing.
         let report = run(&conn, &pid).unwrap();
-        assert!(report.findings.iter().any(|f| f.category == "CITATION_MISSING_REF"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.category == "CITATION_MISSING_REF")
+        );
     }
 
     #[test]
@@ -155,14 +175,32 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "T", ProjectKind::Thesis, "de", None).unwrap();
         agentic_core::worktree::put_at(
-            &conn, &pid, "thesis-draft/ch.md",
+            &conn,
+            &pid,
+            "thesis-draft/ch.md",
             b"Per (Mayer, 2022), no.",
-            "text/markdown", Some("de"), "u", "init",
-        ).unwrap();
-        passport::append(&conn, &pid, passport::Section::LiteratureCorpus,
-            r#"{"citation_key":"mayer2022","doi":"10.1000/1","title":"X"}"#, None, None).unwrap();
+            "text/markdown",
+            Some("de"),
+            "u",
+            "init",
+        )
+        .unwrap();
+        passport::append(
+            &conn,
+            &pid,
+            passport::Section::LiteratureCorpus,
+            r#"{"citation_key":"mayer2022","doi":"10.1000/1","title":"X"}"#,
+            None,
+            None,
+        )
+        .unwrap();
         let report = run(&conn, &pid).unwrap();
-        assert!(!report.findings.iter().any(|f| f.category == "CITATION_MISSING_REF"));
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.category == "CITATION_MISSING_REF")
+        );
     }
 
     #[test]
@@ -170,12 +208,31 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "T", ProjectKind::Thesis, "de", None).unwrap();
         // Two corpus entries, both URL-only → 100 % over the 10 % limit.
-        passport::append(&conn, &pid, passport::Section::LiteratureCorpus,
-            r#"{"citation_key":"a2024","url":"https://x"}"#, None, None).unwrap();
-        passport::append(&conn, &pid, passport::Section::LiteratureCorpus,
-            r#"{"citation_key":"b2024","url":"https://y"}"#, None, None).unwrap();
+        passport::append(
+            &conn,
+            &pid,
+            passport::Section::LiteratureCorpus,
+            r#"{"citation_key":"a2024","url":"https://x"}"#,
+            None,
+            None,
+        )
+        .unwrap();
+        passport::append(
+            &conn,
+            &pid,
+            passport::Section::LiteratureCorpus,
+            r#"{"citation_key":"b2024","url":"https://y"}"#,
+            None,
+            None,
+        )
+        .unwrap();
         let report = run(&conn, &pid).unwrap();
-        assert!(report.findings.iter().any(|f| f.category == "CITATION_ONLINE_QUOTA"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.category == "CITATION_ONLINE_QUOTA")
+        );
     }
 
     #[test]
@@ -183,13 +240,33 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "T", ProjectKind::Thesis, "de", None).unwrap();
         // 1 URL-only out of 11 = 9 % → OK.
-        passport::append(&conn, &pid, passport::Section::LiteratureCorpus,
-            r#"{"citation_key":"online1","url":"https://x"}"#, None, None).unwrap();
+        passport::append(
+            &conn,
+            &pid,
+            passport::Section::LiteratureCorpus,
+            r#"{"citation_key":"online1","url":"https://x"}"#,
+            None,
+            None,
+        )
+        .unwrap();
         for i in 0..10 {
             let payload = format!(r#"{{"citation_key":"book{i}","doi":"10.1000/{i}"}}"#);
-            passport::append(&conn, &pid, passport::Section::LiteratureCorpus, &payload, None, None).unwrap();
+            passport::append(
+                &conn,
+                &pid,
+                passport::Section::LiteratureCorpus,
+                &payload,
+                None,
+                None,
+            )
+            .unwrap();
         }
         let report = run(&conn, &pid).unwrap();
-        assert!(!report.findings.iter().any(|f| f.category == "CITATION_ONLINE_QUOTA"));
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.category == "CITATION_ONLINE_QUOTA")
+        );
     }
 }

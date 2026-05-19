@@ -52,7 +52,13 @@ fn print_report(report: &CheckReport, json_out: bool) {
     );
     for f in &report.findings {
         let where_ = f.location.as_deref().unwrap_or("-");
-        println!("  [{:<8}] [{:>17}] {} ({})", severity_label(&f.severity), f.category, f.message, where_);
+        println!(
+            "  [{:<8}] [{:>17}] {} ({})",
+            severity_label(&f.severity),
+            f.category,
+            f.message,
+            where_
+        );
     }
 }
 

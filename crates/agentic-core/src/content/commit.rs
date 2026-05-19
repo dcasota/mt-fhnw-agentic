@@ -9,16 +9,16 @@ use super::hash;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Commit {
-    pub sha256:       String,
-    pub tree:         String,
-    pub parent:       Option<String>,
-    pub parent_2:     Option<String>,
-    pub author:       String,
-    pub actor_kind:   String,   // human | ai | hook | system
+    pub sha256: String,
+    pub tree: String,
+    pub parent: Option<String>,
+    pub parent_2: Option<String>,
+    pub author: String,
+    pub actor_kind: String, // human | ai | hook | system
     pub actor_detail: Option<String>,
-    pub iteration:    Option<i64>,
-    pub message:      String,
-    pub timestamp:    String,
+    pub iteration: Option<i64>,
+    pub message: String,
+    pub timestamp: String,
 }
 
 /// Create a new commit. The hash incorporates tree + parents + author + message + timestamp.
@@ -38,9 +38,7 @@ pub fn put_commit(
             "actor_kind must be one of human|ai|hook|system, got {actor_kind}"
         )));
     }
-    let timestamp = chrono::Utc::now()
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let blueprint = format!(
         "tree={tree}\nparent={}\nparent_2={}\nauthor={author}\nactor={actor_kind}/{}\niteration={}\nmessage={message}\nts={timestamp}",
         parent.unwrap_or(""),
@@ -114,25 +112,35 @@ pub fn log(conn: &Connection, limit: usize) -> Result<Vec<Commit>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{blob::put_blob, tree::{EntryKind, TreeEntry, put_tree}};
+    use crate::content::{
+        blob::put_blob,
+        tree::{EntryKind, TreeEntry, put_tree},
+    };
     use crate::db::open_in_memory;
     use pretty_assertions::assert_eq;
 
     fn seed_tree(conn: &Connection) -> String {
         let blob_sha = put_blob(conn, b"hi", "text/plain", None).unwrap();
-        put_tree(conn, vec![TreeEntry {
-            name: "hi.md".into(),
-            kind: EntryKind::Blob,
-            target: blob_sha,
-            mode: "100644".into(),
-        }]).unwrap()
+        put_tree(
+            conn,
+            vec![TreeEntry {
+                name: "hi.md".into(),
+                kind: EntryKind::Blob,
+                target: blob_sha,
+                mode: "100644".into(),
+            }],
+        )
+        .unwrap()
     }
 
     #[test]
     fn create_and_fetch_commit() {
         let conn = open_in_memory().unwrap();
         let tree = seed_tree(&conn);
-        let sha = put_commit(&conn, &tree, None, None, "test", "human", None, None, "init").unwrap();
+        let sha = put_commit(
+            &conn, &tree, None, None, "test", "human", None, None, "init",
+        )
+        .unwrap();
         let c = get_commit(&conn, &sha).unwrap();
         assert_eq!(c.message, "init");
         assert_eq!(c.actor_kind, "human");
@@ -143,7 +151,8 @@ mod tests {
     fn rejects_bad_actor_kind() {
         let conn = open_in_memory().unwrap();
         let tree = seed_tree(&conn);
-        let err = put_commit(&conn, &tree, None, None, "test", "bogus", None, None, "x").unwrap_err();
+        let err =
+            put_commit(&conn, &tree, None, None, "test", "bogus", None, None, "x").unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }
 
@@ -151,9 +160,23 @@ mod tests {
     fn log_returns_newest_first() {
         let conn = open_in_memory().unwrap();
         let tree = seed_tree(&conn);
-        let c1 = put_commit(&conn, &tree, None, None, "test", "human", None, None, "first").unwrap();
+        let c1 = put_commit(
+            &conn, &tree, None, None, "test", "human", None, None, "first",
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        let c2 = put_commit(&conn, &tree, Some(&c1), None, "test", "human", None, None, "second").unwrap();
+        let c2 = put_commit(
+            &conn,
+            &tree,
+            Some(&c1),
+            None,
+            "test",
+            "human",
+            None,
+            None,
+            "second",
+        )
+        .unwrap();
         let log = log(&conn, 10).unwrap();
         assert_eq!(log.len(), 2);
         assert_eq!(log[0].sha256, c2);

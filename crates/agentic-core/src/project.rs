@@ -34,7 +34,9 @@ impl std::str::FromStr for ProjectKind {
             "sub_paper" => Ok(Self::SubPaper),
             "standalone" => Ok(Self::Standalone),
             "portfolio_root" => Ok(Self::PortfolioRoot),
-            other => Err(Error::InvalidInput(format!("unknown project kind: {other}"))),
+            other => Err(Error::InvalidInput(format!(
+                "unknown project kind: {other}"
+            ))),
         }
     }
 }
@@ -59,16 +61,16 @@ impl ProjectStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
-    pub id:           String,
-    pub name:         String,
-    pub kind:         ProjectKind,
-    pub parent_id:    Option<String>,
+    pub id: String,
+    pub name: String,
+    pub kind: ProjectKind,
+    pub parent_id: Option<String>,
     pub working_lang: String,
-    pub status:       ProjectStatus,
-    pub head_ref:     Option<String>,
+    pub status: ProjectStatus,
+    pub head_ref: Option<String>,
     pub metadata_json: Option<String>,
-    pub created_at:   String,
-    pub updated_at:   String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// Create a new project; returns its ULID.
@@ -80,7 +82,9 @@ pub fn create(
     parent_id: Option<&str>,
 ) -> Result<String> {
     if !matches!(working_lang, "en" | "de" | "fr" | "it" | "rm" | "hi") {
-        return Err(Error::InvalidInput(format!("unsupported language: {working_lang}")));
+        return Err(Error::InvalidInput(format!(
+            "unsupported language: {working_lang}"
+        )));
     }
     let id = Ulid::new().to_string();
     conn.execute(

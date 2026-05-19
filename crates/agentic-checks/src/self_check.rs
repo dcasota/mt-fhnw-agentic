@@ -19,7 +19,11 @@ pub fn run(conn: &Connection) -> Result<CheckReport> {
 
     // 1. Schema version.
     let version: i64 = conn
-        .query_row("SELECT IFNULL(MAX(version), 0) FROM schema_version", [], |row| row.get(0))
+        .query_row(
+            "SELECT IFNULL(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     if version == 0 {
         findings.push(Finding {
@@ -53,9 +57,7 @@ pub fn run(conn: &Connection) -> Result<CheckReport> {
     }
 
     // 3. Project integrity: head_ref points to an existing ref, working_lang valid.
-    let mut stmt = conn.prepare(
-        "SELECT id, name, working_lang, status, head_ref FROM projects",
-    )?;
+    let mut stmt = conn.prepare("SELECT id, name, working_lang, status, head_ref FROM projects")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -151,7 +153,8 @@ pub fn run(conn: &Connection) -> Result<CheckReport> {
     // or the global `main` from the outer git emulation.
     let mut r_stmt = conn.prepare("SELECT name FROM refs")?;
     let r_rows = r_stmt.query_map([], |row| row.get::<_, String>(0))?;
-    let r_pattern = regex::Regex::new(r"^[0-9A-Z]{26}/(main|iter-\d{3,})$|^main$|^wizard-sealed$").unwrap();
+    let r_pattern =
+        regex::Regex::new(r"^[0-9A-Z]{26}/(main|iter-\d{3,})$|^main$|^wizard-sealed$").unwrap();
     for row in r_rows {
         let name = row?;
         if !r_pattern.is_match(&name) {
@@ -223,8 +226,16 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "P", ProjectKind::Thesis, "en", None).unwrap();
         agentic_core::worktree::put_at(
-            &conn, &pid, "x.md", b"hi", "text/markdown", None, "u", "init",
-        ).unwrap();
+            &conn,
+            &pid,
+            "x.md",
+            b"hi",
+            "text/markdown",
+            None,
+            "u",
+            "init",
+        )
+        .unwrap();
         let report = run(&conn).unwrap();
         // worktree creates `<ulid>/main` which matches the pattern -> no INFO.
         assert!(!report.findings.iter().any(|f| f.category == "refs"));

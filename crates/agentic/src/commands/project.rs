@@ -11,7 +11,12 @@ use crate::cli::ProjectAction;
 pub fn run(db_path: &Path, action: ProjectAction, json_out: bool) -> Result<()> {
     let conn = agentic_core::db::open(db_path)?;
     match action {
-        ProjectAction::New { name, kind, working_lang, parent } => {
+        ProjectAction::New {
+            name,
+            kind,
+            working_lang,
+            parent,
+        } => {
             let kind = ProjectKind::from_str(&kind)?;
             let id = project::create(&conn, &name, kind, &working_lang, parent.as_deref())?;
             if json_out {
@@ -29,12 +34,19 @@ pub fn run(db_path: &Path, action: ProjectAction, json_out: bool) -> Result<()> 
             } else {
                 println!("{:26} {:14} {:5} {}", "ID", "KIND", "LANG", "NAME");
                 for p in projects {
-                    println!("{:26} {:14} {:5} {}", p.id, p.kind.as_str(), p.working_lang, p.name);
+                    println!(
+                        "{:26} {:14} {:5} {}",
+                        p.id,
+                        p.kind.as_str(),
+                        p.working_lang,
+                        p.name
+                    );
                 }
             }
         }
         ProjectAction::Status { id } => {
-            let id = id.ok_or_else(|| anyhow::anyhow!("--id required (no 'current project' yet)"))?;
+            let id =
+                id.ok_or_else(|| anyhow::anyhow!("--id required (no 'current project' yet)"))?;
             let p = project::get(&conn, &id)?;
             if json_out {
                 println!("{}", serde_json::to_string_pretty(&p)?);

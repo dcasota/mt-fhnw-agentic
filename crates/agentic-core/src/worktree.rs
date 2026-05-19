@@ -46,9 +46,7 @@ pub fn put_at(
     let branch_name = project_default_branch(project_id);
 
     // Resolve the parent commit + its tree (if any).
-    let parent_commit_sha = refs::get_ref(conn, &branch_name)
-        .ok()
-        .map(|r| r.commit_sha);
+    let parent_commit_sha = refs::get_ref(conn, &branch_name).ok().map(|r| r.commit_sha);
     let mut entries: Vec<TreeEntry> = if let Some(parent_sha) = &parent_commit_sha {
         let parent_commit = commit::get_commit(conn, parent_sha)?;
         get_tree(conn, &parent_commit.tree)?.entries
@@ -95,9 +93,15 @@ pub fn put_at(
 pub fn read_at(conn: &Connection, project_id: &str, path: &str) -> Result<Blob> {
     let tree = head_tree(conn, project_id)?
         .ok_or_else(|| Error::InvalidInput(format!("project {project_id} has no commits yet")))?;
-    let entry = tree.entries.into_iter().find(|e| e.name == path).ok_or_else(|| {
-        Error::InvalidInput(format!("path {path} not in project {project_id} working tree"))
-    })?;
+    let entry = tree
+        .entries
+        .into_iter()
+        .find(|e| e.name == path)
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "path {path} not in project {project_id} working tree"
+            ))
+        })?;
     blob::get_blob(conn, &entry.target)
 }
 
@@ -142,7 +146,10 @@ pub fn head_commit(conn: &Connection, project_id: &str) -> Result<Option<Commit>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::open_in_memory, project::{ProjectKind, create as create_project}};
+    use crate::{
+        db::open_in_memory,
+        project::{ProjectKind, create as create_project},
+    };
     use pretty_assertions::assert_eq;
 
     fn fixture_project(conn: &Connection) -> String {
@@ -155,12 +162,32 @@ mod tests {
         let pid = fixture_project(&conn);
         assert!(head_commit(&conn, &pid).unwrap().is_none());
 
-        let c1 = put_at(&conn, &pid, "thesis-draft/ch-01.md", b"# Intro\n", "text/markdown", Some("de"), "u", "init").unwrap();
+        let c1 = put_at(
+            &conn,
+            &pid,
+            "thesis-draft/ch-01.md",
+            b"# Intro\n",
+            "text/markdown",
+            Some("de"),
+            "u",
+            "init",
+        )
+        .unwrap();
         let head = head_commit(&conn, &pid).unwrap().unwrap();
         assert_eq!(head.sha256, c1);
         assert_eq!(head.parent, None);
 
-        let c2 = put_at(&conn, &pid, "thesis-draft/ch-02.md", b"# Theory\n", "text/markdown", Some("de"), "u", "add ch2").unwrap();
+        let c2 = put_at(
+            &conn,
+            &pid,
+            "thesis-draft/ch-02.md",
+            b"# Theory\n",
+            "text/markdown",
+            Some("de"),
+            "u",
+            "add ch2",
+        )
+        .unwrap();
         let head2 = head_commit(&conn, &pid).unwrap().unwrap();
         assert_eq!(head2.sha256, c2);
         assert_eq!(head2.parent.as_deref(), Some(c1.as_str()));
@@ -180,9 +207,39 @@ mod tests {
     fn list_filters_by_prefix() {
         let conn = open_in_memory().unwrap();
         let pid = fixture_project(&conn);
-        put_at(&conn, &pid, "thesis-draft/ch-01.md", b"a", "text/markdown", None, "u", "1").unwrap();
-        put_at(&conn, &pid, "thesis-draft/ch-02.md", b"b", "text/markdown", None, "u", "2").unwrap();
-        put_at(&conn, &pid, "studentnotes/note-01.md", b"c", "text/markdown", None, "u", "3").unwrap();
+        put_at(
+            &conn,
+            &pid,
+            "thesis-draft/ch-01.md",
+            b"a",
+            "text/markdown",
+            None,
+            "u",
+            "1",
+        )
+        .unwrap();
+        put_at(
+            &conn,
+            &pid,
+            "thesis-draft/ch-02.md",
+            b"b",
+            "text/markdown",
+            None,
+            "u",
+            "2",
+        )
+        .unwrap();
+        put_at(
+            &conn,
+            &pid,
+            "studentnotes/note-01.md",
+            b"c",
+            "text/markdown",
+            None,
+            "u",
+            "3",
+        )
+        .unwrap();
 
         let drafts = list(&conn, &pid, "thesis-draft/").unwrap();
         assert_eq!(drafts.len(), 2);
@@ -197,7 +254,17 @@ mod tests {
     fn read_at_missing_path_errors() {
         let conn = open_in_memory().unwrap();
         let pid = fixture_project(&conn);
-        put_at(&conn, &pid, "a.md", b"x", "text/markdown", None, "u", "init").unwrap();
+        put_at(
+            &conn,
+            &pid,
+            "a.md",
+            b"x",
+            "text/markdown",
+            None,
+            "u",
+            "init",
+        )
+        .unwrap();
         let err = read_at(&conn, &pid, "missing.md").unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }

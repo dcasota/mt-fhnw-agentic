@@ -53,15 +53,25 @@ impl CheckReport {
     #[must_use]
     pub fn new(checker: impl Into<String>, findings: Vec<Finding>) -> Self {
         let verdict = verdict_from(&findings);
-        Self { checker: checker.into(), verdict, findings }
+        Self {
+            checker: checker.into(),
+            verdict,
+            findings,
+        }
     }
 }
 
 #[must_use]
 pub fn verdict_from(findings: &[Finding]) -> Verdict {
-    if findings.iter().any(|f| matches!(f.severity, Severity::Blocking | Severity::Error)) {
+    if findings
+        .iter()
+        .any(|f| matches!(f.severity, Severity::Blocking | Severity::Error))
+    {
         Verdict::Fail
-    } else if findings.iter().any(|f| matches!(f.severity, Severity::Warn)) {
+    } else if findings
+        .iter()
+        .any(|f| matches!(f.severity, Severity::Warn))
+    {
         Verdict::Warn
     } else {
         Verdict::Pass

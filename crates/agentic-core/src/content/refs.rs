@@ -36,8 +36,8 @@ impl std::str::FromStr for RefKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ref {
-    pub name:       String,
-    pub kind:       RefKind,
+    pub name: String,
+    pub kind: RefKind,
     pub commit_sha: String,
     pub updated_at: String,
 }
@@ -82,7 +82,8 @@ pub fn get_ref(conn: &Connection, name: &str) -> Result<Ref> {
 /// List all refs.
 pub fn list_refs(conn: &Connection) -> Result<Vec<Ref>> {
     use std::str::FromStr;
-    let mut stmt = conn.prepare("SELECT name, kind, commit_sha, updated_at FROM refs ORDER BY name")?;
+    let mut stmt =
+        conn.prepare("SELECT name, kind, commit_sha, updated_at FROM refs ORDER BY name")?;
     let rows: Vec<Ref> = stmt
         .query_map([], |row| {
             Ok((
@@ -96,7 +97,12 @@ pub fn list_refs(conn: &Connection) -> Result<Vec<Ref>> {
         .into_iter()
         .map(|(name, kind, commit_sha, updated_at)| {
             let kind = RefKind::from_str(&kind)?;
-            Ok(Ref { name, kind, commit_sha, updated_at })
+            Ok(Ref {
+                name,
+                kind,
+                commit_sha,
+                updated_at,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(rows)
@@ -105,18 +111,26 @@ pub fn list_refs(conn: &Connection) -> Result<Vec<Ref>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{blob::put_blob, commit::put_commit, tree::{EntryKind, TreeEntry, put_tree}};
+    use crate::content::{
+        blob::put_blob,
+        commit::put_commit,
+        tree::{EntryKind, TreeEntry, put_tree},
+    };
     use crate::db::open_in_memory;
     use pretty_assertions::assert_eq;
 
     fn seed_commit(conn: &Connection) -> String {
         let blob_sha = put_blob(conn, b"x", "text/plain", None).unwrap();
-        let tree = put_tree(conn, vec![TreeEntry {
-            name: "x".into(),
-            kind: EntryKind::Blob,
-            target: blob_sha,
-            mode: "100644".into(),
-        }]).unwrap();
+        let tree = put_tree(
+            conn,
+            vec![TreeEntry {
+                name: "x".into(),
+                kind: EntryKind::Blob,
+                target: blob_sha,
+                mode: "100644".into(),
+            }],
+        )
+        .unwrap();
         put_commit(conn, &tree, None, None, "test", "human", None, None, "init").unwrap()
     }
 
@@ -135,8 +149,18 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let c1 = seed_commit(&conn);
         set_ref(&conn, "main", RefKind::Branch, &c1).unwrap();
-        let c2 = put_commit(&conn, "deadbeef", Some(&c1), None, "t", "human", None, None, "second")
-            .unwrap_or_else(|_| c1.clone()); // tree doesn't exist; we just want any second hash
+        let c2 = put_commit(
+            &conn,
+            "deadbeef",
+            Some(&c1),
+            None,
+            "t",
+            "human",
+            None,
+            None,
+            "second",
+        )
+        .unwrap_or_else(|_| c1.clone()); // tree doesn't exist; we just want any second hash
         if c2 != c1 {
             set_ref(&conn, "main", RefKind::Branch, &c2).unwrap();
             assert_eq!(get_ref(&conn, "main").unwrap().commit_sha, c2);

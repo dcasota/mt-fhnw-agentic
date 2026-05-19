@@ -46,20 +46,22 @@ impl std::str::FromStr for Section {
             "timeline" => Ok(Self::Timeline),
             "reset_ledger" => Ok(Self::ResetLedger),
             "compliance_reports" => Ok(Self::ComplianceReports),
-            other => Err(Error::InvalidInput(format!("unknown passport section: {other}"))),
+            other => Err(Error::InvalidInput(format!(
+                "unknown passport section: {other}"
+            ))),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
-    pub id:         i64,
+    pub id: i64,
     pub project_id: String,
-    pub section:    String,
+    pub section: String,
     pub payload_json: String,
-    pub added_at:   String,
+    pub added_at: String,
     pub commit_sha: Option<String>,
-    pub replaces:   Option<i64>,
+    pub replaces: Option<i64>,
 }
 
 /// Append a payload to the given section. `payload_json` must be valid JSON.
@@ -77,7 +79,13 @@ pub fn append(
         "INSERT INTO passport_entries (project_id, section, payload_json, commit_sha, replaces) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
-    stmt.execute(params![project_id, section.as_str(), payload_json, commit_sha, replaces])?;
+    stmt.execute(params![
+        project_id,
+        section.as_str(),
+        payload_json,
+        commit_sha,
+        replaces
+    ])?;
     Ok(conn.last_insert_rowid())
 }
 
@@ -109,9 +117,8 @@ pub fn current(conn: &Connection, project_id: &str, section: Section) -> Result<
 
 /// Validate the passport's structural invariants (append-only-ness, JSON validity).
 pub fn validate(conn: &Connection, project_id: &str) -> Result<ValidationReport> {
-    let mut stmt = conn.prepare(
-        "SELECT id, section, payload_json FROM passport_entries WHERE project_id = ?1",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, section, payload_json FROM passport_entries WHERE project_id = ?1")?;
     let mut total = 0usize;
     let mut json_errors = Vec::new();
     let rows = stmt.query_map(params![project_id], |row| {
@@ -137,21 +144,40 @@ pub fn validate(conn: &Connection, project_id: &str) -> Result<ValidationReport>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationReport {
     pub total_entries: usize,
-    pub json_errors:   Vec<(i64, String)>,
+    pub json_errors: Vec<(i64, String)>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::open_in_memory, project::{ProjectKind, create as create_project}};
+    use crate::{
+        db::open_in_memory,
+        project::{ProjectKind, create as create_project},
+    };
     use pretty_assertions::assert_eq;
 
     #[test]
     fn append_and_current() {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "P", ProjectKind::Thesis, "en", None).unwrap();
-        let id1 = append(&conn, &pid, Section::Timeline, r#"{"event": "start"}"#, None, None).unwrap();
-        let id2 = append(&conn, &pid, Section::Timeline, r#"{"event": "mid"}"#, None, None).unwrap();
+        let id1 = append(
+            &conn,
+            &pid,
+            Section::Timeline,
+            r#"{"event": "start"}"#,
+            None,
+            None,
+        )
+        .unwrap();
+        let id2 = append(
+            &conn,
+            &pid,
+            Section::Timeline,
+            r#"{"event": "mid"}"#,
+            None,
+            None,
+        )
+        .unwrap();
         assert_ne!(id1, id2);
         let entries = current(&conn, &pid, Section::Timeline).unwrap();
         assert_eq!(entries.len(), 2);
@@ -161,8 +187,24 @@ mod tests {
     fn replaces_makes_the_old_one_not_current() {
         let conn = open_in_memory().unwrap();
         let pid = create_project(&conn, "P", ProjectKind::Thesis, "en", None).unwrap();
-        let old = append(&conn, &pid, Section::Timeline, r#"{"event": "v1"}"#, None, None).unwrap();
-        let _new = append(&conn, &pid, Section::Timeline, r#"{"event": "v2"}"#, None, Some(old)).unwrap();
+        let old = append(
+            &conn,
+            &pid,
+            Section::Timeline,
+            r#"{"event": "v1"}"#,
+            None,
+            None,
+        )
+        .unwrap();
+        let _new = append(
+            &conn,
+            &pid,
+            Section::Timeline,
+            r#"{"event": "v2"}"#,
+            None,
+            Some(old),
+        )
+        .unwrap();
         let entries = current(&conn, &pid, Section::Timeline).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].payload_json.contains("\"v2\""));

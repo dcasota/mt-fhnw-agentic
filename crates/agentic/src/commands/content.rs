@@ -13,7 +13,8 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
     let conn = agentic_core::db::open(db_path)?;
     match action {
         ContentAction::Put { path, lang } => {
-            let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             let mime = mime_from_extension(&path);
             let sha = blob::put_blob(&conn, &bytes, &mime, lang.as_deref())?;
             if json_out {
@@ -22,15 +23,32 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
                 println!("{sha}  {} bytes  {}", bytes.len(), path.display());
             }
         }
-        ContentAction::PutAt { path, from, project, lang, author, message } => {
+        ContentAction::PutAt {
+            path,
+            from,
+            project,
+            lang,
+            author,
+            message,
+        } => {
             let bytes = read_source(&from)?;
             let mime = mime_from_path_str(&path);
             let msg = message.unwrap_or_else(|| format!("put {path}"));
             let commit_sha = worktree::put_at(
-                &conn, &project, &path, &bytes, &mime, lang.as_deref(), &author, &msg,
+                &conn,
+                &project,
+                &path,
+                &bytes,
+                &mime,
+                lang.as_deref(),
+                &author,
+                &msg,
             )?;
             if json_out {
-                println!("{}", json!({ "commit": commit_sha, "path": path, "size": bytes.len() }));
+                println!(
+                    "{}",
+                    json!({ "commit": commit_sha, "path": path, "size": bytes.len() })
+                );
             } else {
                 println!("{commit_sha}  {} bytes  {path}", bytes.len());
             }
@@ -70,7 +88,13 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
                 println!("(no commits yet)");
             } else {
                 for c in commits {
-                    println!("{}  {}  {}  {}", &c.sha256[..12], c.timestamp, c.author, c.message);
+                    println!(
+                        "{}  {}  {}  {}",
+                        &c.sha256[..12],
+                        c.timestamp,
+                        c.author,
+                        c.message
+                    );
                 }
             }
         }
@@ -90,7 +114,10 @@ fn read_source(from: &str) -> Result<Vec<u8>> {
 }
 
 fn mime_from_path_str(path: &str) -> String {
-    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+    if let Some(ext) = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
         return match ext {
             "md" => "text/markdown".into(),
             "json" => "application/json".into(),
@@ -98,8 +125,12 @@ fn mime_from_path_str(path: &str) -> String {
             "toml" => "application/toml".into(),
             "txt" => "text/plain".into(),
             "pdf" => "application/pdf".into(),
-            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
-            "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation".into(),
+            "docx" => {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into()
+            }
+            "pptx" => {
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation".into()
+            }
             "png" => "image/png".into(),
             "jpg" | "jpeg" => "image/jpeg".into(),
             _ => "application/octet-stream".into(),

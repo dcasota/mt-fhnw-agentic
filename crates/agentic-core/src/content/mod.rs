@@ -9,10 +9,10 @@ pub mod commit;
 pub mod refs;
 pub mod tree;
 
-pub use blob::{Blob, put_blob, get_blob};
+pub use blob::{Blob, get_blob, put_blob};
 pub use commit::{Commit, put_commit};
-pub use refs::{Ref, RefKind, set_ref, get_ref, list_refs};
-pub use tree::{Tree, TreeEntry, put_tree, get_tree};
+pub use refs::{Ref, RefKind, get_ref, list_refs, set_ref};
+pub use tree::{Tree, TreeEntry, get_tree, put_tree};
 
 use sha2::{Digest, Sha256};
 

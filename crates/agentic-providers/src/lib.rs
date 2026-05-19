@@ -50,6 +50,6 @@ pub enum Task {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
     pub provider: Provider,
-    pub model:    String,
-    pub reason:   String,
+    pub model: String,
+    pub reason: String,
 }
