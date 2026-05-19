@@ -128,21 +128,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artefacts
           merge-multiple: true
-      - name: Generate checksums
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install b3sum
+        run: cargo install b3sum --locked --version ^1
+
+      - name: Generate checksums (SHA256, SHA512, BLAKE3)
+        shell: bash
         run: |
           cd artefacts
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
+          shopt -s nullglob
+          archives=(*.zip *.tar.gz)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::no archives found in artefacts/ to hash"
+            exit 1
+          fi
+          echo "Hashing ${#archives[@]} archive(s):"
+          printf '  %s\n' "${archives[@]}" | sort
+          # Order names deterministically so the manifests are stable across runs.
+          IFS=$'\n' archives_sorted=($(sort <<<"${archives[*]}")); unset IFS
+          sha256sum "${archives_sorted[@]}" > SHA256SUMS
+          sha512sum "${archives_sorted[@]}" > SHA512SUMS
+          b3sum     "${archives_sorted[@]}" > B3SUMS
+          echo "--- SHA256SUMS ---"; cat SHA256SUMS
+          echo "--- SHA512SUMS ---"; cat SHA512SUMS
+          echo "--- B3SUMS ---";     cat B3SUMS
+
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             artefacts/*.zip
             artefacts/*.tar.gz
             artefacts/SHA256SUMS
+            artefacts/SHA512SUMS
+            artefacts/B3SUMS
           generate_release_notes: true
           draft: false
 
