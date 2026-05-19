@@ -15,12 +15,17 @@ path = "src/lib.rs"
 agentic-core      = { workspace = true }
 agentic-providers = { workspace = true }
 anyhow            = { workspace = true }
+rusqlite          = { workspace = true }
 serde             = { workspace = true }
 serde_json        = { workspace = true }
 tracing           = { workspace = true }
 regex             = { workspace = true }
 pdf-extract       = { workspace = true }
 docx-rs           = { workspace = true }
+walkdir           = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14"
 
 [lints]
 workspace = true

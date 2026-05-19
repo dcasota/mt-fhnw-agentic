@@ -82,6 +82,12 @@ pub enum Command {
         action: ConfigAction,
     },
 
+    /// Import a proposal / draft (markdown / DOCX / PDF) into a project.
+    Import {
+        #[command(subcommand)]
+        action: ImportAction,
+    },
+
     /// Export a project to DOCX or PDF.
     Export {
         /// Project ID (ULID).
@@ -98,6 +104,48 @@ pub enum Command {
         /// Title for the first page (falls back to project name).
         #[arg(long)]
         title: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ImportAction {
+    /// Import a single file. Markdown is passed through; DOCX/PDF are
+    /// extracted to text and stored as markdown.
+    File {
+        /// Path on disk to import.
+        path: PathBuf,
+        /// Project ID (ULID) to import into.
+        #[arg(long)]
+        project: String,
+        /// Working-tree path to store the resulting markdown blob at.
+        #[arg(long)]
+        to: String,
+        /// Author recorded on the new commit.
+        #[arg(long, default_value = "import")]
+        author: String,
+        /// Commit message.
+        #[arg(long)]
+        message: Option<String>,
+        /// Language tag (en|de|fr|it|rm|hi).
+        #[arg(long)]
+        lang: Option<String>,
+    },
+    /// Recursively import every supported file under a directory.
+    Dir {
+        /// Source directory.
+        path: PathBuf,
+        /// Project ID (ULID).
+        #[arg(long)]
+        project: String,
+        /// Prefix to mirror imports under (e.g. "proposal").
+        #[arg(long, default_value = "")]
+        prefix: String,
+        #[arg(long, default_value = "import")]
+        author: String,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long)]
+        lang: Option<String>,
     },
 }
 
