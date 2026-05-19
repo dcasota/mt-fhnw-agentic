@@ -13,6 +13,7 @@ pub mod error;
 pub mod journal;
 pub mod passport;
 pub mod project;
+pub mod worktree;
 
 pub use error::{Error, Result};
 

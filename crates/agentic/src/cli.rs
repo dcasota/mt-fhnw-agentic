@@ -61,8 +61,43 @@ pub enum Command {
         action: ContentAction,
     },
 
+    /// Integrity checkers (self / writing-quality / citations / contamination / ...).
+    Check {
+        #[command(subcommand)]
+        action: CheckAction,
+    },
+
     /// Diagnose the environment + binary configuration.
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CheckAction {
+    /// Structural integrity (schema, projects, refs, journal, passport).
+    Self_ {
+        /// Optional: restrict to a project (currently informational; the DB-level
+        /// checks are global).
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// 46 AI-typical patterns + FHNW style rules.
+    WritingQuality {
+        #[arg(long)]
+        project: String,
+    },
+    /// APA7 in-text vs. literature-corpus cross-check + online-source quota.
+    Citations {
+        #[arg(long)]
+        project: String,
+    },
+    /// Crossref / OpenAlex / Semantic Scholar contamination signals.
+    Contamination {
+        #[arg(long)]
+        project: String,
+        /// Skip network calls (signals reduce to "no DOI → all unmatched").
+        #[arg(long)]
+        offline: bool,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -175,6 +210,35 @@ pub enum ContentAction {
         path: PathBuf,
         #[arg(long)]
         lang: Option<String>,
+    },
+    /// Stage a file at a path in a project's working tree (creates a commit).
+    PutAt {
+        /// The path inside the project (e.g. "thesis-draft/ch-01.md").
+        path: String,
+        /// Source file on disk to read content from. Use `-` for stdin.
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        lang: Option<String>,
+        #[arg(long, default_value = "agentic")]
+        author: String,
+        #[arg(long)]
+        message: Option<String>,
+    },
+    /// Read the blob at `path` in a project's working tree.
+    ReadAt {
+        path: String,
+        #[arg(long)]
+        project: String,
+    },
+    /// List paths in a project's working tree (optional prefix filter).
+    Ls {
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = "")]
+        prefix: String,
     },
     /// Get a blob by SHA to stdout (or to a path with --to).
     Get {

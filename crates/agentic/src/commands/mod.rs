@@ -1,5 +1,6 @@
 //! Subcommand dispatchers. Each `mod` here owns one top-level verb.
 
+mod check;
 mod content;
 mod doctor;
 mod init;
@@ -18,6 +19,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Passport { action } => passport::run(&args.db, action, args.json),
         Command::Journal { action } => journal::run(&args.db, action, args.json),
         Command::Content { action } => content::run(&args.db, action, args.json),
+        Command::Check { action } => check::run(&args.db, action, args.json).await,
         Command::Doctor => doctor::run(args.json),
     }
 }
