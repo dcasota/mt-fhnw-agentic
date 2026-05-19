@@ -40,6 +40,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]
@@ -115,9 +116,12 @@ dependencies = [
  "docx-rs",
  "pdf-extract",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
