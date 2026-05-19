@@ -4,6 +4,7 @@ mod check;
 mod config;
 mod content;
 mod doctor;
+mod embed;
 mod export;
 mod import;
 mod init;
@@ -28,6 +29,42 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Provider { action } => provider::run(action, args.json).await,
         Command::Config { action } => config::run(action, args.json),
         Command::Import { action } => import::run(&args.db, action, args.json),
+        Command::Embed {
+            project,
+            prefix,
+            provider,
+            model,
+            force,
+        } => {
+            embed::run_embed(
+                &args.db,
+                &project,
+                &prefix,
+                provider.as_deref(),
+                model.as_deref(),
+                force,
+                args.json,
+            )
+            .await
+        }
+        Command::Classify {
+            project,
+            prefix,
+            slots,
+            provider,
+            model,
+        } => {
+            embed::run_classify(
+                &args.db,
+                &project,
+                &prefix,
+                slots.as_deref(),
+                provider.as_deref(),
+                model.as_deref(),
+                args.json,
+            )
+            .await
+        }
         Command::Export {
             project,
             format,

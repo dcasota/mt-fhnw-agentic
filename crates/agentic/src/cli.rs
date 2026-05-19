@@ -88,6 +88,43 @@ pub enum Command {
         action: ImportAction,
     },
 
+    /// Embed every markdown chapter in a project (vectors stored in DB).
+    Embed {
+        /// Project ID (ULID).
+        project: String,
+        /// Restrict to a working-tree path prefix (e.g. "thesis-draft/").
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// Force a specific provider (override the router).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Force a specific model.
+        #[arg(long)]
+        model: Option<String>,
+        /// Re-embed chapters that already have a stored vector for this model.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Classify chapters against thesis-chapter slots (cosine on embeddings).
+    Classify {
+        /// Project ID (ULID).
+        project: String,
+        /// Restrict to a working-tree path prefix.
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// Comma-separated slot keys to use. If omitted, the standard six
+        /// thesis chapters are used.
+        #[arg(long)]
+        slots: Option<String>,
+        /// Force a specific provider (override the router).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Force a specific model.
+        #[arg(long)]
+        model: Option<String>,
+    },
+
     /// Export a project to DOCX or PDF.
     Export {
         /// Project ID (ULID).
