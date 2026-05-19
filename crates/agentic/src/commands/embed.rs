@@ -1,11 +1,13 @@
 //! `agentic embed <project>` and `agentic classify <project>` handlers.
 
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::Result;
 
 use agentic_import::{
-    ChapterAssignment, EmbedOutcome, Slot, classify_project, default_slots, embed_project_blobs,
+    ChapterAssignment, EmbedOutcome, Slot, Strategy, auto_strategy, classify_project_with_strategy,
+    default_slots, embed_project_blobs,
 };
 
 pub async fn run_embed(
@@ -56,6 +58,7 @@ pub async fn run_classify(
     project: &str,
     prefix: &str,
     slot_keys: Option<&str>,
+    strategy_arg: Option<&str>,
     provider: Option<&str>,
     model: Option<&str>,
     json: bool,
@@ -65,14 +68,20 @@ pub async fn run_classify(
         None => default_slots(),
         Some(s) => slots_from_csv(s),
     };
-    let assignments = classify_project(&conn, project, prefix, &slots, provider, model).await?;
-    report_classify(&assignments, json)
+    let strategy = match strategy_arg {
+        Some(s) => Strategy::from_str(s)?,
+        None => auto_strategy()?,
+    };
+    if !json {
+        eprintln!("strategy: {strategy:?}");
+    }
+    let assignments =
+        classify_project_with_strategy(&conn, project, prefix, &slots, provider, model, strategy)
+            .await?;
+    report_classify(&assignments, json, strategy)
 }
 
 fn slots_from_csv(s: &str) -> Vec<Slot> {
-    // Match the user's csv against the default-slot keys; unknown keys are
-    // emitted as bare "<key>: <key>" placeholders (the embedding will be
-    // approximate, but the CLI stays useful).
     let defaults = default_slots();
     s.split(',')
         .map(str::trim)
@@ -87,13 +96,24 @@ fn slots_from_csv(s: &str) -> Vec<Slot> {
         .collect()
 }
 
-fn report_classify(items: &[ChapterAssignment], json: bool) -> Result<()> {
+fn report_classify(items: &[ChapterAssignment], json: bool, strategy: Strategy) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(items)?);
+        let payload = serde_json::json!({
+            "strategy": strategy,
+            "assignments": items,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
     if items.is_empty() {
-        println!("(no embedded chapters found — run `agentic embed <project>` first)");
+        match strategy {
+            Strategy::Embed => {
+                println!("(no embedded chapters found — run `agentic embed <project>` first)")
+            }
+            Strategy::Chat => {
+                println!("(no markdown chapters found under prefix)")
+            }
+        }
         return Ok(());
     }
     for item in items {

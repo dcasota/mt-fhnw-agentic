@@ -131,17 +131,23 @@ pub enum Command {
         force: bool,
     },
 
-    /// Classify chapters against thesis-chapter slots (cosine on embeddings).
+    /// Classify chapters against thesis-chapter slots. Two strategies:
+    /// `embed` (cosine on embeddings; needs an embed-capable provider)
+    /// or `chat` (LLM-driven; works with any chat-capable provider). If
+    /// `--strategy` is omitted, picks `embed` when an embed-capable
+    /// provider is configured, else `chat`.
     Classify {
         /// Project ID (ULID).
         project: String,
         /// Restrict to a working-tree path prefix.
         #[arg(long, default_value = "")]
         prefix: String,
-        /// Comma-separated slot keys to use. If omitted, the standard six
-        /// thesis chapters are used.
+        /// Comma-separated slot keys. If omitted, the six standard thesis chapters are used.
         #[arg(long)]
         slots: Option<String>,
+        /// Force `embed` or `chat`. If omitted, auto-detected from configured providers.
+        #[arg(long, value_parser = ["embed", "chat"])]
+        strategy: Option<String>,
         /// Force a specific provider (override the router).
         #[arg(long)]
         provider: Option<String>,
