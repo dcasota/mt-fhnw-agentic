@@ -88,6 +88,31 @@ pub enum Command {
         action: ImportAction,
     },
 
+    /// Turnkey migration: create a fresh project and ingest an entire
+    /// legacy directory (FACTORYAI / interim-presentation layout) into it.
+    Migrate {
+        /// Source directory to migrate.
+        src: PathBuf,
+        /// Project name. Defaults to the source directory's basename.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value = "en")]
+        working_lang: String,
+        #[arg(long)]
+        institution: Option<String>,
+        #[arg(long)]
+        track: Option<String>,
+        /// Embed every imported markdown blob after migration.
+        #[arg(long)]
+        embed: bool,
+        /// Force a provider for embeddings.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Force a model for embeddings.
+        #[arg(long)]
+        model: Option<String>,
+    },
+
     /// Embed every markdown chapter in a project (vectors stored in DB).
     Embed {
         /// Project ID (ULID).
