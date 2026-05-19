@@ -24,7 +24,20 @@
 # Option 1: GitHub Releases (curl one-liner)
 curl -fsSL https://github.com/dcasota/mt-fhnw-agentic/releases/latest/download/install.sh | sh
 
-# Option 2: cargo
+# Option 2: cargo (from crates.io)
+#
+# Prerequisite: a working Rust toolchain (rustc + cargo). If you don't
+# have one yet, install via rustup:
+#
+#   Windows (winget):
+#     winget install --id Rustlang.Rustup -e
+#     # Open a new shell so cargo is on PATH, then:
+#     rustup default stable
+#
+#   macOS / Linux:
+#     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+#
+# Then:
 cargo install agentic
 
 # Option 3: Scoop (Windows)
