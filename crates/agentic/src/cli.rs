@@ -69,6 +69,52 @@ pub enum Command {
 
     /// Diagnose the environment + binary configuration.
     Doctor,
+
+    /// Provider management (list providers, set API keys, smoke-test).
+    Provider {
+        #[command(subcommand)]
+        action: ProviderAction,
+    },
+
+    /// Configuration (key/value pairs persisted in the DB; mirrors env vars).
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderAction {
+    /// List the seven supported providers and show whether a key is configured.
+    List,
+    /// Run a minimal live request against a provider (chat for most; embed for Voyage).
+    Test {
+        /// Provider name: anthropic|openai|google|mistral|cohere|voyage|ollama (aliases accepted).
+        name: String,
+        /// Override the model for the test.
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Show how the router would resolve a given task right now.
+    Route {
+        /// Task name: chat|judge|embed|extract|classify|translate.
+        task: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Store an API key for a provider in the OS keychain.
+    SetKey {
+        /// Provider name (e.g. anthropic, openai, google, mistral, cohere, voyage).
+        provider: String,
+        /// Key value. Use `-` to read from stdin (newline-trimmed).
+        value: String,
+    },
+    /// Delete an API key from the OS keychain.
+    UnsetKey { provider: String },
+    /// Print where a provider's key resolves from (env var, keychain, or missing).
+    WhereKey { provider: String },
 }
 
 #[derive(Debug, Subcommand)]
