@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 agentic-core         = { workspace = true }
 agentic-providers    = { workspace = true }
+rusqlite             = { workspace = true }
 agentic-checks       = { workspace = true }
 agentic-import       = { workspace = true }
 agentic-export       = { workspace = true }
