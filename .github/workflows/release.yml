@@ -48,10 +48,13 @@ jobs:
             runs-on: ubuntu-24.04-arm
             archive: tar.gz
             bin_ext: ""
-          - target: x86_64-apple-darwin
-            runs-on: macos-13
-            archive: tar.gz
-            bin_ext: ""
+          # NOTE: x86_64-apple-darwin (Intel macOS on macos-13) was removed
+          # from the release matrix on 2026-05-19 because GitHub-hosted
+          # macos-13 runners have a multi-hour-to-multi-day queue backlog
+          # that blocked v0.1.1 across two retags. Intel macOS represents a
+          # shrinking share of macOS users (Apple stopped shipping Intel
+          # Macs in 2023; macos-14 / arm64 covers the modern fleet).
+          # Re-add this matrix entry once the macos-13 backlog clears.
           - target: aarch64-apple-darwin
             runs-on: macos-latest
             archive: tar.gz
