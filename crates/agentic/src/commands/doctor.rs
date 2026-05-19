@@ -55,6 +55,9 @@ fn detect_cli_context() -> Option<String> {
     if std::env::var("FACTORYAI").is_ok() {
         return Some("factory-ai".into());
     }
+    if std::env::var("GROK_BUILD").is_ok() || std::env::var("XAI_BUILD").is_ok() {
+        return Some("grok-build".into());
+    }
     None
 }
 
@@ -67,6 +70,7 @@ fn detect_api_keys() -> Vec<String> {
         ("AGENTIC_MISTRAL_KEY", "mistral"),
         ("AGENTIC_COHERE_KEY", "cohere"),
         ("AGENTIC_VOYAGE_KEY", "voyage"),
+        ("AGENTIC_GROK_KEY", "grok"),
         ("OLLAMA_HOST", "ollama"),
     ] {
         if std::env::var(var).is_ok() {
