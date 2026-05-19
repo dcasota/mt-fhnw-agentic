@@ -36,6 +36,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `error: Option<String>` (defaults to `None`). Downstream serde
   consumers reading the v0.1.0 JSON shape continue to work.
 
+## [0.1.3] — 2026-05-19
+
+### Fixed
+
+- **`auto_strategy()` now pre-resolves the router's intent before picking
+  `Strategy::Embed`.** v0.1.2's logic asked "is there *any* embed-capable
+  provider with a key?" — but the router's per-task fallback is hard-coded
+  to Voyage for `Task::Embed`, independently of which providers are
+  configured. So if Ollama (keyless / always "configured") was the only
+  embed-capable provider, `auto_strategy()` happily picked `Embed`, then
+  `classify` called `router::route(Task::Embed)` which returned Voyage,
+  then `registry::build(Voyage)` failed with "no API key configured for
+  provider voyage".
+- The new logic asks `router::route(Task::Embed).kind` who *would* be
+  picked, then checks `registry::has_key(...)` on that specific
+  provider. Only commits to `Strategy::Embed` if the router's chosen
+  provider has a key. Same check for `Strategy::Chat` as the fallback.
+- Error message now names the providers the router would pick for each
+  task and lists the vendor env-var names to set.
+
+### Test
+
+- New `auto_strategy_errors_when_no_provider_has_a_key` test verifying
+  the no-keys-anywhere error path emits the helpful hint. Uses
+  `#[allow(unsafe_code)]` for the env-mutation it needs (Rust 2024 made
+  `set_var`/`remove_var` unsafe).
+- 126 / 126 workspace tests passing (was 125; +1 new).
+
 ## [0.1.2] — 2026-05-19
 
 ### Added

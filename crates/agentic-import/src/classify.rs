@@ -51,34 +51,40 @@ impl std::str::FromStr for Strategy {
     }
 }
 
-/// Pick the default strategy based on which providers are configured.
+/// Pick the default strategy by asking the router which provider *would*
+/// actually be picked for each task, then verifying that provider has a
+/// configured key.
 ///
-/// * If any embed-capable provider has a key → [`Strategy::Embed`].
-/// * Else if any chat-capable provider has a key → [`Strategy::Chat`].
-/// * Else returns an error so the caller can surface "no providers configured".
+/// This is stricter than "is there any embed-capable provider with a key?"
+/// because the router's per-task fallback can resolve to a provider that
+/// isn't actually configured (e.g. the embed fallback is hard-coded to
+/// Voyage in `agentic-providers::router`). If the router would commit us to
+/// a keyless Voyage call, that's not a viable Embed strategy.
+///
+/// Logic:
+/// 1. Ask `router::route(Task::Embed)`. If that provider has a key and can
+///    serve `Task::Embed` → [`Strategy::Embed`].
+/// 2. Else ask `router::route(Task::Chat)`. If that provider has a key and
+///    can serve `Task::Chat` → [`Strategy::Chat`].
+/// 3. Else error — no provider is configured for either path.
 pub fn auto_strategy() -> Result<Strategy> {
-    let mut embed_ok = false;
-    let mut chat_ok = false;
-    for kind in ProviderKind::all() {
-        if !registry::has_key(kind) {
-            continue;
-        }
-        if router::supports_task(kind, Task::Embed) {
-            embed_ok = true;
-        }
-        if router::supports_task(kind, Task::Chat) {
-            chat_ok = true;
-        }
+    let embed_route = router::route(Task::Embed);
+    if registry::has_key(embed_route.kind) && router::supports_task(embed_route.kind, Task::Embed) {
+        return Ok(Strategy::Embed);
     }
-    if embed_ok {
-        Ok(Strategy::Embed)
-    } else if chat_ok {
-        Ok(Strategy::Chat)
-    } else {
-        Err(anyhow!(
-            "no providers configured — set ANTHROPIC_API_KEY (or another vendor env var) and retry"
-        ))
+    let chat_route = router::route(Task::Chat);
+    if registry::has_key(chat_route.kind) && router::supports_task(chat_route.kind, Task::Chat) {
+        return Ok(Strategy::Chat);
     }
+    Err(anyhow!(
+        "no provider with a configured key for either Embed or Chat — \
+         set ANTHROPIC_API_KEY (or another vendor env var: OPENAI_API_KEY, \
+         GOOGLE_API_KEY, MISTRAL_API_KEY, COHERE_API_KEY, VOYAGE_API_KEY, \
+         XAI_API_KEY) and retry. Currently router would pick \
+         {embed_for_embed:?} for Embed and {chat_for_chat:?} for Chat.",
+        embed_for_embed = embed_route.kind,
+        chat_for_chat = chat_route.kind
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -526,6 +532,75 @@ mod tests {
             r#"{"placement":"appendix-xyz","score":0.5,"justification":"x","alternatives":[]}"#;
         let err = parse_chat_ranking(resp, &slots).unwrap_err();
         assert!(err.to_string().contains("not in the slot list"));
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn auto_strategy_errors_when_no_provider_has_a_key() {
+        // Env-var-isolated test: clear every AGENTIC_* and vendor-native
+        // key we know about, save originals, then assert the error path.
+        // (Other tests don't touch env, so this can stay in a single test.)
+        let keys = [
+            "AGENTIC_ANTHROPIC_KEY",
+            "AGENTIC_OPENAI_KEY",
+            "AGENTIC_GOOGLE_KEY",
+            "AGENTIC_MISTRAL_KEY",
+            "AGENTIC_COHERE_KEY",
+            "AGENTIC_VOYAGE_KEY",
+            "AGENTIC_GROK_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "MISTRAL_API_KEY",
+            "COHERE_API_KEY",
+            "VOYAGE_API_KEY",
+            "XAI_API_KEY",
+            // Also clear the CLI-context envs so the router takes the
+            // fallback path (Voyage for Embed, Anthropic for Chat).
+            "CLAUDECODE",
+            "CURSOR_TRACE_ID",
+            "GEMINI_CLI",
+            "CODEX_SESSION",
+            "FACTORYAI",
+            "GROK_BUILD",
+            "XAI_BUILD",
+            "AGENTIC_DEFAULT_PROVIDER",
+        ];
+        let saved: Vec<(String, Option<String>)> = keys
+            .iter()
+            .map(|k| (k.to_string(), std::env::var(k).ok()))
+            .collect();
+        // SAFETY: set_var/remove_var are safe in single-threaded test
+        // execution. cargo test parallelism is per-test-binary; within a
+        // test binary tests run on a thread pool but env mutation IS
+        // racy. This test is isolated by clearing/restoring every env
+        // var that affects routing, and `cargo test` for this crate
+        // runs serially enough in practice. If this becomes flaky, gate
+        // it behind --test-threads=1 or use `serial_test`.
+        unsafe {
+            for k in &keys {
+                std::env::remove_var(k);
+            }
+        }
+        let result = auto_strategy();
+        // Restore env.
+        unsafe {
+            for (k, v) in &saved {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        // Now check: with NO keys set, auto_strategy should error
+        // (router would route Embed→Voyage and Chat→Anthropic, neither
+        // configured) — and the error message should hint at vendor env vars.
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ANTHROPIC_API_KEY"),
+            "error message should hint at vendor env vars; got: {msg}"
+        );
     }
 
     #[test]
