@@ -76,6 +76,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
             project,
             prefix,
             slots,
+            strategy,
             provider,
             model,
         } => {
@@ -84,6 +85,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
                 &project,
                 &prefix,
                 slots.as_deref(),
+                strategy.as_deref(),
                 provider.as_deref(),
                 model.as_deref(),
                 args.json,

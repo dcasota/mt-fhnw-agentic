@@ -36,6 +36,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `error: Option<String>` (defaults to `None`). Downstream serde
   consumers reading the v0.1.0 JSON shape continue to work.
 
+## [0.1.2] — 2026-05-19
+
+### Added
+
+- **Vendor-native API key env vars.** `keychain::get_key` now reads
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
+  `MISTRAL_API_KEY`, `COHERE_API_KEY`, `VOYAGE_API_KEY` and
+  `XAI_API_KEY` directly — matching the conventions each vendor's
+  official SDK publishes. Lookup order is `AGENTIC_<PROV>_KEY` (explicit
+  override) → vendor-native env var → OS keychain. Users who already
+  have vendor keys set for the official CLI get zero-config integration.
+- **`agentic classify --strategy chat`.** New LLM-driven classification
+  that sends each chapter + the slot list to `provider.chat()` and
+  parses a JSON `{placement, score, justification, alternatives}`
+  response. **No embeddings, no router fallback to Voyage.** Works
+  with any chat-capable provider — Anthropic alone is sufficient.
+- **`agentic classify --strategy embed`.** Explicit form of the
+  existing cosine-on-embeddings pipeline.
+- Auto-detect: if `--strategy` is omitted, `embed` is used when any
+  embed-capable provider has a key, otherwise `chat`. Falls back with
+  a clear error when no provider is configured at all.
+- `agentic doctor --json` now reports per-provider key source
+  (`AGENTIC_env` / `vendor_env` / `keychain`) and the env-var names
+  checked. Human output shows ✓ / · per provider with the source in
+  parentheses.
+- `agentic provider list` adds `SOURCE`, `VENDOR_ENV`, `AGENTIC_ENV`
+  columns so users can see exactly which env var hit.
+
+### Changed
+
+- `ImportOutcome` JSON is unchanged from v0.1.1; no migration needed.
+- Router behaviour for `Task::Classify` unchanged — but
+  `agentic classify` no longer requires `Task::Embed` to succeed, so
+  the "fall through to Voyage" path is bypassable via `--strategy chat`.
+
 ## [Unreleased]
 
 ### Changed (workflow only — applies to next tag push)

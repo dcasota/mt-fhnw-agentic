@@ -19,7 +19,10 @@ pub mod migrate;
 pub mod pdf;
 pub mod walk;
 
-pub use classify::{ChapterAssignment, Slot, SlotMatch, classify_project, default_slots};
+pub use classify::{
+    ChapterAssignment, Slot, SlotMatch, Strategy, auto_strategy, classify_project,
+    classify_project_chat, classify_project_with_strategy, default_slots,
+};
 pub use embed::{EmbedOutcome, embed_project_blobs};
 pub use import::{ImportOutcome, import_file};
 pub use migrate::{MigrationReport, SkippedEntry, migrate_legacy_repo};

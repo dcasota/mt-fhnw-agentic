@@ -18,21 +18,57 @@ pub async fn run(action: ProviderAction, json: bool) -> Result<()> {
 }
 
 fn list(json: bool) -> Result<()> {
-    let rows: Vec<(ProviderKind, bool)> = ProviderKind::all()
-        .into_iter()
-        .map(|k| (k, registry::has_key(k)))
+    use agentic_providers::keychain;
+    #[derive(serde::Serialize)]
+    struct Row {
+        provider: &'static str,
+        configured: bool,
+        source: Option<&'static str>,
+        agentic_env: String,
+        vendor_env: Option<&'static str>,
+    }
+    let rows: Vec<Row> = ProviderKind::all()
+        .iter()
+        .map(|k| {
+            let p = k.as_str();
+            let (configured, source) = if matches!(k, ProviderKind::Ollama) {
+                (registry::has_key(*k), Some("no-key (local)"))
+            } else {
+                match keychain::get_key_with_source(p) {
+                    Ok(Some((_, src))) => (true, Some(src.as_str())),
+                    _ => (false, None),
+                }
+            };
+            Row {
+                provider: p,
+                configured,
+                source,
+                agentic_env: keychain::env_var_name(p),
+                vendor_env: keychain::vendor_env_var_name(p),
+            }
+        })
         .collect();
     if json {
-        let out = rows
-            .iter()
-            .map(|(k, has)| json!({ "provider": k.as_str(), "configured": has }))
-            .collect::<Vec<_>>();
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", serde_json::to_string_pretty(&rows)?);
     } else {
-        println!("{:<12} {}", "PROVIDER", "KEY");
-        for (k, has) in rows {
-            let mark = if has { "configured" } else { "missing" };
-            println!("{:<12} {}", k.as_str(), mark);
+        println!(
+            "{:<12} {:<11} {:<14} {:<24} {}",
+            "PROVIDER", "STATUS", "SOURCE", "VENDOR_ENV", "AGENTIC_ENV"
+        );
+        for r in rows {
+            let status = if r.configured {
+                "configured"
+            } else {
+                "missing"
+            };
+            println!(
+                "{:<12} {:<11} {:<14} {:<24} {}",
+                r.provider,
+                status,
+                r.source.unwrap_or("-"),
+                r.vendor_env.unwrap_or("-"),
+                r.agentic_env
+            );
         }
     }
     Ok(())
