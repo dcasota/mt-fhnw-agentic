@@ -1,0 +1,23 @@
+[package]
+name = "agentic-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Export thesis content as .docx (FHNW template) / .pdf (Typst) / .pptx."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+agentic-core = { workspace = true }
+anyhow       = { workspace = true }
+docx-rs      = { workspace = true }
+typst        = { workspace = true }
+typst-pdf    = { workspace = true }
+tracing      = { workspace = true }
+
+[lints]
+workspace = true

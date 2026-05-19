@@ -1,0 +1,120 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/agentic",
+    "crates/agentic-core",
+    "crates/agentic-providers",
+    "crates/agentic-checks",
+    "crates/agentic-import",
+    "crates/agentic-export",
+    "crates/agentic-tui",
+    "crates/agentic-resources",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Daniel Casota <dcasota@gmail.com>"]
+license = "MIT"
+homepage = "https://github.com/dcasota/mt-fhnw-agentic"
+repository = "https://github.com/dcasota/mt-fhnw-agentic"
+description = "Monolithic Rust CLI + SQLite repository for agentic thesis work (FHNW MAS)"
+
+[workspace.dependencies]
+agentic-core      = { path = "crates/agentic-core" }
+agentic-providers = { path = "crates/agentic-providers" }
+agentic-checks    = { path = "crates/agentic-checks" }
+agentic-import    = { path = "crates/agentic-import" }
+agentic-export    = { path = "crates/agentic-export" }
+agentic-tui       = { path = "crates/agentic-tui" }
+agentic-resources = { path = "crates/agentic-resources" }
+
+# CLI + runtime
+clap          = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.5"
+tokio         = { version = "1.43", features = ["full"] }
+anyhow        = "1.0"
+thiserror     = "2.0"
+tracing       = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Storage
+rusqlite          = { version = "0.32", features = ["bundled", "blob", "trace"] }
+sha2              = "0.10"
+hex               = "0.4"
+fs2               = "0.4"
+
+# Serde / JSON / YAML
+serde         = { version = "1.0", features = ["derive"] }
+serde_json    = "1.0"
+serde_yaml_ng = "0.10"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+time   = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+
+# HTTP / providers
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+url     = "2.5"
+backoff = { version = "0.4", features = ["tokio"] }
+
+# Keychain
+keyring = "3.6"
+
+# Markdown / parsing
+pulldown-cmark = "0.12"
+comrak         = "0.32"
+regex          = "1.11"
+
+# PDF / DOCX
+pdf-extract = "0.7"
+docx-rs     = "0.4"
+typst       = "0.13"
+typst-pdf   = "0.13"
+typst-kit   = "0.13"
+
+# Embeddings + clustering
+ort             = { version = "2.0.0-rc.4", default-features = false, features = ["download-binaries"] }
+tokenizers      = { version = "0.20", default-features = false, features = ["onig"] }
+ndarray         = "0.16"
+linfa           = "0.7"
+linfa-clustering = "0.7"
+
+# TUI
+ratatui   = "0.29"
+crossterm = "0.28"
+
+# Misc
+walkdir  = "2.5"
+indicatif = "0.17"
+dirs      = "5.0"
+which     = "7.0"
+ulid      = { version = "1.1", features = ["serde"] }
+sha1      = "0.10"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+
+[profile.dev]
+opt-level = 0
+debug = true

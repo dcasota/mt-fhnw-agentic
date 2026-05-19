@@ -1,0 +1,24 @@
+[package]
+name = "agentic-checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Integrity checkers (self/contamination/temporal/uncited/plagiarism/claim-audit/...)."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+agentic-core      = { workspace = true }
+agentic-providers = { workspace = true }
+anyhow            = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+regex             = { workspace = true }
+tracing           = { workspace = true }
+
+[lints]
+workspace = true

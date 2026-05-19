@@ -1,0 +1,29 @@
+/target
+**/*.rs.bk
+*.pdb
+Cargo.lock.bak
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Local secrets
+.env
+.env.local
+
+# Test artefacts
+/test-output/
+*.tmp
+*.swp
+
+# Generated docs
+/docs/_book/
+
+# User-specific scratch
+/.scratch/

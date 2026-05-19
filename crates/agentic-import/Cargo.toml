@@ -1,0 +1,26 @@
+[package]
+name = "agentic-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Proposal import (PDF/DOCX) + recursive folder classification."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+agentic-core      = { workspace = true }
+agentic-providers = { workspace = true }
+anyhow            = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+tracing           = { workspace = true }
+regex             = { workspace = true }
+pdf-extract       = { workspace = true }
+docx-rs           = { workspace = true }
+
+[lints]
+workspace = true

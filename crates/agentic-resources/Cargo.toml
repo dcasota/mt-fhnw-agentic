@@ -1,0 +1,18 @@
+[package]
+name = "agentic-resources"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Embedded resources: FHNW DOCX templates, Typst stylesheets, ADR/schema seeds."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

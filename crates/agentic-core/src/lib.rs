@@ -1,0 +1,20 @@
+//! agentic-core — storage layer.
+//!
+//! See [`db`] for migration handling, [`content`] for blob/tree/commit/refs,
+//! [`project`] for project metadata, [`journal`] / [`passport`] for the
+//! append-only history surfaces.
+
+#![warn(clippy::pedantic)]
+#![allow(clippy::missing_errors_doc, clippy::module_name_repetitions)]
+
+pub mod content;
+pub mod db;
+pub mod error;
+pub mod journal;
+pub mod passport;
+pub mod project;
+
+pub use error::{Error, Result};
+
+/// Re-export `rusqlite::Connection` so callers don't need a direct dep.
+pub use rusqlite::Connection;

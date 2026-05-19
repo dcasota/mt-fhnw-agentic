@@ -1,0 +1,25 @@
+[package]
+name = "agentic-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ratatui-based M0 onboarding wizard."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+agentic-core   = { workspace = true }
+anyhow         = { workspace = true }
+rusqlite       = { workspace = true }
+ratatui        = { workspace = true }
+crossterm      = { workspace = true }
+tracing        = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+
+[lints]
+workspace = true

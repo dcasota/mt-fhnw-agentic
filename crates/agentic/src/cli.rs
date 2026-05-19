@@ -1,0 +1,190 @@
+//! CLI argument parsing.
+//!
+//! The structure mirrors the command tree from the plan (section 4).
+//! Only commands whose handlers exist in [`crate::commands`] are wired
+//! here; the rest are stubbed and emit "not yet implemented" at runtime.
+
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "agentic",
+    version,
+    about = "Monolithic Rust CLI + SQLite repository for agentic thesis work",
+    long_about = None,
+)]
+pub struct Cli {
+    /// Path to the SQLite database. Default: `./thesis.db`.
+    #[arg(long, env = "AGENTIC_DB", global = true, default_value = "thesis.db")]
+    pub db: PathBuf,
+
+    /// Output language (en|de|fr|it|rm|hi). Default: en.
+    #[arg(long, env = "AGENTIC_LANG", global = true, default_value = "en")]
+    pub lang: String,
+
+    /// Emit machine-readable JSON instead of human-readable text.
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Initialise a new thesis.db (launches the wizard unless flags are set).
+    Init(InitArgs),
+
+    /// Project lifecycle (new / list / switch / status / archive).
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+
+    /// Material-passport operations (append/read/validate/reset-boundary/repro-lock).
+    Passport {
+        #[command(subcommand)]
+        action: PassportAction,
+    },
+
+    /// Journal operations (append/show/search).
+    Journal {
+        #[command(subcommand)]
+        action: JournalAction,
+    },
+
+    /// Content store: blobs, trees, commits, refs.
+    Content {
+        #[command(subcommand)]
+        action: ContentAction,
+    },
+
+    /// Diagnose the environment + binary configuration.
+    Doctor,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InitArgs {
+    /// Operating mode: 'single' (one project) or 'portfolio' (N sub-projects).
+    #[arg(long, default_value = "single")]
+    pub mode: String,
+    /// Institution profile (e.g., 'fhnw-mas').
+    #[arg(long)]
+    pub institution: Option<String>,
+    /// Track within the institution (e.g., 'lincyber', 'dlinit').
+    #[arg(long)]
+    pub track: Option<String>,
+    /// Working language.
+    #[arg(long, default_value = "en")]
+    pub working_lang: String,
+    /// Skip the wizard, just create the DB.
+    #[arg(long)]
+    pub no_wizard: bool,
+    /// Resume a wizard previously interrupted.
+    #[arg(long)]
+    pub resume: bool,
+}
+
+impl agentic_tui::wizard::WizardArgs for InitArgs {
+    fn mode(&self) -> &str { &self.mode }
+    fn working_lang(&self) -> &str { &self.working_lang }
+    fn institution(&self) -> Option<&str> { self.institution.as_deref() }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectAction {
+    /// Create a new project.
+    New {
+        name: String,
+        /// 'thesis' | 'sub_paper' | 'standalone' | 'portfolio_root'.
+        #[arg(long, default_value = "standalone")]
+        kind: String,
+        #[arg(long, default_value = "en")]
+        working_lang: String,
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// List all projects.
+    List,
+    /// Show status for a project (or the current one).
+    Status {
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Archive a project.
+    Archive { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PassportAction {
+    /// Append a payload to a section.
+    Append {
+        #[arg(long)]
+        project: String,
+        section: String,
+        /// JSON payload, or `-` to read from stdin.
+        payload: String,
+        #[arg(long)]
+        replaces: Option<i64>,
+    },
+    /// Read current entries for a section.
+    Read {
+        #[arg(long)]
+        project: String,
+        section: String,
+    },
+    /// Validate passport invariants.
+    Validate {
+        #[arg(long)]
+        project: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum JournalAction {
+    /// Append a new entry.
+    Append {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        action_type: String,
+        #[arg(long)]
+        description: String,
+        #[arg(long)]
+        reasoning: Option<String>,
+        #[arg(long)]
+        hallucination_risk: Option<String>,
+    },
+    /// Show the last N entries.
+    Show {
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = "10")]
+        last: usize,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ContentAction {
+    /// Put a file into the content store; print its SHA.
+    Put {
+        path: PathBuf,
+        #[arg(long)]
+        lang: Option<String>,
+    },
+    /// Get a blob by SHA to stdout (or to a path with --to).
+    Get {
+        sha: String,
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
+    /// Log recent commits.
+    Log {
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+}
