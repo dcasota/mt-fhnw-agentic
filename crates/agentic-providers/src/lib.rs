@@ -1,16 +1,40 @@
-//! agentic-providers — LLM provider abstraction (P2+).
+//! `agentic-providers` — LLM provider abstraction.
 //!
-//! P0 ships only the trait skeleton and provider enum. Real implementations
-//! land in P2 (claim audit) and P5 (proposal import) phases.
+//! Concrete implementations for Anthropic, OpenAI, Google (Gemini), Mistral,
+//! Cohere, Voyage and Ollama all live in this crate. Selection happens via
+//! [`router`] which respects the priority chain documented in ADR-0028:
+//!
+//!   CLI-context auto-detect > per-task config > project default > user default.
+//!
+//! Each concrete implementation is a struct that holds its HTTP client +
+//! API key (resolved through [`keychain`]) and impls the [`Provider`] trait.
 
 #![warn(clippy::pedantic)]
-#![allow(dead_code)]
+#![allow(clippy::missing_errors_doc, clippy::module_name_repetitions, dead_code)]
+
+pub mod anthropic;
+pub mod cohere;
+pub mod google;
+pub mod keychain;
+pub mod mistral;
+pub mod ollama;
+pub mod openai;
+pub mod registry;
+pub mod router;
+pub mod traits;
+pub mod voyage;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub use traits::{
+    ChatMessage, ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse, Provider,
+    ProviderError, Role,
+};
+
+/// Stable provider identifier — one of seven supported back-ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Provider {
+pub enum ProviderKind {
     Anthropic,
     OpenAi,
     Google,
@@ -20,7 +44,8 @@ pub enum Provider {
     Ollama,
 }
 
-impl Provider {
+impl ProviderKind {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
@@ -32,9 +57,38 @@ impl Provider {
             Self::Ollama => "ollama",
         }
     }
+
+    #[must_use]
+    pub fn all() -> [Self; 7] {
+        [
+            Self::Anthropic,
+            Self::OpenAi,
+            Self::Google,
+            Self::Mistral,
+            Self::Cohere,
+            Self::Voyage,
+            Self::Ollama,
+        ]
+    }
 }
 
-/// Task categories. Each task can have its own provider preference (per ADR-0017).
+impl std::str::FromStr for ProviderKind {
+    type Err = ProviderError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "anthropic" | "claude" => Ok(Self::Anthropic),
+            "openai" | "gpt" => Ok(Self::OpenAi),
+            "google" | "gemini" => Ok(Self::Google),
+            "mistral" => Ok(Self::Mistral),
+            "cohere" => Ok(Self::Cohere),
+            "voyage" => Ok(Self::Voyage),
+            "ollama" | "local" => Ok(Self::Ollama),
+            _ => Err(ProviderError::Rejected(format!("unknown provider: {s}"))),
+        }
+    }
+}
+
+/// Task categories. Each task can have its own provider preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Task {
@@ -46,10 +100,24 @@ pub enum Task {
     Translate,
 }
 
+impl Task {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Judge => "judge",
+            Self::Embed => "embed",
+            Self::Extract => "extract",
+            Self::Classify => "classify",
+            Self::Translate => "translate",
+        }
+    }
+}
+
 /// Route selection result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
-    pub provider: Provider,
+    pub kind: ProviderKind,
     pub model: String,
     pub reason: String,
 }
