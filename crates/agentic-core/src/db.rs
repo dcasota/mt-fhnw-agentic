@@ -13,13 +13,20 @@ use tracing::{debug, info};
 use crate::{Error, Result};
 
 /// Newest schema version known to this build.
-pub const NEWEST_SCHEMA_VERSION: u32 = 1;
+pub const NEWEST_SCHEMA_VERSION: u32 = 2;
 
-const MIGRATIONS: &[(u32, &str, &str)] = &[(
-    1,
-    "0001_initial",
-    include_str!("../migrations/0001_initial.sql"),
-)];
+const MIGRATIONS: &[(u32, &str, &str)] = &[
+    (
+        1,
+        "0001_initial",
+        include_str!("../migrations/0001_initial.sql"),
+    ),
+    (
+        2,
+        "0002_wizard_drafts",
+        include_str!("../migrations/0002_wizard_drafts.sql"),
+    ),
+];
 
 /// Open `path`, creating it if missing, and apply pending migrations.
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {

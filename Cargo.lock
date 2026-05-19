@@ -33,6 +33,7 @@ dependencies = [
  "clap",
  "dirs",
  "indicatif",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
