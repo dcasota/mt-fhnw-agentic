@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Languages the wizard offers as the working language.
 pub const LANGS: &[&str] = &["en", "de", "fr", "it", "rm", "hi"];
 
-/// The seven providers the wizard knows how to capture keys for.
+/// The eight providers the wizard knows how to capture keys for.
 /// Mirrors [`agentic_providers::ProviderKind`] without depending on it.
 pub const PROVIDERS: &[&str] = &[
     "anthropic",
@@ -17,6 +17,7 @@ pub const PROVIDERS: &[&str] = &[
     "cohere",
     "voyage",
     "ollama",
+    "grok",
 ];
 
 /// Project kinds the wizard can pick.

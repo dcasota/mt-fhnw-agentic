@@ -24,6 +24,7 @@ pub enum CliContext {
     GeminiCli,
     OpenAiCodex,
     FactoryAi,
+    GrokBuild,
     Unknown,
 }
 
@@ -44,6 +45,9 @@ pub fn detect_cli_context() -> CliContext {
     if env::var("FACTORYAI").is_ok() {
         return CliContext::FactoryAi;
     }
+    if env::var("GROK_BUILD").is_ok() || env::var("XAI_BUILD").is_ok() {
+        return CliContext::GrokBuild;
+    }
     CliContext::Unknown
 }
 
@@ -55,6 +59,7 @@ pub fn provider_for_context(ctx: CliContext) -> ProviderKind {
         }
         CliContext::GeminiCli => ProviderKind::Google,
         CliContext::OpenAiCodex => ProviderKind::OpenAi,
+        CliContext::GrokBuild => ProviderKind::Grok,
         CliContext::Unknown => ProviderKind::Anthropic,
     }
 }
@@ -66,7 +71,7 @@ pub fn provider_for_context(ctx: CliContext) -> ProviderKind {
 #[must_use]
 pub fn supports_task(kind: ProviderKind, task: Task) -> bool {
     match (kind, task) {
-        (ProviderKind::Anthropic, Task::Embed) => false,
+        (ProviderKind::Anthropic | ProviderKind::Grok, Task::Embed) => false,
         (ProviderKind::Voyage, Task::Embed) => true,
         (ProviderKind::Voyage, _) => false,
         _ => true,
@@ -90,6 +95,7 @@ pub fn default_model(kind: ProviderKind, task: Task) -> &'static str {
         (ProviderKind::Voyage, _) => "voyage-3",
         (ProviderKind::Ollama, Task::Embed) => "bge-m3",
         (ProviderKind::Ollama, _) => "llama3:latest",
+        (ProviderKind::Grok, _) => "grok-4",
     }
 }
 
@@ -163,6 +169,7 @@ fn ctx_label(ctx: CliContext) -> &'static str {
         CliContext::GeminiCli => "gemini-cli",
         CliContext::OpenAiCodex => "openai-codex",
         CliContext::FactoryAi => "factory-ai",
+        CliContext::GrokBuild => "grok-build",
         CliContext::Unknown => "unknown",
     }
 }
@@ -215,5 +222,21 @@ mod tests {
             "local".parse::<ProviderKind>().unwrap(),
             ProviderKind::Ollama
         );
+        assert_eq!("xai".parse::<ProviderKind>().unwrap(), ProviderKind::Grok);
+        assert_eq!("grok".parse::<ProviderKind>().unwrap(), ProviderKind::Grok);
+    }
+
+    #[test]
+    fn grok_build_routes_to_grok() {
+        assert_eq!(
+            provider_for_context(CliContext::GrokBuild),
+            ProviderKind::Grok
+        );
+    }
+
+    #[test]
+    fn grok_does_not_support_embed() {
+        assert!(!supports_task(ProviderKind::Grok, Task::Embed));
+        assert!(supports_task(ProviderKind::Grok, Task::Chat));
     }
 }

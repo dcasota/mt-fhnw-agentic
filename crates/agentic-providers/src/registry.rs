@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::traits::{Provider, ProviderError};
 use crate::{
-    ProviderKind, anthropic::Anthropic, cohere::Cohere, google::Google, keychain, mistral::Mistral,
-    ollama::Ollama, openai::OpenAi, voyage::Voyage,
+    ProviderKind, anthropic::Anthropic, cohere::Cohere, google::Google, grok::Grok, keychain,
+    mistral::Mistral, ollama::Ollama, openai::OpenAi, voyage::Voyage,
 };
 
 /// Build a boxed provider for the given kind, looking up its API key as needed.
@@ -27,6 +27,7 @@ pub fn build(kind: ProviderKind) -> Result<Arc<dyn Provider>, ProviderError> {
                 ProviderKind::Mistral => Arc::new(Mistral::new(key)),
                 ProviderKind::Cohere => Arc::new(Cohere::new(key)),
                 ProviderKind::Voyage => Arc::new(Voyage::new(key)),
+                ProviderKind::Grok => Arc::new(Grok::new(key)),
                 ProviderKind::Ollama => unreachable!(),
             })
         }
@@ -42,6 +43,7 @@ fn static_label(kind: ProviderKind) -> &'static str {
         ProviderKind::Cohere => "cohere",
         ProviderKind::Voyage => "voyage",
         ProviderKind::Ollama => "ollama",
+        ProviderKind::Grok => "grok",
     }
 }
 

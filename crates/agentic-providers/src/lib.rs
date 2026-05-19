@@ -1,8 +1,9 @@
 //! `agentic-providers` — LLM provider abstraction.
 //!
 //! Concrete implementations for Anthropic, OpenAI, Google (Gemini), Mistral,
-//! Cohere, Voyage and Ollama all live in this crate. Selection happens via
-//! [`router`] which respects the priority chain documented in ADR-0028:
+//! Cohere, Voyage, Ollama and xAI Grok all live in this crate. Selection
+//! happens via [`router`] which respects the priority chain documented in
+//! ADR-0028:
 //!
 //!   CLI-context auto-detect > per-task config > project default > user default.
 //!
@@ -15,6 +16,7 @@
 pub mod anthropic;
 pub mod cohere;
 pub mod google;
+pub mod grok;
 pub mod keychain;
 pub mod mistral;
 pub mod ollama;
@@ -31,7 +33,7 @@ pub use traits::{
     ProviderError, Role,
 };
 
-/// Stable provider identifier — one of seven supported back-ends.
+/// Stable provider identifier — one of eight supported back-ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
@@ -42,6 +44,7 @@ pub enum ProviderKind {
     Cohere,
     Voyage,
     Ollama,
+    Grok,
 }
 
 impl ProviderKind {
@@ -55,11 +58,12 @@ impl ProviderKind {
             Self::Cohere => "cohere",
             Self::Voyage => "voyage",
             Self::Ollama => "ollama",
+            Self::Grok => "grok",
         }
     }
 
     #[must_use]
-    pub fn all() -> [Self; 7] {
+    pub fn all() -> [Self; 8] {
         [
             Self::Anthropic,
             Self::OpenAi,
@@ -68,6 +72,7 @@ impl ProviderKind {
             Self::Cohere,
             Self::Voyage,
             Self::Ollama,
+            Self::Grok,
         ]
     }
 }
@@ -83,6 +88,7 @@ impl std::str::FromStr for ProviderKind {
             "cohere" => Ok(Self::Cohere),
             "voyage" => Ok(Self::Voyage),
             "ollama" | "local" => Ok(Self::Ollama),
+            "grok" | "xai" | "x-ai" => Ok(Self::Grok),
             _ => Err(ProviderError::Rejected(format!("unknown provider: {s}"))),
         }
     }
