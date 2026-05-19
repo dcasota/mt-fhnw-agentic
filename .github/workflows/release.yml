@@ -124,6 +124,12 @@ jobs:
   release:
     name: publish to GitHub Releases
     needs: build
+    # Run even if some build matrix entries failed — ship the archives that
+    # DID build. Only skip the release when the build job was cancelled
+    # (manual abort) or skipped entirely (verify-version failed upstream).
+    # The hash step below hard-fails if zero archives are present, so a
+    # release with no artefacts is never created.
+    if: ${{ always() && needs.build.result != 'cancelled' && needs.build.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -145,10 +151,12 @@ jobs:
           shopt -s nullglob
           archives=(*.zip *.tar.gz)
           if [ ${#archives[@]} -eq 0 ]; then
-            echo "::error::no archives found in artefacts/ to hash"
+            # All matrix entries failed and no archives reached this job.
+            # Fail loudly — there's nothing useful to publish.
+            echo "::error::no archives produced by the build matrix; refusing to publish an empty release"
             exit 1
           fi
-          echo "Hashing ${#archives[@]} archive(s):"
+          echo "Hashing ${#archives[@]} archive(s) (matrix may have had partial failures):"
           printf '  %s\n' "${archives[@]}" | sort
           # Order names deterministically so the manifests are stable across runs.
           IFS=$'\n' archives_sorted=($(sort <<<"${archives[*]}")); unset IFS
@@ -178,6 +186,8 @@ jobs:
     # succeeded above.
     name: publish to crates.io
     needs: release
+    # Only attempt crates.io publish if the binary release succeeded.
+    if: ${{ needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
