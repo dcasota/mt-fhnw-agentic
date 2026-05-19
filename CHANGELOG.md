@@ -48,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the checksum step hard-fails and no release is created — empty releases
   are still refused. `publish-crate` runs only when `release.result ==
   success` (unchanged behaviour relative to v0.1.0/0.1.1).
+- **`x86_64-apple-darwin` (Intel macOS) dropped from the release matrix.**
+  GitHub-hosted `macos-13` runners had a multi-hour-to-multi-day queue
+  backlog that blocked v0.1.1 across two retags. Intel macOS is a
+  shrinking share of macOS users (Apple stopped shipping Intel Macs in
+  2023; `aarch64-apple-darwin` covers the modern fleet). The matrix
+  entry can be re-added once the `macos-13` backlog clears. v0.1.1 ships
+  4 archives instead of 5: linux x86_64, linux arm64, macOS arm64,
+  Windows x86_64.
 
 ### P9 — release packaging
 - Release workflow hardened: `verify-version` job rejects tags that don't match `Cargo.toml` workspace version; per-target binary smoke test (`agentic --version` + `agentic doctor --json`) before packaging
