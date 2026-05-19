@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-05-19
+
+### Fixed
+
+- **`agentic import dir` now surfaces per-file failures** instead of silently
+  logging them as `tracing::warn`. The returned `Vec<ImportOutcome>` now
+  contains one entry **per file attempted**, with `success: bool` and
+  `error: Option<String>` fields. The CLI report prints `+`/`-` lines for
+  successes/failures, ends with a summary line ("N imported, M failed"),
+  and exits non-zero when any file failed.
+- **`bootstrap/init.ps1` now resolves the project ID via `--json`** instead
+  of parsing the human-readable text table. The old parser grabbed the
+  header row (`ID  KIND  LANG  NAME`), split on whitespace, and wrote the
+  literal string `"ID"` to `.project-id` — every subsequent `--project ID`
+  call then failed with "project not found: ID". The new script does
+  `agentic --json project list | ConvertFrom-Json` and pulls `.id` off the
+  first object. Added an `-Force` flag to delete an existing `thesis.db`
+  + sidecars + `.project-id` before re-init.
+
+### Changed
+
+- **`aarch64-unknown-linux-gnu` release build switched from `cross` Docker
+  container to a native `ubuntu-24.04-arm` GitHub-hosted runner.** The
+  cross-build was failing in the v0.1.0 release run (typst-kit /
+  rusqlite-bundled in the cross image). The native runner is free,
+  faster, and the binary-smoke-test step now also runs on this target.
+- `ImportOutcome` struct grew two fields: `success: bool` (defaults to
+  `true` for backwards compatibility on serde-deserialised values) and
+  `error: Option<String>` (defaults to `None`). Downstream serde
+  consumers reading the v0.1.0 JSON shape continue to work.
+
 ## [Unreleased]
 
 ### P9 — release packaging

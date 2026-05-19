@@ -12,9 +12,12 @@ use crate::import::{ImportOutcome, import_file};
 /// path under `src_dir` is mirrored under `target_prefix` inside the project's
 /// working tree, with non-markdown extensions rewritten to `.md`.
 ///
-/// Returns one [`ImportOutcome`] per successfully imported file. Errors on
-/// individual files are logged via `tracing` but do not abort the walk; the
-/// final `Result` is the first hard error (DB / IO) encountered.
+/// Returns one [`ImportOutcome`] **per file attempted**, including failures
+/// (with `success = false` and `error = Some(...)`). Files with unsupported
+/// extensions are silently skipped. The function only returns an outer
+/// `Err` when the walk itself cannot proceed (e.g. `src_dir` isn't a
+/// directory). Callers should iterate the result and decide what to do
+/// with failures.
 pub fn import_dir(
     conn: &Connection,
     project_id: &str,
@@ -46,7 +49,21 @@ pub fn import_dir(
         let target = mirror_target(rel, target_prefix, format);
         match import_file(conn, project_id, path, &target, author, message, lang) {
             Ok(o) => out.push(o),
-            Err(e) => tracing::warn!(file = %path.display(), error = %e, "import failed"),
+            Err(e) => {
+                tracing::warn!(file = %path.display(), error = %e, "import failed");
+                out.push(ImportOutcome {
+                    source: path.display().to_string(),
+                    target_path: target,
+                    format: format.as_str().to_owned(),
+                    bytes_in: std::fs::metadata(path)
+                        .map(|m| m.len() as usize)
+                        .unwrap_or(0),
+                    bytes_out: 0,
+                    commit_sha: String::new(),
+                    success: false,
+                    error: Some(e.to_string()),
+                });
+            }
         }
     }
     Ok(out)
@@ -102,11 +119,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| o.success));
 
         let entries = worktree::list(&conn, &pid, "").unwrap();
         let paths: Vec<&str> = entries.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"proposal/intro.md"));
         assert!(paths.contains(&"proposal/sub/ch2.md"));
+    }
+
+    #[test]
+    fn surfaces_failures_in_outcomes() {
+        // Project id "ID" does not exist; every import will fail with
+        // "project not found: ID". The walk must still return one
+        // outcome per file, all with success=false.
+        let conn = open_in_memory().unwrap();
+        let dir = tempdir().unwrap();
+        std::fs::File::create(dir.path().join("a.md")).unwrap();
+        std::fs::File::create(dir.path().join("b.md")).unwrap();
+
+        let outcomes = import_dir(&conn, "ID", dir.path(), "p", "t", "m", Some("en")).unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| !o.success));
+        assert!(outcomes.iter().all(|o| {
+            o.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("project not found")
+        }));
     }
 
     #[test]

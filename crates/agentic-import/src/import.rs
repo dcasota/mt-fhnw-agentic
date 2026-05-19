@@ -19,6 +19,17 @@ pub struct ImportOutcome {
     pub bytes_in: usize,
     pub bytes_out: usize,
     pub commit_sha: String,
+    /// `false` when the per-file import raised an error; the caller can still
+    /// see the file in the outcomes vector and read `error` for context.
+    #[serde(default = "default_success")]
+    pub success: bool,
+    /// Error string when `success == false`. `None` on success.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+fn default_success() -> bool {
+    true
 }
 
 /// Import a single file into the project's working tree.
@@ -69,6 +80,8 @@ pub fn import_file(
         bytes_in,
         bytes_out,
         commit_sha,
+        success: true,
+        error: None,
     })
 }
 
