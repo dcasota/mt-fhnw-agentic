@@ -15,10 +15,12 @@ pub mod docx;
 pub mod embed;
 pub mod import;
 pub mod markdown;
+pub mod migrate;
 pub mod pdf;
 pub mod walk;
 
 pub use classify::{ChapterAssignment, Slot, SlotMatch, classify_project, default_slots};
 pub use embed::{EmbedOutcome, embed_project_blobs};
 pub use import::{ImportOutcome, import_file};
+pub use migrate::{MigrationReport, SkippedEntry, migrate_legacy_repo};
 pub use walk::import_dir;

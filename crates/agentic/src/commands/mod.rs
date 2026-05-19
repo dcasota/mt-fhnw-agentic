@@ -9,6 +9,7 @@ mod export;
 mod import;
 mod init;
 mod journal;
+mod migrate;
 mod passport;
 mod project;
 mod provider;
@@ -29,6 +30,30 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Provider { action } => provider::run(action, args.json).await,
         Command::Config { action } => config::run(action, args.json),
         Command::Import { action } => import::run(&args.db, action, args.json),
+        Command::Migrate {
+            src,
+            name,
+            working_lang,
+            institution,
+            track,
+            embed,
+            provider,
+            model,
+        } => {
+            migrate::from_args(
+                &args.db,
+                src,
+                name,
+                working_lang,
+                institution,
+                track,
+                embed,
+                provider,
+                model,
+                args.json,
+            )
+            .await
+        }
         Command::Embed {
             project,
             prefix,
