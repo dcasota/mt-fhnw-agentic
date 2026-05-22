@@ -108,6 +108,19 @@ fn heading_as_sentence() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"(?m)^#{1,6}\s+\w.+[.!]\s*$").unwrap())
 }
 
+/// Unambiguously-German marker terms for the English-core gate (ADR-0037).
+/// Short ambiguous function words (der/die/von) are deliberately excluded to
+/// avoid false positives on English text and proper nouns (e.g. "von Neumann").
+fn de_markers() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(Ausgangslage|Zielsetzung|Forschungsfrage[n]?|Abgrenzung|Empfehlung(?:en)?|Methodik|Einf[üu]hrung|Schlussbetrachtung|L[öo]sung|Handlungsempfehlung(?:en)?|Bewertung|[ÜU]bersicht|Zusammenfassung|Verzeichnis|Abbildung|Tabelle|Begleitbrief|Fragebogen|Umfrage|Leitfaden|Grundlagen|werden m[üu]ssen)\b",
+        )
+        .unwrap()
+    })
+}
+
 #[must_use]
 pub fn em_dash_count(text: &str) -> usize {
     text.matches('—').count() + text.matches(" -- ").count()
@@ -254,6 +267,36 @@ pub fn check_text(text: &str, path: &str) -> Vec<Finding> {
                 ),
                 location: Some(path.to_owned()),
             });
+        }
+    }
+
+    // 9. English-core enforcement (ADR-0037) — BLOCKING, deliverables only.
+    // The English deliverables live under thesis-draft-v5/ and out/sources/;
+    // imported source material (inbox/, snapshots/, proposal/, studentnotes/,
+    // thesis-draft-v4/) legitimately contains German and is exempt.
+    let deliverable = path.starts_with("thesis-draft-v5") || path.starts_with("out/sources");
+    if deliverable {
+        let mut seen = std::collections::HashSet::new();
+        for caps in de_markers().captures_iter(text) {
+            let m = caps.get(1).unwrap();
+            // Skip glossed terms-of-art: a German term in italics/parentheses,
+            // e.g. "Solution (*Lösung*)" — allowed by ADR-0037.
+            if let Some(pre) = text.get(m.start().saturating_sub(2)..m.start()) {
+                if pre.contains('*') || pre.contains('(') {
+                    continue;
+                }
+            }
+            let tok = m.as_str().to_string();
+            if seen.insert(tok.to_lowercase()) {
+                findings.push(Finding {
+                    category: "NON_ENGLISH_TEXT".into(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "German term '{tok}' in an English deliverable (ADR-0037 English-core)."
+                    ),
+                    location: Some(path.to_owned()),
+                });
+            }
         }
     }
 
