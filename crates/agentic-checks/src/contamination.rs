@@ -7,7 +7,9 @@
 //!   * `openalex_unmatched`
 //!   * `crossref_unmatched`
 //!
-//! Results are advisory (Info / Warn). They never block the build by themselves.
+//! A likely-fabricated academic reference (academic type, no DOI, unmatched in
+//! all three indices while online) BLOCKS (Error, ADR-0036 references gate);
+//! other signals remain advisory (Info / Warn).
 
 use std::collections::HashSet;
 
@@ -51,6 +53,7 @@ pub struct Reference {
     pub year: Option<u16>,
     pub doi: Option<String>,
     pub venue: Option<String>,
+    pub ref_type: Option<String>,
 }
 
 #[must_use]
@@ -329,6 +332,7 @@ pub fn references_from_passport(conn: &Connection, project_id: &str) -> Result<V
                 .and_then(|n| u16::try_from(n).ok()),
             doi: v.get("doi").and_then(|x| x.as_str()).map(str::to_owned),
             venue: v.get("venue").and_then(|x| x.as_str()).map(str::to_owned),
+            ref_type: v.get("type").and_then(|x| x.as_str()).map(str::to_owned),
         });
     }
     Ok(refs)
@@ -369,7 +373,34 @@ pub async fn run(conn: &Connection, project_id: &str, use_network: bool) -> Resu
         if s.crossref_unmatched {
             flags.push("crossref_unmatched");
         }
-        if !flags.is_empty() {
+        // ADR-0036 references gate: an academic-typed reference with no DOI that
+        // is unmatched in ALL THREE indices (while online) is treated as likely
+        // fabricated and BLOCKS. Grey literature (website/report/standard/misc)
+        // and offline runs stay advisory.
+        let academic = matches!(
+            r.ref_type.as_deref(),
+            Some("article" | "inproceedings" | "conference" | "journal" | "book"
+                | "incollection" | "phdthesis" | "proceedings" | "techreport")
+        );
+        let fabricated = use_network
+            && academic
+            && r.doi.is_none()
+            && s.semantic_scholar_unmatched
+            && s.openalex_unmatched
+            && s.crossref_unmatched;
+        if fabricated {
+            findings.push(Finding {
+                category: "REFERENCE_UNVERIFIED".into(),
+                severity: Severity::Error,
+                message: format!(
+                    "{}: LIKELY FABRICATED -- academic reference with no DOI, unmatched in \
+                     Crossref/OpenAlex/Semantic Scholar (ADR-0036). Verify against a primary \
+                     source or remove.",
+                    r.citation_key
+                ),
+                location: None,
+            });
+        } else if !flags.is_empty() {
             let severity = if flags.len() >= 3 {
                 Severity::Warn
             } else {
@@ -417,6 +448,7 @@ mod tests {
             year: Some(2024),
             doi: None,
             venue: Some("Some Journal".into()),
+            ref_type: None,
         };
         let s = signals_for(&client, &conn, &r, false).await;
         assert!(s.crossref_unmatched);
