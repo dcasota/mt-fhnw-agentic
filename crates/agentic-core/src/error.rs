@@ -47,6 +47,9 @@ pub enum Error {
     #[error("encoding error: {0}")]
     Encoding(String),
 
+    #[error("crypto error: {0}")]
+    Crypto(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

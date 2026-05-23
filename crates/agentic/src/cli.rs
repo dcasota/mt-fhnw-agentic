@@ -173,6 +173,69 @@ pub enum Command {
         #[arg(long)]
         title: Option<String>,
     },
+
+    /// Audit + non-repudiation: PQC (ML-DSA-87) signing and complete audit
+    /// reports (user actions, APA7 source origins, AI-decision index).
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuditAction {
+    /// Generate an ML-DSA-87 keypair; secret to the OS keychain, public to DB.
+    Keygen {
+        /// Human-readable signer identity recorded with the key.
+        #[arg(long, default_value = "agentic")]
+        signer: String,
+    },
+    /// Sign all of a project's commits with the active key (non-repudiation).
+    SignCommits {
+        #[arg(long)]
+        project: String,
+    },
+    /// Verify recorded signatures (commits and/or a report digest).
+    Verify {
+        #[arg(long)]
+        project: String,
+    },
+    /// Record one AI/LLM decision into the per-item audit index (going-forward).
+    Record {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "info", value_parser = ["pass", "warn", "fail", "ok", "info"])]
+        result: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        tokens: Option<i64>,
+        #[arg(long)]
+        iteration: Option<i64>,
+        /// Free-text detail (stored as the sidecar).
+        #[arg(long)]
+        detail: Option<String>,
+    },
+    /// Compile a complete audit report (signed). MD or JSON; whole-project or
+    /// a single item via --item.
+    Report {
+        #[arg(long)]
+        project: String,
+        /// Restrict to one item (substring of commit/journal/passport content).
+        #[arg(long)]
+        item: Option<String>,
+        #[arg(long, default_value = "md", value_parser = ["md", "json"])]
+        format: String,
+        /// Output path. If omitted, writes to stdout.
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -63,6 +63,10 @@ async-trait = "0.1"
 # Keychain
 keyring = "3.6"
 
+# Post-quantum cryptography (FIPS 204 ML-DSA) — non-repudiation signing.
+# Policy ADR-0039: PQC-only; no classical ciphers (Ed25519/RSA/ECDSA).
+fips204 = "0.4.6"
+
 # Markdown / parsing
 pulldown-cmark = "0.12"
 comrak         = "0.32"

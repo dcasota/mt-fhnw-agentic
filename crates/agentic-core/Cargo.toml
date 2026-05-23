@@ -28,6 +28,7 @@ ulid          = { workspace = true }
 fs2           = { workspace = true }
 dirs          = { workspace = true }
 regex         = { workspace = true }
+fips204       = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14"

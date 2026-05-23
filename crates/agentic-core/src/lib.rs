@@ -7,6 +7,7 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::missing_errors_doc, clippy::module_name_repetitions)]
 
+pub mod audit;
 pub mod content;
 pub mod db;
 pub mod embeddings;
@@ -14,6 +15,7 @@ pub mod error;
 pub mod journal;
 pub mod passport;
 pub mod project;
+pub mod signing;
 pub mod worktree;
 
 pub use error::{Error, Result};
