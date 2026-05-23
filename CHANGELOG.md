@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the original `text[:80]` lexical method (research: embedding cosine beats
   MinHash/SimHash on near-dup accuracy — RETSim, SemHash). New core
   `inbox` module + migration `0005`.
+- **`inbox process`** — self-driving pipeline: advances every queued item
+  through rank → justify → accept|hold, **auto-advancing the lifecycle state**,
+  auto-writing the passport `claim_audit_results` justification, and **recording
+  an `audit_rows` decision per transition**. Autonomous acceptance with a HITL
+  safety valve: duplicates and below-threshold novelty auto-accept to
+  `lowrankings`; mainline-eligible items are **held for HITL** unless
+  `--auto-mainline`; novelty/near-dup scored by embedding cosine (degrades to
+  exact-dup-only + HITL-hold without embeddings).
 - **`check tree`** — boot-time DB⇄disk integrity gate. Compares every on-disk
   file (under an optional `--prefix`, skipping dot-dirs/`target`/`node_modules`/
   `__pycache__` and the DB files) against its DB blob: on-disk files that differ

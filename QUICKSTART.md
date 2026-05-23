@@ -106,10 +106,11 @@ its on-disk copy ("empty inbox = done", nothing destroyed).
 
 ```powershell
 & $agx inbox register --project $proj                       # capture inbox/* blobs as queued
-& $agx inbox dedup    --project $proj --model <embed-model>  # exact (SHA) + semantic (cosine) dups
-# … rank (embed/classify) + justify (passport claim_audit_results) …
-& $agx inbox accept   --project $proj --path "inbox/x.md" --placement thesis_main `
-      --justification "out/sources/Inbox_x_ranking_EN.md" [--hitl]
+& $agx embed          --project $proj --prefix inbox         # vectors (local model) for scoring
+& $agx inbox process  --project $proj --model <embed-model>  # SELF-DRIVING: rank→justify→accept|hold
+#   ^ auto-advances state, auto-writes passport justifications, records audit_rows per step;
+#     duplicates/low-novelty -> lowrankings (auto); mainline-eligible -> held for HITL (review).
+& $agx inbox accept   --project $proj --path "inbox/x.md" --placement thesis_main --hitl  # confirm a held item
 & $agx inbox skip     --project $proj --path "inbox/README.md"      # non-input
 & $agx inbox retire   --project $proj --path "inbox/x.md"           # delete disk copy; blob kept
 & $agx inbox status   --project $proj                               # "empty-inbox = done"

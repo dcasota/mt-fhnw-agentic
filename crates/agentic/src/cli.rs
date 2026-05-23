@@ -248,6 +248,25 @@ pub enum InboxAction {
         #[arg(long, default_value_t = 0.90)]
         threshold: f32,
     },
+    /// Self-driving: rank → justify → accept|hold every queued item, recording
+    /// an audit_rows decision per transition and auto-writing the passport
+    /// justification. Mainline-eligible items are held for HITL unless
+    /// --auto-mainline. Run `agentic embed` first for novelty/near-dup scoring.
+    Process {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        model: Option<String>,
+        /// Novelty score (0..1) at/above which an item is mainline-eligible.
+        #[arg(long, default_value_t = 0.50)]
+        accept_threshold: f64,
+        /// Cosine at/above which two items are treated as near-duplicates.
+        #[arg(long, default_value_t = 0.90)]
+        near_dup: f32,
+        /// Auto-accept mainline-eligible items instead of holding for HITL.
+        #[arg(long)]
+        auto_mainline: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

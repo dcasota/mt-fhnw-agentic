@@ -138,6 +138,29 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
                 None => println!("(pass --model <embed-model> to also check semantic near-duplicates)"),
             }
         }
+
+        InboxAction::Process { project, model, accept_threshold, near_dup, auto_mainline } => {
+            let rep = inbox::process(
+                &conn,
+                &project,
+                model.as_deref(),
+                accept_threshold,
+                near_dup,
+                auto_mainline,
+                "inbox-pipeline",
+            )?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&rep)?);
+            } else {
+                println!(
+                    "Processed: {} ranked, {} auto-accepted ({} redundant), {} held for HITL ({} lacked embeddings).",
+                    rep.ranked, rep.auto_accepted, rep.redundant, rep.held_for_hitl, rep.no_embedding
+                );
+                if rep.held_for_hitl > 0 {
+                    println!("  -> confirm held items with: agentic inbox accept --path <p> --placement thesis_main --hitl");
+                }
+            }
+        }
     }
     Ok(())
 }
