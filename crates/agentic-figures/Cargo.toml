@@ -1,0 +1,24 @@
+[package]
+name = "agentic-figures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "figspec JSON -> PNG figure renderer (pure-Rust plotters); the Rust port of render_figspec."
+
+[lib]
+name = "agentic_figures"
+path = "src/lib.rs"
+
+[dependencies]
+plotters   = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+textwrap   = "0.16"
+
+[lints]
+workspace = true

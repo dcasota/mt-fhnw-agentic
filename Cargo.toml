@@ -9,6 +9,7 @@ members = [
     "crates/agentic-export",
     "crates/agentic-tui",
     "crates/agentic-resources",
+    "crates/agentic-figures",
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ agentic-import    = { path = "crates/agentic-import" }
 agentic-export    = { path = "crates/agentic-export" }
 agentic-tui       = { path = "crates/agentic-tui" }
 agentic-resources = { path = "crates/agentic-resources" }
+agentic-figures   = { path = "crates/agentic-figures" }
 
 # CLI + runtime
 clap          = { version = "4.5", features = ["derive", "env", "wrap_help"] }
@@ -78,6 +80,9 @@ docx-rs     = "0.4"
 typst       = "0.13"
 typst-pdf   = "0.13"
 typst-kit   = { version = "0.13", features = ["embed-fonts"] }
+
+# Figures (figspec -> PNG; pure-Rust, no system deps)
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series", "histogram", "ttf"] }
 
 # Embeddings + clustering
 ort             = { version = "2.0.0-rc.4", default-features = false, features = ["download-binaries"] }
