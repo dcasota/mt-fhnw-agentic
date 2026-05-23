@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 2026-05-23
+
+### Added
+
+- **`content ingest` + `content checkout`** — the database can now be the source
+  of truth. `ingest` bulk-stages many files in a single commit (`--from-list`
+  for an explicit `git ls-files` set; `--replace` makes HEAD's tree exactly the
+  staged set, preserving history). `checkout` reproduces the working tree from
+  the DB. Round-trip verified byte-for-byte over 637 files. New core API
+  `worktree::put_many`.
+- **`audit` command group** (PQC non-repudiation, ADR-0039): `keygen`,
+  `sign-commits`, `verify`, `record`, `report`. Signs commits and audit-report
+  bodies with **ML-DSA-87 (FIPS 204)**. `report` compiles a complete audit —
+  what the user did (journal), every change (commit DAG with human/AI
+  authorship), **source origins in APA7** (passport `literature_corpus`), a
+  **per-item AI-decision index** (`audit_rows` + reconstructed from
+  `claim_audit_results`), gate verdicts, and an integrity seal — as MD or JSON,
+  whole-project or per `--item`.
+- **New `agentic-core` modules**: `signing` (ML-DSA-87 via the pure-Rust
+  `fips204` crate; key + signature registry) and `audit` (report compiler +
+  APA7 renderer).
+- **Docs**: rewritten `README.md`; new `ARCHITECTURE.md`, `QUICKSTART.md`,
+  `AUDIT.md`, `RELEASE_NOTES.md`.
+
+### Schema
+
+- **Migration `0004_audit_signatures`** (schema **v4**): `crypto_keys` (active
+  ML-DSA-87 public keys; secret-key file reference) and `signatures` (detached
+  signatures over commits / audit reports). Additive, idempotent.
+
+### Policy
+
+- **ADR-0039 PQC-only cryptography**: all signing uses ML-DSA-87; classical
+  ciphers (Ed25519/RSA/ECDSA) are forbidden. Secret keys (~4.9 KB) are stored as
+  a protected file under the user data dir, since they exceed the OS-keychain
+  blob limit; only public keys + signatures are persisted in the DB.
+
 ## [0.1.1] — 2026-05-19
 
 ### Fixed
