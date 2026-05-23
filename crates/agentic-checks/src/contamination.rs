@@ -379,8 +379,17 @@ pub async fn run(conn: &Connection, project_id: &str, use_network: bool) -> Resu
         // and offline runs stay advisory.
         let academic = matches!(
             r.ref_type.as_deref(),
-            Some("article" | "inproceedings" | "conference" | "journal" | "book"
-                | "incollection" | "phdthesis" | "proceedings" | "techreport")
+            Some(
+                "article"
+                    | "inproceedings"
+                    | "conference"
+                    | "journal"
+                    | "book"
+                    | "incollection"
+                    | "phdthesis"
+                    | "proceedings"
+                    | "techreport"
+            )
         );
         let fabricated = use_network
             && academic

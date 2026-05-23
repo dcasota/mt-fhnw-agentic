@@ -183,7 +183,11 @@ pub fn record_signature(
 }
 
 /// All signatures over a given target.
-pub fn signatures_for(conn: &Connection, target_kind: &str, target_id: &str) -> Result<Vec<Signature>> {
+pub fn signatures_for(
+    conn: &Connection,
+    target_kind: &str,
+    target_id: &str,
+) -> Result<Vec<Signature>> {
     let mut stmt = conn.prepare(
         "SELECT target_kind, target_id, alg, key_id, signature, signer, signed_at \
          FROM signatures WHERE target_kind = ?1 AND target_id = ?2 ORDER BY signed_at",

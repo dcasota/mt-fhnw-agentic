@@ -9,7 +9,8 @@ use regex::Regex;
 use serde_json::Value;
 
 static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([DHI])[-·.]([NEC])\b").unwrap());
-static FIG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```figspec\s*\n(.*?)\n```").unwrap());
+static FIG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)```figspec\s*\n(.*?)\n```").unwrap());
 
 // Verified-facts corrections (each verified against a primary source).
 static CORR: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
@@ -57,7 +58,10 @@ fn short_caption(cap: &str) -> String {
             }
         }
     }
-    cap.split_whitespace().take(12).collect::<Vec<_>>().join(" ")
+    cap.split_whitespace()
+        .take(12)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn shorten_captions(text: &str) -> String {
@@ -70,7 +74,8 @@ fn shorten_captions(text: &str) -> String {
                         spec["caption"] = Value::String(short);
                         return format!(
                             "```figspec\n{}\n```",
-                            serde_json::to_string_pretty(&spec).unwrap_or_else(|_| c[0].to_string())
+                            serde_json::to_string_pretty(&spec)
+                                .unwrap_or_else(|_| c[0].to_string())
                         );
                     }
                 }
@@ -95,7 +100,9 @@ fn apply_corrections(text: &str) -> String {
 #[must_use]
 pub fn normalize(text: &str) -> String {
     let expanded = CODE
-        .replace_all(text, |c: &regex::Captures<'_>| format!("{} / {}", pred(&c[1]), mode(&c[2])))
+        .replace_all(text, |c: &regex::Captures<'_>| {
+            format!("{} / {}", pred(&c[1]), mode(&c[2]))
+        })
         .into_owned();
     let shortened = shorten_captions(&expanded);
     apply_corrections(&shortened)
@@ -107,13 +114,22 @@ mod tests {
 
     #[test]
     fn expands_prediction_mode_codes() {
-        assert_eq!(normalize("the D-N cell and I·C cell"), "the Decrease / Normal cell and Increase / Catastrophic cell");
+        assert_eq!(
+            normalize("the D-N cell and I·C cell"),
+            "the Decrease / Normal cell and Increase / Catastrophic cell"
+        );
     }
 
     #[test]
     fn corrects_verified_facts() {
-        assert_eq!(normalize("about 446 source packages"), "over 1,000 source packages");
-        assert_eq!(normalize("a 446-package distro"), "a 1,000-plus-package distro");
+        assert_eq!(
+            normalize("about 446 source packages"),
+            "over 1,000 source packages"
+        );
+        assert_eq!(
+            normalize("a 446-package distro"),
+            "a 1,000-plus-package distro"
+        );
     }
 
     #[test]
@@ -121,7 +137,11 @@ mod tests {
         let md = "```figspec\n{\"id\":\"f\",\"type\":\"bar\",\"caption\":\"one two three four five six seven eight nine ten eleven twelve thirteen fourteen\",\"data\":{}}\n```";
         let out = normalize(md);
         // 14 words -> truncated to 12
-        let cap_words = out.lines().find(|l| l.contains("caption")).map(|l| l.matches(' ').count()).unwrap_or(0);
+        let cap_words = out
+            .lines()
+            .find(|l| l.contains("caption"))
+            .map(|l| l.matches(' ').count())
+            .unwrap_or(0);
         assert!(out.contains("\"caption\""));
         assert!(cap_words <= 16, "caption not shortened: {out}");
     }

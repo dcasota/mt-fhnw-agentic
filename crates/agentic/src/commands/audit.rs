@@ -51,14 +51,18 @@ pub fn run(db_path: &Path, action: AuditAction, json_out: bool) -> Result<()> {
             } else {
                 println!(
                     "Generated {} key {}\n  secret  -> {}  (protect this file; it is NOT in git)\n  public  -> crypto_keys (active)\n  signer  -> {}",
-                    signing::ALG, kp.key_id, sk_ref, signer
+                    signing::ALG,
+                    kp.key_id,
+                    sk_ref,
+                    signer
                 );
             }
         }
 
         AuditAction::SignCommits { project } => {
-            let key = signing::active_key(&conn)?
-                .ok_or_else(|| anyhow!("no active signing key — run `agentic audit keygen` first"))?;
+            let key = signing::active_key(&conn)?.ok_or_else(|| {
+                anyhow!("no active signing key — run `agentic audit keygen` first")
+            })?;
             let secret = read_secret(&key.sk_ref)?;
             let shas: Vec<String> = {
                 let mut stmt = conn.prepare("SELECT sha256 FROM commits ORDER BY timestamp")?;
@@ -68,13 +72,27 @@ pub fn run(db_path: &Path, action: AuditAction, json_out: bool) -> Result<()> {
             let mut signed = 0usize;
             for sha in &shas {
                 let sig = signing::sign(&secret, sha.as_bytes())?;
-                signing::record_signature(&conn, "commit", sha, &key.key_id, &sig, key.signer.as_deref())?;
+                signing::record_signature(
+                    &conn,
+                    "commit",
+                    sha,
+                    &key.key_id,
+                    &sig,
+                    key.signer.as_deref(),
+                )?;
                 signed += 1;
             }
             if json_out {
-                println!("{}", json!({ "signed": signed, "key_id": key.key_id, "project": project }));
+                println!(
+                    "{}",
+                    json!({ "signed": signed, "key_id": key.key_id, "project": project })
+                );
             } else {
-                println!("Signed {signed} commits with {} key {}", signing::ALG, key.key_id);
+                println!(
+                    "Signed {signed} commits with {} key {}",
+                    signing::ALG,
+                    key.key_id
+                );
             }
         }
 
@@ -104,9 +122,14 @@ pub fn run(db_path: &Path, action: AuditAction, json_out: bool) -> Result<()> {
                 }
             }
             if json_out {
-                println!("{}", json!({ "valid": ok, "invalid": bad, "unsigned": unsigned, "project": project }));
+                println!(
+                    "{}",
+                    json!({ "valid": ok, "invalid": bad, "unsigned": unsigned, "project": project })
+                );
             } else {
-                println!("Signature verification: {ok} valid, {bad} invalid, {unsigned} unsigned commits");
+                println!(
+                    "Signature verification: {ok} valid, {bad} invalid, {unsigned} unsigned commits"
+                );
                 if bad > 0 {
                     bail!("{bad} invalid signature(s) — chain integrity FAILED");
                 }
@@ -131,13 +154,21 @@ pub fn run(db_path: &Path, action: AuditAction, json_out: bool) -> Result<()> {
                 rusqlite::params![project, iteration, agent, action, target, result, sidecar, tokens, model],
             )?;
             if json_out {
-                println!("{}", json!({ "recorded": true, "agent": agent, "action": action }));
+                println!(
+                    "{}",
+                    json!({ "recorded": true, "agent": agent, "action": action })
+                );
             } else {
                 println!("Recorded LLM decision: {agent} / {action}");
             }
         }
 
-        AuditAction::Report { project, item, format, to } => {
+        AuditAction::Report {
+            project,
+            item,
+            format,
+            to,
+        } => {
             let rep = audit::compile(&conn, &project, item.as_deref())?;
             let body = if format == "json" {
                 serde_json::to_string_pretty(&rep)?
@@ -151,7 +182,14 @@ pub fn run(db_path: &Path, action: AuditAction, json_out: bool) -> Result<()> {
                 if let Ok(secret) = read_secret(&key.sk_ref) {
                     let digest = signing::digest_hex(body.as_bytes());
                     let sig = signing::sign(&secret, body.as_bytes())?;
-                    signing::record_signature(&conn, "audit_report", &digest, &key.key_id, &sig, key.signer.as_deref())?;
+                    signing::record_signature(
+                        &conn,
+                        "audit_report",
+                        &digest,
+                        &key.key_id,
+                        &sig,
+                        key.signer.as_deref(),
+                    )?;
                     if format == "md" {
                         output.push_str(&format!(
                             "\n## 8 Cryptographic signature\n\n- Algorithm: {}\n- Key id: {}\n- Body SHA-256: `{}`\n- Signature (ML-DSA-87, hex, truncated): `{}…`\n\nVerify by recomputing the body SHA-256 and checking the signature against the public key in `crypto_keys`.\n",
@@ -184,7 +222,12 @@ fn restrict_windows_acl(path: &Path) {
     use std::process::Command;
     let p = path.to_string_lossy().to_string();
     let _ = Command::new("icacls")
-        .args([&p, "/inheritance:r", "/grant:r", &format!("{}:F", whoami_user())])
+        .args([
+            &p,
+            "/inheritance:r",
+            "/grant:r",
+            &format!("{}:F", whoami_user()),
+        ])
         .output();
 }
 

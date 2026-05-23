@@ -20,7 +20,10 @@ static CROSSREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"out/[\w./-]+\.d
 static MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<!--.*?-->").unwrap());
 static CELLCODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[DHI][-·.][NEC]\b").unwrap());
 static NUM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b\d[\d,'.]*\s*(packages?|%|percent|million|billion|days?|GB|MB|engineers?|FLOPs?)\b").unwrap()
+    Regex::new(
+        r"(?i)\b\d[\d,'.]*\s*(packages?|%|percent|million|billion|days?|GB|MB|engineers?|FLOPs?)\b",
+    )
+    .unwrap()
 });
 static NUMSRC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\(|http|doi|github|source|CAR-|§|cite|measured").unwrap());
@@ -38,19 +41,39 @@ pub fn findings_for(label: &str, text: &str) -> Vec<Finding> {
         let here = || Some(format!("{label}:{i}"));
         // ADR-0037 English-only (skip terms glossed in *…* or (…) just before).
         if let Some(m) = DE.find(ln) {
-            let glossed = ln[..m.start()].chars().rev().take(2).any(|c| c == '*' || c == '(');
+            let glossed = ln[..m.start()]
+                .chars()
+                .rev()
+                .take(2)
+                .any(|c| c == '*' || c == '(');
             if !glossed {
-                out.push(err("NON_ENGLISH_TEXT", format!("L{i}: German term '{}'", m.as_str()), here()));
+                out.push(err(
+                    "NON_ENGLISH_TEXT",
+                    format!("L{i}: German term '{}'", m.as_str()),
+                    here(),
+                ));
             }
         }
         if let Some(m) = CROSSREF.find(ln) {
-            out.push(err("CROSS_REFERENCE", format!("L{i}: build-path reference '{}'", m.as_str()), here()));
+            out.push(err(
+                "CROSS_REFERENCE",
+                format!("L{i}: build-path reference '{}'", m.as_str()),
+                here(),
+            ));
         }
         if MARKER.is_match(ln) {
-            out.push(err("INTERNAL_MARKER", format!("L{i}: HTML-comment marker"), here()));
+            out.push(err(
+                "INTERNAL_MARKER",
+                format!("L{i}: HTML-comment marker"),
+                here(),
+            ));
         }
         if CELLCODE.is_match(ln) {
-            out.push(err("CRYPTIC_LABEL", format!("L{i}: forbidden prediction-mode code (use full words)"), here()));
+            out.push(err(
+                "CRYPTIC_LABEL",
+                format!("L{i}: forbidden prediction-mode code (use full words)"),
+                here(),
+            ));
         }
         if NUM.is_match(ln) && !NUMSRC.is_match(ln) {
             out.push(Finding {
@@ -66,24 +89,50 @@ pub fn findings_for(label: &str, text: &str) -> Vec<Finding> {
         let raw = &cap[1];
         match serde_json::from_str::<Value>(raw) {
             Ok(spec) => {
-                let id = spec.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
-                let words = spec.get("caption").and_then(Value::as_str).unwrap_or("").split_whitespace().count();
+                let id = spec
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string();
+                let words = spec
+                    .get("caption")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .count();
                 if words > 12 {
-                    out.push(err("CAPTION_TOO_LONG", format!("{id}: caption {words} words (max 12)"), None));
+                    out.push(err(
+                        "CAPTION_TOO_LONG",
+                        format!("{id}: caption {words} words (max 12)"),
+                        None,
+                    ));
                 }
                 let typ = spec.get("type").and_then(Value::as_str).unwrap_or("");
                 if !GRAPHICAL.contains(&typ) {
-                    out.push(err("FIGURE_NOT_GRAPHICAL", format!("{id}: type '{typ}' not a real graphical figure"), None));
+                    out.push(err(
+                        "FIGURE_NOT_GRAPHICAL",
+                        format!("{id}: type '{typ}' not a real graphical figure"),
+                        None,
+                    ));
                 }
             }
-            Err(_) => out.push(err("FIGSPEC_INVALID", "figspec JSON parse error".into(), None)),
+            Err(_) => out.push(err(
+                "FIGSPEC_INVALID",
+                "figspec JSON parse error".into(),
+                None,
+            )),
         }
     }
     out
 }
 
 fn err(cat: &str, msg: String, loc: Option<String>) -> Finding {
-    Finding { category: cat.into(), severity: Severity::Error, message: msg, location: loc }
+    Finding {
+        category: cat.into(),
+        severity: Severity::Error,
+        message: msg,
+        location: loc,
+    }
 }
 
 /// Gate one document into a [`CheckReport`] (verdict Fail if any ERROR).
@@ -99,7 +148,10 @@ mod tests {
 
     #[test]
     fn clean_text_passes() {
-        let r = run_text("x.md", "# Title\n\nA clean English paragraph with a [source](http://x).\n");
+        let r = run_text(
+            "x.md",
+            "# Title\n\nA clean English paragraph with a [source](http://x).\n",
+        );
         assert_eq!(r.verdict, Verdict::Pass);
     }
 

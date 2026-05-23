@@ -32,14 +32,26 @@ struct BookSpec {
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 pub fn run(db_path: &Path, action: BookAction, json_out: bool) -> Result<()> {
     match action {
-        BookAction::Build { project, manifest, out, only } => {
-            build(db_path, &project, &manifest, &out, only.as_deref(), json_out)
-        }
+        BookAction::Build {
+            project,
+            manifest,
+            out,
+            only,
+        } => build(
+            db_path,
+            &project,
+            &manifest,
+            &out,
+            only.as_deref(),
+            json_out,
+        ),
         BookAction::Audit { current, previous } => audit(&current, previous.as_deref(), json_out),
     }
 }
@@ -69,8 +81,11 @@ fn build(
         // Per-book scratch dir in the system temp — created and DELETED within
         // this processing step so the output dir never accumulates intermediates
         // and a crash leaves at most one book's scratch (not a global wipe).
-        let work = std::env::temp_dir()
-            .join(format!("agentic_book_{}_{}", sanitize(&spec.key), std::process::id()));
+        let work = std::env::temp_dir().join(format!(
+            "agentic_book_{}_{}",
+            sanitize(&spec.key),
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work)?;
 
@@ -83,7 +98,12 @@ fn build(
                     "key": spec.key, "chapters": spec.chapters.len(), "figures": figs, "docx_bytes": bytes
                 }));
                 if !json_out {
-                    println!("  + {}.docx  ({} figures, {} chapters)", spec.key, figs, spec.chapters.len());
+                    println!(
+                        "  + {}.docx  ({} figures, {} chapters)",
+                        spec.key,
+                        figs,
+                        spec.chapters.len()
+                    );
                 }
             }
             Err(e) => eprintln!("  ! {} FAILED: {e}", spec.key),
@@ -95,9 +115,15 @@ fn build(
         serde_json::to_string_pretty(&serde_json::json!({ "books": report }))?,
     )?;
     if json_out {
-        println!("{}", serde_json::json!({ "built": built, "out": out.display().to_string() }));
+        println!(
+            "{}",
+            serde_json::json!({ "built": built, "out": out.display().to_string() })
+        );
     } else {
-        println!("Built {built} book(s) into {} (no intermediates left)", out.display());
+        println!(
+            "Built {built} book(s) into {} (no intermediates left)",
+            out.display()
+        );
     }
     Ok(())
 }
@@ -126,8 +152,14 @@ fn build_one(
     let meta = BookMeta {
         title: spec.title.clone(),
         subtitle: spec.subtitle.clone(),
-        author: spec.author.clone().unwrap_or_else(|| "Daniel Casota".into()),
-        context: spec.context.clone().unwrap_or_else(|| "MAS Cybersecurity, IWI, FHNW — May 2026".into()),
+        author: spec
+            .author
+            .clone()
+            .unwrap_or_else(|| "Daniel Casota".into()),
+        context: spec
+            .context
+            .clone()
+            .unwrap_or_else(|| "MAS Cybersecurity, IWI, FHNW — May 2026".into()),
     };
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));
@@ -210,7 +242,11 @@ fn audit(current: &Path, previous: Option<&Path>, json_out: bool) -> Result<()> 
                         fail = true;
                     }
                     if f.bytes * 2 < pf.bytes {
-                        notes.push(format!("size collapsed {}KB->{}KB", pf.bytes / 1024, f.bytes / 1024));
+                        notes.push(format!(
+                            "size collapsed {}KB->{}KB",
+                            pf.bytes / 1024,
+                            f.bytes / 1024
+                        ));
                         fail = true;
                     }
                     if !pf.has_heading_styles && f.has_heading_styles {
@@ -233,9 +269,19 @@ fn audit(current: &Path, previous: Option<&Path>, json_out: bool) -> Result<()> 
         rows.push(serde_json::json!({ "book": name, "figures": f.media, "heading_styles": f.has_heading_styles, "kb": f.bytes/1024, "notes": notes }));
     }
     if json_out {
-        println!("{}", serde_json::json!({ "books": rows, "verdict": if fail {"FAIL"} else {"PASS"} }));
+        println!(
+            "{}",
+            serde_json::json!({ "books": rows, "verdict": if fail {"FAIL"} else {"PASS"} })
+        );
     } else {
-        println!("--- render audit: {} ---", if fail { "FAIL (regressions found)" } else { "PASS" });
+        println!(
+            "--- render audit: {} ---",
+            if fail {
+                "FAIL (regressions found)"
+            } else {
+                "PASS"
+            }
+        );
     }
     if fail {
         std::process::exit(1);

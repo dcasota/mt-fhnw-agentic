@@ -137,7 +137,9 @@ pub fn skip(conn: &Connection, project_id: &str, path: &str) -> Result<()> {
         params![project_id, path],
     )?;
     if updated == 0 {
-        return Err(Error::InvalidInput(format!("inbox item not registered: {path}")));
+        return Err(Error::InvalidInput(format!(
+            "inbox item not registered: {path}"
+        )));
     }
     Ok(())
 }
@@ -161,7 +163,9 @@ pub fn retire(conn: &Connection, project_id: &str, path: &str) -> Result<String>
         })?;
     let (sha, state) = row;
     let sha = sha.ok_or_else(|| {
-        Error::InvalidInput(format!("inbox item {path} has no content_sha; cannot retire safely"))
+        Error::InvalidInput(format!(
+            "inbox item {path} has no content_sha; cannot retire safely"
+        ))
     })?;
     // Blob must exist — the retire is only safe if the content is recoverable.
     blob::get_blob(conn, &sha).map_err(|_| {
@@ -169,7 +173,10 @@ pub fn retire(conn: &Connection, project_id: &str, path: &str) -> Result<String>
             "blob {sha} for {path} is missing from the content store — refusing to retire"
         ))
     })?;
-    if !matches!(state.as_str(), "accepted" | "justified" | "skipped" | "archived") {
+    if !matches!(
+        state.as_str(),
+        "accepted" | "justified" | "skipped" | "archived"
+    ) {
         return Err(Error::InvalidInput(format!(
             "inbox item {path} is '{state}'; accept/justify/skip it before retiring"
         )));
@@ -309,12 +316,27 @@ pub fn process(
             None => false,
         };
         let (score, redundant, detail): (Option<f64>, bool, String) = if exact_dup {
-            (Some(1.0), true, format!("exact duplicate of {}", it.dup_of.as_deref().unwrap_or("?")))
+            (
+                Some(1.0),
+                true,
+                format!("exact duplicate of {}", it.dup_of.as_deref().unwrap_or("?")),
+            )
         } else if let Some((other, c)) = &near {
-            (Some(f64::from(*c)), true, format!("near-duplicate (cosine {c:.3}) of {}", &other[..other.len().min(12)]))
+            (
+                Some(f64::from(*c)),
+                true,
+                format!(
+                    "near-duplicate (cosine {c:.3}) of {}",
+                    &other[..other.len().min(12)]
+                ),
+            )
         } else if has_embedding {
             let best = best_cosine(conn, model.unwrap(), &sha)?;
-            (Some(f64::from(1.0 - best).max(0.0)), false, format!("novel; max corpus similarity {best:.3}"))
+            (
+                Some(f64::from(1.0 - best).max(0.0)),
+                false,
+                format!("novel; max corpus similarity {best:.3}"),
+            )
         } else {
             (None, false, "no embedding (run `agentic embed`)".into())
         };
@@ -323,7 +345,9 @@ pub fn process(
              WHERE project_id=?1 AND path=?2",
             params![project_id, it.path, score],
         )?;
-        record_decision(conn, project_id, agent, "rank", &it.path, "ok", model, score, &detail)?;
+        record_decision(
+            conn, project_id, agent, "rank", &it.path, "ok", model, score, &detail,
+        )?;
         rep.ranked += 1;
 
         // --- justify (auto claim-audit-result into the passport) ---
@@ -344,36 +368,127 @@ pub fn process(
             "justification": format!("Auto-processed by the inbox pipeline: {detail}."),
             "provenance": { "sources": [it.path], "method": "inbox auto-process (exact SHA + embedding cosine dedup)" }
         });
-        passport::append(conn, project_id, passport::Section::ClaimAuditResults, &car.to_string(), None, None)?;
+        passport::append(
+            conn,
+            project_id,
+            passport::Section::ClaimAuditResults,
+            &car.to_string(),
+            None,
+            None,
+        )?;
         conn.execute(
             "UPDATE inbox_items SET state='justified', placement=?3, justification=?4 \
              WHERE project_id=?1 AND path=?2",
             params![project_id, it.path, provisional, format!("auto: {detail}")],
         )?;
-        record_decision(conn, project_id, agent, "justify", &it.path, "ok", model, score, "auto claim-audit-result appended")?;
+        record_decision(
+            conn,
+            project_id,
+            agent,
+            "justify",
+            &it.path,
+            "ok",
+            model,
+            score,
+            "auto claim-audit-result appended",
+        )?;
 
         // --- accept | hold ---
         if redundant {
-            accept(conn, project_id, &it.path, score, Some("lowrankings"), None, false)?;
-            record_decision(conn, project_id, agent, "accept:lowrankings", &it.path, "warn", model, score, &detail)?;
+            accept(
+                conn,
+                project_id,
+                &it.path,
+                score,
+                Some("lowrankings"),
+                None,
+                false,
+            )?;
+            record_decision(
+                conn,
+                project_id,
+                agent,
+                "accept:lowrankings",
+                &it.path,
+                "warn",
+                model,
+                score,
+                &detail,
+            )?;
             rep.redundant += 1;
             rep.auto_accepted += 1;
         } else if let Some(s) = score {
             if s >= accept_threshold && auto_mainline {
-                accept(conn, project_id, &it.path, score, Some("thesis_main"), None, false)?;
-                record_decision(conn, project_id, agent, "accept:thesis_main", &it.path, "ok", model, score, "auto-mainline enabled")?;
+                accept(
+                    conn,
+                    project_id,
+                    &it.path,
+                    score,
+                    Some("thesis_main"),
+                    None,
+                    false,
+                )?;
+                record_decision(
+                    conn,
+                    project_id,
+                    agent,
+                    "accept:thesis_main",
+                    &it.path,
+                    "ok",
+                    model,
+                    score,
+                    "auto-mainline enabled",
+                )?;
                 rep.auto_accepted += 1;
             } else if s >= accept_threshold {
                 // Mainline inclusion is high-stakes → leave for HITL confirmation.
-                record_decision(conn, project_id, agent, "hold:HITL", &it.path, "info", model, score, "mainline placement requires HITL")?;
+                record_decision(
+                    conn,
+                    project_id,
+                    agent,
+                    "hold:HITL",
+                    &it.path,
+                    "info",
+                    model,
+                    score,
+                    "mainline placement requires HITL",
+                )?;
                 rep.held_for_hitl += 1;
             } else {
-                accept(conn, project_id, &it.path, score, Some("lowrankings"), None, false)?;
-                record_decision(conn, project_id, agent, "accept:lowrankings", &it.path, "ok", model, score, "below mainline threshold")?;
+                accept(
+                    conn,
+                    project_id,
+                    &it.path,
+                    score,
+                    Some("lowrankings"),
+                    None,
+                    false,
+                )?;
+                record_decision(
+                    conn,
+                    project_id,
+                    agent,
+                    "accept:lowrankings",
+                    &it.path,
+                    "ok",
+                    model,
+                    score,
+                    "below mainline threshold",
+                )?;
                 rep.auto_accepted += 1;
             }
         } else {
-            record_decision(conn, project_id, agent, "hold:HITL", &it.path, "info", None, None, "no embedding; cannot score novelty")?;
+            record_decision(
+                conn,
+                project_id,
+                agent,
+                "hold:HITL",
+                &it.path,
+                "info",
+                None,
+                None,
+                "no embedding; cannot score novelty",
+            )?;
             rep.held_for_hitl += 1;
             rep.no_embedding += 1;
         }

@@ -122,14 +122,26 @@ fn escape_typst(s: &str) -> String {
 /// in [`crate::docx`] consumes this stream in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocxBlock {
-    Heading { level: u8, text: String },
+    Heading {
+        level: u8,
+        text: String,
+    },
     Paragraph(Vec<DocxRun>),
     BulletItem(Vec<DocxRun>),
     OrderedItem(Vec<DocxRun>),
-    CodeBlock { lang: String, body: String },
+    CodeBlock {
+        lang: String,
+        body: String,
+    },
     HorizontalRule,
-    Table { header: Vec<String>, rows: Vec<Vec<String>> },
-    Image { path: String, caption: String },
+    Table {
+        header: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+    Image {
+        path: String,
+        caption: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,14 +325,19 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                 }
             }
             Event::Start(Tag::TableCell) => cur_cell.clear(),
-            Event::End(TagEnd::TableCell) => cur_row.push(std::mem::take(&mut cur_cell).trim().to_string()),
+            Event::End(TagEnd::TableCell) => {
+                cur_row.push(std::mem::take(&mut cur_cell).trim().to_string())
+            }
             // Images
             Event::Start(Tag::Image { dest_url, .. }) => {
                 img = Some((dest_url.into_string(), String::new()));
             }
             Event::End(TagEnd::Image) => {
                 if let Some((url, alt)) = img.take() {
-                    blocks.push(DocxBlock::Image { path: url, caption: alt });
+                    blocks.push(DocxBlock::Image {
+                        path: url,
+                        caption: alt,
+                    });
                 }
             }
             _ => {}

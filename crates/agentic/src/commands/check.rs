@@ -32,7 +32,11 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
             }
             agentic_checks::CheckReport::new("deliverable", findings)
         }
-        CheckAction::Tree { project, root, prefix } => {
+        CheckAction::Tree {
+            project,
+            root,
+            prefix,
+        } => {
             let r = agentic_checks::tree_integrity::run(&conn, &project, &root, &prefix)?;
             // Record the boot integrity verdict so the check is itself audited.
             let verdict = match r.verdict {

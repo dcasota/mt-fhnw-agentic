@@ -252,7 +252,10 @@ pub fn compile(conn: &Connection, project_id: &str, item: Option<&str>) -> Resul
             {
                 for s in srcs {
                     if let Some(ss) = s.as_str() {
-                        cited_by.entry(ss.to_owned()).or_default().push(placement.clone());
+                        cited_by
+                            .entry(ss.to_owned())
+                            .or_default()
+                            .push(placement.clone());
                     }
                 }
             }
@@ -277,15 +280,24 @@ pub fn compile(conn: &Connection, project_id: &str, item: Option<&str>) -> Resul
         // Match this corpus entry to any claim that cited it (by key or title).
         let mut embedded_into: Vec<String> = cited_by
             .iter()
-            .filter(|(src, _)| src.contains(&citation_key) || (!title.is_empty() && src.contains(title)))
+            .filter(|(src, _)| {
+                src.contains(&citation_key) || (!title.is_empty() && src.contains(title))
+            })
             .flat_map(|(_, items)| items.clone())
             .collect();
         embedded_into.sort();
         embedded_into.dedup();
         source_origins.push(SourceOrigin {
             apa7: apa7(&v),
-            kind: v.get("type").and_then(Value::as_str).unwrap_or("source").to_owned(),
-            ingest_source: v.get("ingest_source").and_then(Value::as_str).map(str::to_owned),
+            kind: v
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("source")
+                .to_owned(),
+            ingest_source: v
+                .get("ingest_source")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             dimension: v.get("dimension").and_then(Value::as_i64),
             citation_key,
             embedded_into,
@@ -342,7 +354,10 @@ pub fn compile(conn: &Connection, project_id: &str, item: Option<&str>) -> Resul
                 model: None,
                 tokens_used: None,
                 iteration: None,
-                detail: v.get("justification").and_then(Value::as_str).map(str::to_owned),
+                detail: v
+                    .get("justification")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 reconstructed: true,
             });
         }
@@ -371,8 +386,7 @@ pub fn compile(conn: &Connection, project_id: &str, item: Option<&str>) -> Resul
         None => false,
     };
     let active = signing::active_key(conn)?;
-    let total_commits: i64 =
-        conn.query_row("SELECT COUNT(*) FROM commits", [], |r| r.get(0))?;
+    let total_commits: i64 = conn.query_row("SELECT COUNT(*) FROM commits", [], |r| r.get(0))?;
     let signed_commits = signing::count_by_kind(conn, "commit")?;
     let seal = Seal {
         head_commit: head,
@@ -402,10 +416,10 @@ pub fn compile(conn: &Connection, project_id: &str, item: Option<&str>) -> Resul
 /// appended separately by the caller after signing the rendered body).
 pub fn render_markdown(rep: &AuditReport) -> String {
     let mut o = String::new();
-    let scope = rep
-        .item_filter
-        .as_deref()
-        .map_or_else(|| "whole project".to_owned(), |f| format!("item filter: `{f}`"));
+    let scope = rep.item_filter.as_deref().map_or_else(
+        || "whole project".to_owned(),
+        |f| format!("item filter: `{f}`"),
+    );
     o.push_str(&format!(
         "# Audit report — {} ({})\n\n_Project `{}` · generated {} · {scope}_\n\n",
         rep.project_name, rep.project_id, rep.project_id, rep.generated_at
@@ -425,7 +439,9 @@ pub fn render_markdown(rep: &AuditReport) -> String {
     ));
 
     o.push_str("## 2 What the user did (journal)\n\n");
-    o.push_str("| # | When | Actor | Action | Approval | Description |\n|---|---|---|---|---|---|\n");
+    o.push_str(
+        "| # | When | Actor | Action | Approval | Description |\n|---|---|---|---|---|---|\n",
+    );
     for a in &rep.user_actions {
         let appr = if a.approval_required {
             a.approval_given.as_deref().map_or("required", |_| "given")
@@ -439,22 +455,34 @@ pub fn render_markdown(rep: &AuditReport) -> String {
             a.actor,
             a.action_type,
             appr,
-            a.description.replace('|', "\\|").chars().take(140).collect::<String>()
+            a.description
+                .replace('|', "\\|")
+                .chars()
+                .take(140)
+                .collect::<String>()
         ));
     }
     o.push('\n');
 
     o.push_str("## 3 Change records (commit DAG, with authorship)\n\n");
-    o.push_str("| Commit | When | Actor kind | Iter | Signed | Message |\n|---|---|---|---|---|---|\n");
+    o.push_str(
+        "| Commit | When | Actor kind | Iter | Signed | Message |\n|---|---|---|---|---|---|\n",
+    );
     for c in &rep.changes {
         o.push_str(&format!(
             "| `{}` | {} | {} | {} | {} | {} |\n",
             &c.sha256[..c.sha256.len().min(12)],
             c.timestamp,
             c.actor_kind,
-            c.iteration.map(|i| i.to_string()).unwrap_or_else(|| "-".into()),
+            c.iteration
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "-".into()),
             if c.signed { "yes" } else { "NO" },
-            c.message.replace('|', "\\|").chars().take(100).collect::<String>()
+            c.message
+                .replace('|', "\\|")
+                .chars()
+                .take(100)
+                .collect::<String>()
         ));
     }
     o.push('\n');
@@ -466,7 +494,10 @@ pub fn render_markdown(rep: &AuditReport) -> String {
         } else {
             format!(" — embedded into: {}", s.embedded_into.join("; "))
         };
-        let src = s.ingest_source.as_deref().map_or(String::new(), |x| format!(" [{x}]"));
+        let src = s
+            .ingest_source
+            .as_deref()
+            .map_or(String::new(), |x| format!(" [{x}]"));
         o.push_str(&format!("- {}{}{}\n", s.apa7, src, by));
     }
     o.push('\n');
@@ -479,11 +510,23 @@ pub fn render_markdown(rep: &AuditReport) -> String {
             d.ts,
             d.agent,
             d.action.replace('|', "\\|"),
-            d.target.as_deref().unwrap_or("-").replace('|', "\\|").chars().take(60).collect::<String>(),
+            d.target
+                .as_deref()
+                .unwrap_or("-")
+                .replace('|', "\\|")
+                .chars()
+                .take(60)
+                .collect::<String>(),
             d.result,
             d.model.as_deref().unwrap_or("-"),
-            d.tokens_used.map(|t| t.to_string()).unwrap_or_else(|| "-".into()),
-            if d.reconstructed { "reconstructed" } else { "recorded" },
+            d.tokens_used
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "-".into()),
+            if d.reconstructed {
+                "reconstructed"
+            } else {
+                "recorded"
+            },
         ));
     }
     o.push('\n');
@@ -496,7 +539,12 @@ pub fn render_markdown(rep: &AuditReport) -> String {
         for v in &rep.verdicts {
             o.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
-                v.ts, v.checkpoint, v.verdict, v.iteration.map(|i| i.to_string()).unwrap_or_else(|| "-".into())
+                v.ts,
+                v.checkpoint,
+                v.verdict,
+                v.iteration
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "-".into())
             ));
         }
         o.push('\n');

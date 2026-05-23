@@ -38,7 +38,11 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
                     items.len() - pending
                 );
                 for i in &items {
-                    let dup = i.dup_of.as_deref().map(|d| format!("  dup-of={d}")).unwrap_or_default();
+                    let dup = i
+                        .dup_of
+                        .as_deref()
+                        .map(|d| format!("  dup-of={d}"))
+                        .unwrap_or_default();
                     let place = i.placement.as_deref().unwrap_or("-");
                     println!(
                         "  [{:<9}] {:<45} place={:<14} by={}{}",
@@ -60,10 +64,28 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
             }
         }
 
-        InboxAction::Accept { project, path, score, placement, justification, hitl } => {
-            inbox::accept(&conn, &project, &path, score, placement.as_deref(), justification.as_deref(), hitl)?;
+        InboxAction::Accept {
+            project,
+            path,
+            score,
+            placement,
+            justification,
+            hitl,
+        } => {
+            inbox::accept(
+                &conn,
+                &project,
+                &path,
+                score,
+                placement.as_deref(),
+                justification.as_deref(),
+                hitl,
+            )?;
             if !json_out {
-                println!("Accepted {path} ({}).", if hitl { "HITL" } else { "autonomous" });
+                println!(
+                    "Accepted {path} ({}).",
+                    if hitl { "HITL" } else { "autonomous" }
+                );
             }
         }
 
@@ -74,7 +96,11 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
             }
         }
 
-        InboxAction::Retire { project, path, root } => {
+        InboxAction::Retire {
+            project,
+            path,
+            root,
+        } => {
             // Core checks the precondition (blob present + accepted/justified/skipped)
             // and marks the item archived; we then delete the disk copy + journal it.
             let sha = inbox::retire(&conn, &project, &path)?;
@@ -102,17 +128,28 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
                 },
             )?;
             if json_out {
-                println!("{}", json!({ "retired": path, "disk_removed": removed, "blob": sha }));
+                println!(
+                    "{}",
+                    json!({ "retired": path, "disk_removed": removed, "blob": sha })
+                );
             } else {
                 println!(
                     "Retired {path}: disk copy {}, content preserved in DB ({}). 'check tree' will show it unmaterialised.",
-                    if removed { "removed" } else { "was already absent" },
+                    if removed {
+                        "removed"
+                    } else {
+                        "was already absent"
+                    },
                     &sha[..sha.len().min(12)]
                 );
             }
         }
 
-        InboxAction::Dedup { project, model, threshold } => {
+        InboxAction::Dedup {
+            project,
+            model,
+            threshold,
+        } => {
             let items = inbox::list(&conn, &project)?;
             let exact: Vec<_> = items.iter().filter(|i| i.dup_of.is_some()).collect();
             println!("=== exact duplicates (shared SHA-256): {} ===", exact.len());
@@ -125,8 +162,15 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
                     let mut found = 0;
                     for i in &items {
                         if let Some(sha) = &i.content_sha {
-                            if let Some((other, c)) = inbox::nearest_duplicate(&conn, &m, sha, threshold)? {
-                                println!("  {} ~ {} (cosine {:.3})", i.path, &other[..other.len().min(12)], c);
+                            if let Some((other, c)) =
+                                inbox::nearest_duplicate(&conn, &m, sha, threshold)?
+                            {
+                                println!(
+                                    "  {} ~ {} (cosine {:.3})",
+                                    i.path,
+                                    &other[..other.len().min(12)],
+                                    c
+                                );
                                 found += 1;
                             }
                         }
@@ -135,11 +179,19 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
                         println!("  none (or no embeddings yet — run `agentic embed`)");
                     }
                 }
-                None => println!("(pass --model <embed-model> to also check semantic near-duplicates)"),
+                None => {
+                    println!("(pass --model <embed-model> to also check semantic near-duplicates)")
+                }
             }
         }
 
-        InboxAction::Process { project, model, accept_threshold, near_dup, auto_mainline } => {
+        InboxAction::Process {
+            project,
+            model,
+            accept_threshold,
+            near_dup,
+            auto_mainline,
+        } => {
             let rep = inbox::process(
                 &conn,
                 &project,
@@ -154,10 +206,16 @@ pub fn run(db_path: &Path, action: InboxAction, json_out: bool) -> Result<()> {
             } else {
                 println!(
                     "Processed: {} ranked, {} auto-accepted ({} redundant), {} held for HITL ({} lacked embeddings).",
-                    rep.ranked, rep.auto_accepted, rep.redundant, rep.held_for_hitl, rep.no_embedding
+                    rep.ranked,
+                    rep.auto_accepted,
+                    rep.redundant,
+                    rep.held_for_hitl,
+                    rep.no_embedding
                 );
                 if rep.held_for_hitl > 0 {
-                    println!("  -> confirm held items with: agentic inbox accept --path <p> --placement thesis_main --hitl");
+                    println!(
+                        "  -> confirm held items with: agentic inbox accept --path <p> --placement thesis_main --hitl"
+                    );
                 }
             }
         }

@@ -50,23 +50,48 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
     for _ in 0..3 {
         doc = doc.add_paragraph(Paragraph::new());
     }
-    doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
-        Run::new().add_text(&m.title).bold().size(72).color(NAVY).fonts(head_fonts()),
-    ));
+    doc = doc.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(&m.title)
+                .bold()
+                .size(72)
+                .color(NAVY)
+                .fonts(head_fonts()),
+        ),
+    );
     if !m.subtitle.is_empty() {
-        doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
-            Run::new().add_text(&m.subtitle).size(30).color(GREY).fonts(head_fonts()),
-        ));
+        doc = doc.add_paragraph(
+            Paragraph::new().align(AlignmentType::Center).add_run(
+                Run::new()
+                    .add_text(&m.subtitle)
+                    .size(30)
+                    .color(GREY)
+                    .fonts(head_fonts()),
+            ),
+        );
     }
     for _ in 0..6 {
         doc = doc.add_paragraph(Paragraph::new());
     }
-    doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
-        Run::new().add_text(&m.author).size(28).color("1A1A1A").fonts(head_fonts()),
-    ));
-    doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
-        Run::new().add_text(&m.context).size(22).color(GREY).fonts(head_fonts()),
-    ));
+    doc = doc.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(&m.author)
+                .size(28)
+                .color("1A1A1A")
+                .fonts(head_fonts()),
+        ),
+    );
+    doc = doc.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(&m.context)
+                .size(22)
+                .color(GREY)
+                .fonts(head_fonts()),
+        ),
+    );
     doc.add_paragraph(page_break())
 }
 
@@ -81,12 +106,23 @@ fn heading_para(level: u8, text: &str, page_break_before: bool) -> Paragraph {
     if page_break_before {
         p = p.add_run(Run::new().add_break(BreakType::Page));
     }
-    p.add_run(Run::new().add_text(text).bold().size(size).color(color).fonts(head_fonts()))
+    p.add_run(
+        Run::new()
+            .add_text(text)
+            .bold()
+            .size(size)
+            .color(color)
+            .fonts(head_fonts()),
+    )
 }
 
 fn run_of(r: &DocxRun) -> Run {
     let mut run = Run::new().add_text(&r.text).size(22);
-    run = if r.code { run.fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO)) } else { run.fonts(body_fonts()) };
+    run = if r.code {
+        run.fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO))
+    } else {
+        run.fonts(body_fonts())
+    };
     if r.bold {
         run = run.bold();
     }
@@ -115,7 +151,10 @@ fn png_dims(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
-    let ncols = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(1)).max(1);
+    let ncols = header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(1))
+        .max(1);
     let colw = CONTENT_TWIPS / ncols;
     let mut trows = Vec::new();
     if !header.is_empty() {
@@ -125,9 +164,16 @@ fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
                 TableCell::new()
                     .shading(Shading::new().fill(HEADBG))
                     .width(colw, WidthType::Dxa)
-                    .add_paragraph(Paragraph::new().add_run(
-                        Run::new().add_text(h).bold().size(19).color("FFFFFF").fonts(body_fonts()),
-                    ))
+                    .add_paragraph(
+                        Paragraph::new().add_run(
+                            Run::new()
+                                .add_text(h)
+                                .bold()
+                                .size(19)
+                                .color("FFFFFF")
+                                .fonts(body_fonts()),
+                        ),
+                    )
             })
             .collect();
         trows.push(TableRow::new(cells));
@@ -141,31 +187,54 @@ fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
                 TableCell::new()
                     .shading(Shading::new().fill(fill))
                     .width(colw, WidthType::Dxa)
-                    .add_paragraph(Paragraph::new().add_run(
-                        Run::new().add_text(val).size(19).fonts(body_fonts()),
-                    )),
+                    .add_paragraph(
+                        Paragraph::new()
+                            .add_run(Run::new().add_text(val).size(19).fonts(body_fonts())),
+                    ),
             );
         }
         trows.push(TableRow::new(cells));
     }
-    Table::new(trows).set_grid(vec![colw; ncols]).width(CONTENT_TWIPS, WidthType::Dxa)
+    Table::new(trows)
+        .set_grid(vec![colw; ncols])
+        .width(CONTENT_TWIPS, WidthType::Dxa)
 }
 
-fn render_block(mut doc: Docx, b: &DocxBlock, figdir: &Path, figno: &mut u32, chapter_start: bool) -> Docx {
+fn render_block(
+    mut doc: Docx,
+    b: &DocxBlock,
+    figdir: &Path,
+    figno: &mut u32,
+    chapter_start: bool,
+) -> Docx {
     match b {
         DocxBlock::Heading { level, text } => {
             doc.add_paragraph(heading_para(*level, text, chapter_start && *level <= 2))
         }
         DocxBlock::Paragraph(runs) => doc.add_paragraph(para_of(runs)),
         DocxBlock::BulletItem(runs) => {
-            let mut p = Paragraph::new().add_run(Run::new().add_text("•  ").size(22).color(NAVY).bold().fonts(body_fonts()));
+            let mut p = Paragraph::new().add_run(
+                Run::new()
+                    .add_text("•  ")
+                    .size(22)
+                    .color(NAVY)
+                    .bold()
+                    .fonts(body_fonts()),
+            );
             for r in runs {
                 p = p.add_run(run_of(r));
             }
             doc.add_paragraph(p)
         }
         DocxBlock::OrderedItem(runs) => {
-            let mut p = Paragraph::new().add_run(Run::new().add_text("–  ").size(22).color(NAVY).bold().fonts(body_fonts()));
+            let mut p = Paragraph::new().add_run(
+                Run::new()
+                    .add_text("–  ")
+                    .size(22)
+                    .color(NAVY)
+                    .bold()
+                    .fonts(body_fonts()),
+            );
             for r in runs {
                 p = p.add_run(run_of(r));
             }
@@ -177,7 +246,12 @@ fn render_block(mut doc: Docx, b: &DocxBlock, figdir: &Path, figno: &mut u32, ch
                 if i > 0 {
                     p = p.add_run(Run::new().add_break(BreakType::TextWrapping));
                 }
-                p = p.add_run(Run::new().add_text(line).size(19).fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO)));
+                p = p.add_run(
+                    Run::new()
+                        .add_text(line)
+                        .size(19)
+                        .fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO)),
+                );
             }
             doc.add_paragraph(p)
         }
@@ -191,17 +265,35 @@ fn render_block(mut doc: Docx, b: &DocxBlock, figdir: &Path, figno: &mut u32, ch
                 *figno += 1;
                 let target_w: u32 = 5_400_000; // 15 cm in EMU
                 let h_emu = png_dims(&bytes)
-                    .map(|(w, h)| ((u64::from(h) * u64::from(target_w)) / u64::from(w.max(1))) as u32)
+                    .map(|(w, h)| {
+                        ((u64::from(h) * u64::from(target_w)) / u64::from(w.max(1))) as u32
+                    })
                     .unwrap_or(3_400_000);
                 let pic = Pic::new(&bytes).size(target_w, h_emu);
-                doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(Run::new().add_image(pic)));
-                doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
-                    Run::new().add_text(format!("Figure {}. {caption}", *figno)).italic().size(18).color(GREY).fonts(body_fonts()),
-                ))
+                doc = doc.add_paragraph(
+                    Paragraph::new()
+                        .align(AlignmentType::Center)
+                        .add_run(Run::new().add_image(pic)),
+                );
+                doc.add_paragraph(
+                    Paragraph::new().align(AlignmentType::Center).add_run(
+                        Run::new()
+                            .add_text(format!("Figure {}. {caption}", *figno))
+                            .italic()
+                            .size(18)
+                            .color(GREY)
+                            .fonts(body_fonts()),
+                    ),
+                )
             } else {
-                doc.add_paragraph(Paragraph::new().add_run(
-                    Run::new().add_text(format!("[figure missing: {path}]")).italic().color(GREY),
-                ))
+                doc.add_paragraph(
+                    Paragraph::new().add_run(
+                        Run::new()
+                            .add_text(format!("[figure missing: {path}]"))
+                            .italic()
+                            .color(GREY),
+                    ),
+                )
             }
         }
     }
@@ -213,7 +305,12 @@ fn render_block(mut doc: Docx, b: &DocxBlock, figdir: &Path, figno: &mut u32, ch
 /// field populates) + the caption style. docx-rs does not ship Heading styles,
 /// so referencing them without defining them yields an empty TOC.
 fn with_styles(mut doc: Docx) -> Docx {
-    let specs = [(1u8, 44usize, NAVY), (2, 32, NAVY), (3, 26, HEAD2), (4, 23, HEAD2)];
+    let specs = [
+        (1u8, 44usize, NAVY),
+        (2, 32, NAVY),
+        (3, 26, HEAD2),
+        (4, 23, HEAD2),
+    ];
     for (lvl, size, color) in specs {
         doc = doc.add_style(
             Style::new(format!("Heading{lvl}"), StyleType::Paragraph)
@@ -229,21 +326,42 @@ fn with_styles(mut doc: Docx) -> Docx {
     doc
 }
 
-pub fn render_book(meta: &BookMeta, chapters: &[(String, String)], figdir: &Path) -> Result<Vec<u8>> {
+pub fn render_book(
+    meta: &BookMeta,
+    chapters: &[(String, String)],
+    figdir: &Path,
+) -> Result<Vec<u8>> {
     let mut doc = with_styles(
         Docx::new()
             .default_fonts(body_fonts())
             .default_size(22)
             .page_size(11906, 16838)
-            .page_margin(PageMargin::new().top(1417).bottom(1417).left(1304).right(1304)),
+            .page_margin(
+                PageMargin::new()
+                    .top(1417)
+                    .bottom(1417)
+                    .left(1304)
+                    .right(1304),
+            ),
     )
-    .footer(Footer::new().add_paragraph(
-        Paragraph::new().align(AlignmentType::Center).add_page_num(PageNum::new()),
-    ));
+    .footer(
+        Footer::new().add_paragraph(
+            Paragraph::new()
+                .align(AlignmentType::Center)
+                .add_page_num(PageNum::new()),
+        ),
+    );
 
     doc = title_page(doc, meta);
     doc = doc.add_paragraph(
-        Paragraph::new().add_run(Run::new().add_text("Contents").bold().size(44).color(NAVY).fonts(head_fonts())),
+        Paragraph::new().add_run(
+            Run::new()
+                .add_text("Contents")
+                .bold()
+                .size(44)
+                .color(NAVY)
+                .fonts(head_fonts()),
+        ),
     );
     doc = doc.add_table_of_contents(TableOfContents::new().heading_styles_range(1, 3).auto());
     doc = doc.add_paragraph(page_break());
@@ -275,7 +393,8 @@ mod tests {
             author: "A".into(),
             context: "C".into(),
         };
-        let md = "# Chapter\n\nA **bold** paragraph.\n\n| H1 | H2 |\n|----|----|\n| a | b |\n".to_string();
+        let md = "# Chapter\n\nA **bold** paragraph.\n\n| H1 | H2 |\n|----|----|\n| a | b |\n"
+            .to_string();
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 2000);

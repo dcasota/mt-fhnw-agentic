@@ -8,8 +8,8 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::json;
 
-use agentic_core::worktree;
 use agentic_checks::normalize::normalize;
+use agentic_core::worktree;
 
 pub fn run(db_path: &Path, project: &str, prefix: &str, json_out: bool) -> Result<()> {
     let conn = agentic_core::db::open(db_path)?;
@@ -20,7 +20,12 @@ pub fn run(db_path: &Path, project: &str, prefix: &str, json_out: bool) -> Resul
         let orig = String::from_utf8_lossy(&blob.content).to_string();
         let norm = normalize(&orig);
         if norm != orig {
-            changed.push((path.clone(), norm.into_bytes(), "text/markdown".to_string(), None));
+            changed.push((
+                path.clone(),
+                norm.into_bytes(),
+                "text/markdown".to_string(),
+                None,
+            ));
         }
     }
     let n = changed.len();

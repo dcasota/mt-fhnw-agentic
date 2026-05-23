@@ -142,7 +142,10 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
                 }
             }
             if files.is_empty() {
-                anyhow::bail!("no readable files to ingest (list had {} entries)", rels.len());
+                anyhow::bail!(
+                    "no readable files to ingest (list had {} entries)",
+                    rels.len()
+                );
             }
             let msg = message.unwrap_or_else(|| format!("ingest {} files", files.len()));
             let commit_sha = worktree::put_many(&conn, &project, &files, &author, &msg, replace)?;
@@ -158,7 +161,11 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
                 );
             }
         }
-        ContentAction::Checkout { project, to, prefix } => {
+        ContentAction::Checkout {
+            project,
+            to,
+            prefix,
+        } => {
             let entries = worktree::list(&conn, &project, &prefix)?;
             let mut n = 0usize;
             for (path, sha) in &entries {

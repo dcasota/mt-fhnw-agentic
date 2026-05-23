@@ -5,17 +5,17 @@ mod book;
 mod check;
 mod config;
 mod content;
-#[path = "gen.rs"]
-mod generate;
-mod inbox;
-mod normalize;
 mod doctor;
 mod embed;
 mod export;
+#[path = "gen.rs"]
+mod generate;
 mod import;
+mod inbox;
 mod init;
 mod journal;
 mod migrate;
+mod normalize;
 mod passport;
 mod project;
 mod provider;
@@ -33,7 +33,9 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Content { action } => content::run(&args.db, action, args.json),
         Command::Audit { action } => audit::run(&args.db, action, args.json),
         Command::Inbox { action } => inbox::run(&args.db, action, args.json),
-        Command::Normalize { project, prefix } => normalize::run(&args.db, &project, &prefix, args.json),
+        Command::Normalize { project, prefix } => {
+            normalize::run(&args.db, &project, &prefix, args.json)
+        }
         Command::Book { action } => book::run(&args.db, action, args.json),
         Command::Gen { action } => generate::run(action, args.json),
         Command::Check { action } => check::run(&args.db, action, args.json).await,

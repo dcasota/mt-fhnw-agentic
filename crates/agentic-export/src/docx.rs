@@ -76,17 +76,23 @@ pub fn render(title: &str, chapters: &[Chapter]) -> Result<Vec<u8>> {
                     let mut d = doc;
                     if !header.is_empty() {
                         d = d.add_paragraph(
-                            Paragraph::new().add_run(Run::new().add_text(header.join(" | ")).bold()),
+                            Paragraph::new()
+                                .add_run(Run::new().add_text(header.join(" | ")).bold()),
                         );
                     }
                     for r in &rows {
-                        d = d.add_paragraph(Paragraph::new().add_run(Run::new().add_text(r.join(" | "))));
+                        d = d.add_paragraph(
+                            Paragraph::new().add_run(Run::new().add_text(r.join(" | "))),
+                        );
                     }
                     d
                 }
                 DocxBlock::Image { path, caption } => doc.add_paragraph(
-                    Paragraph::new()
-                        .add_run(Run::new().add_text(format!("[figure {path}: {caption}]")).italic()),
+                    Paragraph::new().add_run(
+                        Run::new()
+                            .add_text(format!("[figure {path}: {caption}]"))
+                            .italic(),
+                    ),
                 ),
             };
         }
