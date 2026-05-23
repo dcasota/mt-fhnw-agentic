@@ -437,4 +437,39 @@ pub enum ContentAction {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+    /// Bulk-stage many files into a project's working tree in a SINGLE commit.
+    /// Paths are stored relative to --root (forward-slash normalised). With
+    /// --from-list, only the listed paths are staged (use `-` for stdin);
+    /// otherwise --root is walked recursively (dot-dirs and target/ skipped).
+    Ingest {
+        #[arg(long)]
+        project: String,
+        /// Root directory the staged paths are taken relative to.
+        #[arg(long)]
+        root: PathBuf,
+        /// File of newline-separated relative paths to stage; `-` reads stdin.
+        #[arg(long)]
+        from_list: Option<String>,
+        /// Make HEAD's tree EXACTLY the staged set (clean mirror), instead of
+        /// merging onto the existing tree. History is still preserved.
+        #[arg(long)]
+        replace: bool,
+        #[arg(long, default_value = "import")]
+        author: String,
+        #[arg(long)]
+        message: Option<String>,
+    },
+    /// Write a project's entire working tree (filtered by --prefix) to disk.
+    /// This is the inverse of `ingest`: it reproduces the source tree from the
+    /// database so the store can serve as the authoritative source of truth.
+    Checkout {
+        #[arg(long)]
+        project: String,
+        /// Destination directory (created if absent).
+        #[arg(long)]
+        to: PathBuf,
+        /// Restrict to a path prefix in the working tree.
+        #[arg(long, default_value = "")]
+        prefix: String,
+    },
 }

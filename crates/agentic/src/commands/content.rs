@@ -98,8 +98,122 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
                 }
             }
         }
+        ContentAction::Ingest {
+            project,
+            root,
+            from_list,
+            replace,
+            author,
+            message,
+        } => {
+            // Collect the relative paths to stage: either an explicit list
+            // (e.g. `git ls-files`) or a recursive walk of --root.
+            let rels: Vec<String> = match &from_list {
+                Some(src) => {
+                    let text = if src == "-" {
+                        let mut s = String::new();
+                        std::io::stdin().read_to_string(&mut s)?;
+                        s
+                    } else {
+                        std::fs::read_to_string(src)
+                            .with_context(|| format!("reading list {src}"))?
+                    };
+                    text.lines()
+                        .map(|l| l.trim())
+                        .filter(|l| !l.is_empty())
+                        .map(|l| l.replace('\\', "/"))
+                        .collect()
+                }
+                None => walk_rel(&root)?,
+            };
+
+            let mut files: Vec<(String, Vec<u8>, String, Option<String>)> =
+                Vec::with_capacity(rels.len());
+            let mut skipped = 0usize;
+            for rel in &rels {
+                let native = rel.replace('/', std::path::MAIN_SEPARATOR_STR);
+                let abs = root.join(&native);
+                match std::fs::read(&abs) {
+                    Ok(bytes) => {
+                        let mime = mime_from_path_str(rel);
+                        files.push((rel.clone(), bytes, mime, None));
+                    }
+                    Err(_) => skipped += 1,
+                }
+            }
+            if files.is_empty() {
+                anyhow::bail!("no readable files to ingest (list had {} entries)", rels.len());
+            }
+            let msg = message.unwrap_or_else(|| format!("ingest {} files", files.len()));
+            let commit_sha = worktree::put_many(&conn, &project, &files, &author, &msg, replace)?;
+            if json_out {
+                println!(
+                    "{}",
+                    json!({ "commit": commit_sha, "staged": files.len(), "skipped": skipped })
+                );
+            } else {
+                println!(
+                    "{commit_sha}  staged {} files  (skipped {skipped} unreadable)",
+                    files.len()
+                );
+            }
+        }
+        ContentAction::Checkout { project, to, prefix } => {
+            let entries = worktree::list(&conn, &project, &prefix)?;
+            let mut n = 0usize;
+            for (path, sha) in &entries {
+                let b = blob::get_blob(&conn, sha)?;
+                let native = path.replace('/', std::path::MAIN_SEPARATOR_STR);
+                let target = to.join(&native);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("mkdir {}", parent.display()))?;
+                }
+                std::fs::write(&target, &b.content)
+                    .with_context(|| format!("writing {}", target.display()))?;
+                n += 1;
+            }
+            if json_out {
+                println!(
+                    "{}",
+                    json!({ "checked_out": n, "to": to.display().to_string() })
+                );
+            } else {
+                println!("Checked out {n} files to {}", to.display());
+            }
+        }
     }
     Ok(())
+}
+
+/// Recursively list files under `root` as forward-slash relative paths,
+/// skipping dot-directories and common build/cache dirs.
+fn walk_rel(root: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("reading dir {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if entry.file_type()?.is_dir() {
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || name == "__pycache__"
+                {
+                    continue;
+                }
+                stack.push(path);
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 fn read_source(from: &str) -> Result<Vec<u8>> {

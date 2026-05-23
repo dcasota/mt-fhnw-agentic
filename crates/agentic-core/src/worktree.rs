@@ -89,6 +89,78 @@ pub fn put_at(
     Ok(new_commit)
 }
 
+/// Stage many `(path, content, mime, lang)` blobs in a single commit. Existing
+/// entries with the same path are replaced; all other parent entries are
+/// preserved. This is the bulk equivalent of [`put_at`] and is what makes the
+/// content store a faithful, one-commit mirror of an on-disk source tree.
+/// Returns the new commit SHA.
+pub fn put_many(
+    conn: &Connection,
+    project_id: &str,
+    files: &[(String, Vec<u8>, String, Option<String>)],
+    author: &str,
+    message: &str,
+    replace: bool,
+) -> Result<String> {
+    let project = project::get(conn, project_id)?;
+    let branch_name = project_default_branch(project_id);
+
+    let parent_commit_sha = refs::get_ref(conn, &branch_name).ok().map(|r| r.commit_sha);
+    // When `replace` is set, HEAD's tree becomes EXACTLY the staged set (a clean
+    // snapshot); the parent commit is still linked so history is preserved.
+    // Otherwise the staged files are merged onto the parent tree.
+    let mut entries: Vec<TreeEntry> = if replace {
+        Vec::new()
+    } else if let Some(parent_sha) = &parent_commit_sha {
+        let parent_commit = commit::get_commit(conn, parent_sha)?;
+        get_tree(conn, &parent_commit.tree)?.entries
+    } else {
+        Vec::new()
+    };
+
+    // Index existing entries by name so each stage is a cheap replace-or-append
+    // instead of the O(n) scan `put_at` does per file.
+    let mut idx: std::collections::HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.name.clone(), i))
+        .collect();
+
+    for (path, content, mime, lang) in files {
+        let blob_sha = put_blob(conn, content, mime, lang.as_deref())?;
+        if let Some(&i) = idx.get(path) {
+            entries[i].target = blob_sha;
+        } else {
+            idx.insert(path.clone(), entries.len());
+            entries.push(TreeEntry {
+                name: path.clone(),
+                kind: EntryKind::Blob,
+                target: blob_sha,
+                mode: "100644".into(),
+            });
+        }
+    }
+
+    let tree_sha = put_tree(conn, entries)?;
+    let new_commit = put_commit(
+        conn,
+        &tree_sha,
+        parent_commit_sha.as_deref(),
+        None,
+        author,
+        "human",
+        None,
+        None,
+        message,
+    )?;
+    set_ref(conn, &branch_name, RefKind::Branch, &new_commit)?;
+    conn.execute(
+        "UPDATE projects SET head_ref = ?1 WHERE id = ?2",
+        rusqlite::params![branch_name, project.id],
+    )?;
+    Ok(new_commit)
+}
+
 /// Read the blob currently staged at `path` in the project's working tree.
 pub fn read_at(conn: &Connection, project_id: &str, path: &str) -> Result<Blob> {
     let tree = head_tree(conn, project_id)?
