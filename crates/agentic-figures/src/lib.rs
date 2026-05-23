@@ -29,6 +29,16 @@ const WONG: [RGBColor; 8] = [
 const INK: RGBColor = RGBColor(0x1a, 0x1a, 0x1a);
 const GRID: RGBColor = RGBColor(0xD7, 0xDD, 0xE5);
 const GREY: RGBColor = RGBColor(0x66, 0x66, 0x66);
+const BORDER: RGBColor = RGBColor(0x9B, 0xA7, 0xB8);
+const HEADBG: RGBColor = RGBColor(0x1F, 0x38, 0x64);
+const WHITEC: RGBColor = RGBColor(0xFF, 0xFF, 0xFF);
+// SWOT quadrant tints (tl, tr, bl, br) matching the matplotlib renderer.
+const SWOT: [RGBColor; 4] = [
+    RGBColor(0xE3, 0xEE, 0xF6),
+    RGBColor(0xFD, 0xF0, 0xDD),
+    RGBColor(0xFA, 0xE6, 0xE6),
+    RGBColor(0xE6, 0xF2, 0xEC),
+];
 
 fn font(size: i32) -> TextStyle<'static> {
     ("sans-serif", size).into_font().color(&INK)
@@ -36,8 +46,38 @@ fn font(size: i32) -> TextStyle<'static> {
 fn font_c(size: i32, color: &RGBColor) -> TextStyle<'static> {
     ("sans-serif", size).into_font().color(color)
 }
+fn font_b(size: i32, color: &RGBColor) -> TextStyle<'static> {
+    ("sans-serif", size)
+        .into_font()
+        .style(FontStyle::Bold)
+        .color(color)
+}
 fn centered(style: TextStyle<'static>) -> TextStyle<'static> {
     style.pos(Pos::new(HPos::Center, VPos::Center))
+}
+/// Draw the figure title (centred, bold, navy) at the top of the canvas.
+fn draw_title(a: &Area<'_>, s: &str, w: i32) -> Result<()> {
+    text(a, s, &centered(font_b(22, &NAVY)), w / 2, 30)
+}
+/// "Nice" axis ticks from 0 to max: returns (tick_max, step).
+fn nice_ticks(max: f64) -> (f64, f64) {
+    if max <= 0.0 {
+        return (1.0, 0.25);
+    }
+    let raw = max / 5.0;
+    let mag = 10f64.powf(raw.log10().floor());
+    let norm = raw / mag;
+    let step = if norm <= 1.0 {
+        1.0
+    } else if norm <= 2.0 {
+        2.0
+    } else if norm <= 5.0 {
+        5.0
+    } else {
+        10.0
+    } * mag;
+    let tick_max = (max / step).ceil() * step;
+    (tick_max, step)
 }
 
 type Area<'a> = DrawingArea<BitMapBackend<'a>, plotters::coord::Shift>;
@@ -194,61 +234,102 @@ fn render_bar(spec: &FigSpec, path: &Path, horizontal: bool) -> Result<()> {
         .get("xlabel")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let n = labels.len().max(values.len()).max(1);
-    let (w, h) = (
-        1000i32,
-        (220 + n as i32 * if horizontal { 56 } else { 0 }).max(620),
-    );
-    let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
-    root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
-    text(&root, &spec.title, &centered(font(22)), w / 2, 30)?;
-    let maxv = values.iter().cloned().fold(1.0_f64, f64::max) * 1.18;
-    let (ml, mr, mt, mb) = (70, 40, 70, 70);
-    let pw = w - ml - mr;
-    let ph = h - mt - mb;
+    let n = labels.len().max(values.len()).max(1) as i32;
+    let rawmax = values.iter().copied().fold(0.0_f64, f64::max);
+    let (tmax, step) = nice_ticks(rawmax);
+    let nt = (tmax / step).round() as i32;
+
     if horizontal {
-        let bh = (ph / n as i32).min(60);
-        for i in 0..n {
-            let v = values.get(i).copied().unwrap_or(0.0);
-            let y0 = mt + i as i32 * (ph / n as i32) + 6;
-            let y1 = y0 + bh - 6;
-            let bw = ((v / maxv) * pw as f64) as i32;
-            fill_rect(&root, ml, y0, ml + bw, y1, &WONG[i % 8])?;
+        let (w, h) = (1040i32, (150 + n * 54).max(420));
+        let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
+        root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
+        draw_title(&root, &spec.title, w)?;
+        let (ml, mr, mt, mb) = (240, 70, 70, 64);
+        let pw = w - ml - mr;
+        let ph = h - mt - mb;
+        for k in 0..=nt {
+            let xv = ml + ((f64::from(k) * step / tmax) * f64::from(pw)) as i32;
+            line(&root, vec![(xv, mt), (xv, mt + ph)], &GRID, 1)?;
             text(
                 &root,
-                labels.get(i).map(String::as_str).unwrap_or(""),
-                &font(13).pos(Pos::new(HPos::Right, VPos::Center)),
-                ml - 6,
-                (y0 + y1) / 2,
+                &fmt_num(f64::from(k) * step),
+                &centered(font_c(11, &GREY)),
+                xv,
+                mt + ph + 14,
             )?;
+        }
+        line(&root, vec![(ml, mt), (ml, mt + ph)], &BORDER, 1)?;
+        let slot = ph / n;
+        let bh = (f64::from(slot) * 0.6) as i32;
+        for i in 0..n {
+            let v = values.get(i as usize).copied().unwrap_or(0.0);
+            let y0 = mt + i * slot + (slot - bh) / 2;
+            let bw = ((v / tmax) * f64::from(pw)) as i32;
+            fill_rect(&root, ml, y0, ml + bw, y0 + bh, &WONG[i as usize % 8])?;
+            let lbl = labels.get(i as usize).map(String::as_str).unwrap_or("");
+            for (li, ln) in wrap(lbl, 28).iter().take(2).enumerate() {
+                text(
+                    &root,
+                    ln,
+                    &font(12).pos(Pos::new(HPos::Right, VPos::Center)),
+                    ml - 8,
+                    y0 + bh / 2 - 7 + li as i32 * 14,
+                )?;
+            }
             text(
                 &root,
                 &fmt_num(v),
-                &font_c(12, &INK).pos(Pos::new(HPos::Left, VPos::Center)),
+                &font_c(12, &NAVY).pos(Pos::new(HPos::Left, VPos::Center)),
                 ml + bw + 6,
-                (y0 + y1) / 2,
+                y0 + bh / 2,
             )?;
         }
+        if !xlabel.is_empty() {
+            text(
+                &root,
+                xlabel,
+                &centered(font_c(13, &GREY)),
+                ml + pw / 2,
+                h - 20,
+            )?;
+        }
+        root.present().map_err(|e| anyhow!("present: {e}"))?;
     } else {
-        let slot = pw / n as i32;
-        let bw = (slot as f64 * 0.6) as i32;
+        let (w, h) = (1040i32, 640i32);
+        let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
+        root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
+        draw_title(&root, &spec.title, w)?;
+        let (ml, mr, mt, mb) = (90, 50, 70, 96);
+        let pw = w - ml - mr;
+        let ph = h - mt - mb;
+        for k in 0..=nt {
+            let yv = mt + ph - ((f64::from(k) * step / tmax) * f64::from(ph)) as i32;
+            line(&root, vec![(ml, yv), (ml + pw, yv)], &GRID, 1)?;
+            text(
+                &root,
+                &fmt_num(f64::from(k) * step),
+                &font_c(11, &GREY).pos(Pos::new(HPos::Right, VPos::Center)),
+                ml - 8,
+                yv,
+            )?;
+        }
+        line(&root, vec![(ml, mt), (ml, mt + ph)], &BORDER, 1)?;
+        let slot = pw / n;
+        let bw = (f64::from(slot) * 0.6) as i32;
+        let y1 = mt + ph;
         for i in 0..n {
-            let v = values.get(i).copied().unwrap_or(0.0);
-            let bx = ml + i as i32 * slot + (slot - bw) / 2;
-            let bh = ((v / maxv) * ph as f64) as i32;
-            let y1 = mt + ph;
-            fill_rect(&root, bx, y1 - bh, bx + bw, y1, &WONG[i % 8])?;
-            for (li, ln) in wrap(labels.get(i).map(String::as_str).unwrap_or(""), 14)
-                .iter()
-                .take(2)
-                .enumerate()
-            {
+            let v = values.get(i as usize).copied().unwrap_or(0.0);
+            let bx = ml + i * slot + (slot - bw) / 2;
+            let bh = ((v / tmax) * f64::from(ph)) as i32;
+            fill_rect(&root, bx, y1 - bh, bx + bw, y1, &WONG[i as usize % 8])?;
+            let lbl = labels.get(i as usize).map(String::as_str).unwrap_or("");
+            for (li, ln) in wrap(lbl, 14).iter().take(2).enumerate() {
                 text(
                     &root,
                     ln,
                     &centered(font(12)),
                     bx + bw / 2,
-                    y1 + 14 + li as i32 * 14,
+                    y1 + 16 + li as i32 * 14,
                 )?;
             }
             text(
@@ -256,15 +337,20 @@ fn render_bar(spec: &FigSpec, path: &Path, horizontal: bool) -> Result<()> {
                 &fmt_num(v),
                 &centered(font_c(12, &NAVY)),
                 bx + bw / 2,
-                y1 - bh - 12,
+                y1 - bh - 11,
             )?;
         }
-        line(&root, vec![(ml, mt + ph), (ml + pw, mt + ph)], &GRID, 1)?;
+        if !xlabel.is_empty() {
+            text(
+                &root,
+                xlabel,
+                &centered(font_c(13, &GREY).transform(FontTransform::Rotate270)),
+                26,
+                mt + ph / 2,
+            )?;
+        }
+        root.present().map_err(|e| anyhow!("present: {e}"))?;
     }
-    if !xlabel.is_empty() {
-        text(&root, xlabel, &centered(font_c(13, &INK)), w / 2, h - 24)?;
-    }
-    root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
 
@@ -279,27 +365,35 @@ fn fmt_num(v: f64) -> String {
 fn render_line(spec: &FigSpec, path: &Path) -> Result<()> {
     let labels = strs(&spec.data, "labels");
     let values = nums(&spec.data, "values");
-    let (w, h) = (1000i32, 600i32);
+    let (w, h) = (1040i32, 600i32);
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
-    text(&root, &spec.title, &centered(font(22)), w / 2, 30)?;
-    let (ml, mr, mt, mb) = (70, 40, 70, 80);
+    draw_title(&root, &spec.title, w)?;
+    let (ml, mr, mt, mb) = (90, 50, 70, 80);
     let pw = w - ml - mr;
     let ph = h - mt - mb;
-    let maxv = values.iter().cloned().fold(1.0_f64, f64::max) * 1.15;
+    let rawmax = values.iter().copied().fold(0.0_f64, f64::max);
+    let (tmax, step) = nice_ticks(rawmax);
+    let nt = (tmax / step).round() as i32;
+    for k in 0..=nt {
+        let yv = mt + ph - ((f64::from(k) * step / tmax) * f64::from(ph)) as i32;
+        line(&root, vec![(ml, yv), (ml + pw, yv)], &GRID, 1)?;
+        text(
+            &root,
+            &fmt_num(f64::from(k) * step),
+            &font_c(11, &GREY).pos(Pos::new(HPos::Right, VPos::Center)),
+            ml - 8,
+            yv,
+        )?;
+    }
+    line(&root, vec![(ml, mt), (ml, mt + ph)], &BORDER, 1)?;
     let n = values.len().max(2);
-    line(
-        &root,
-        vec![(ml, mt), (ml, mt + ph), (ml + pw, mt + ph)],
-        &INK,
-        1,
-    )?;
     let pts: Vec<(i32, i32)> = values
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            let x = ml + (i as f64 / (n - 1) as f64 * pw as f64) as i32;
-            let y = mt + ph - ((v / maxv) * ph as f64) as i32;
+            let x = ml + (i as f64 / (n - 1) as f64 * f64::from(pw)) as i32;
+            let y = mt + ph - ((v / tmax) * f64::from(ph)) as i32;
             (x, y)
         })
         .collect();
@@ -337,24 +431,31 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
     let cell_w = 150i32;
     let cell_h = 64i32;
     let head_h = 60i32;
+    let legend = spec
+        .data
+        .get("legend")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let legend_h = if legend.is_empty() { 0 } else { 30 };
     let (w, h) = (
         rowlab_w + nc as i32 * cell_w + 40,
-        70 + head_h + nr as i32 * cell_h + 40,
+        70 + head_h + nr as i32 * cell_h + 30 + legend_h,
     );
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
-    text(&root, &spec.title, &centered(font(22)), w / 2, 28)?;
+    draw_title(&root, &spec.title, w)?;
     let ox = 20;
     let oy = 60;
-    // header
+    // top-left corner cell (navy, empty) + column headers (navy, bold white)
+    fill_rect(&root, ox, oy, ox + rowlab_w, oy + head_h, &HEADBG)?;
     for (c, ch) in cols.iter().enumerate() {
         let x0 = ox + rowlab_w + c as i32 * cell_w;
-        fill_rect(&root, x0, oy, x0 + cell_w, oy + head_h, &NAVY)?;
+        fill_rect(&root, x0, oy, x0 + cell_w, oy + head_h, &HEADBG)?;
         for (li, ln) in wrap(ch, 16).iter().take(2).enumerate() {
             text(
                 &root,
                 ln,
-                &centered(font_c(13, &WHITE)),
+                &centered(font_b(13, &WHITEC)),
                 x0 + cell_w / 2,
                 oy + 22 + li as i32 * 16,
             )?;
@@ -362,14 +463,9 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
     }
     for r in 0..nr {
         let y0 = oy + head_h + r as i32 * cell_h;
-        // row label
-        let shade = if r % 2 == 0 {
-            RGBColor(0xF4, 0xF6, 0xFA)
-        } else {
-            WHITE
-        };
-        fill_rect(&root, ox, y0, ox + rowlab_w, y0 + cell_h, &shade)?;
-        stroke_rect(&root, ox, y0, ox + rowlab_w, y0 + cell_h, &GRID, 1)?;
+        // row label — navy fill, bold white (like the header)
+        fill_rect(&root, ox, y0, ox + rowlab_w, y0 + cell_h, &HEADBG)?;
+        stroke_rect(&root, ox, y0, ox + rowlab_w, y0 + cell_h, &BORDER, 1)?;
         for (li, ln) in wrap(rows.get(r).map(String::as_str).unwrap_or(""), 30)
             .iter()
             .take(3)
@@ -378,15 +474,20 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
             text(
                 &root,
                 ln,
-                &font(12).pos(Pos::new(HPos::Left, VPos::Center)),
-                ox + 8,
+                &font_b(12, &WHITEC).pos(Pos::new(HPos::Left, VPos::Center)),
+                ox + 10,
                 y0 + cell_h / 2 - 12 + li as i32 * 15,
             )?;
         }
+        let shade = if r % 2 == 0 {
+            RGBColor(0xF4, 0xF6, 0xFA)
+        } else {
+            WHITEC
+        };
         for c in 0..nc {
             let x0 = ox + rowlab_w + c as i32 * cell_w;
             fill_rect(&root, x0, y0, x0 + cell_w, y0 + cell_h, &shade)?;
-            stroke_rect(&root, x0, y0, x0 + cell_w, y0 + cell_h, &GRID, 1)?;
+            stroke_rect(&root, x0, y0, x0 + cell_w, y0 + cell_h, &BORDER, 1)?;
             let val = cells
                 .get(r)
                 .and_then(|cr| cr.get(c))
@@ -403,6 +504,16 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
             }
         }
     }
+    if !legend.is_empty() {
+        let ly = oy + head_h + nr as i32 * cell_h + 18;
+        text(
+            &root,
+            &format!("Legend: {legend}"),
+            &font_c(11, &GREY).pos(Pos::new(HPos::Left, VPos::Center)),
+            ox,
+            ly,
+        )?;
+    }
     root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
@@ -412,15 +523,21 @@ fn render_quadrant(spec: &FigSpec, path: &Path) -> Result<()> {
     let (w, h) = (1000i32, 760i32);
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
-    text(&root, &spec.title, &centered(font(22)), w / 2, 28)?;
+    draw_title(&root, &spec.title, w)?;
     let (ox, oy) = (30, 60);
     let qw = (w - 60) / 2;
     let qh = (h - 90) / 2;
-    let cells = [("tl", 0, 0), ("tr", 1, 0), ("bl", 0, 1), ("br", 1, 1)];
-    for (i, (key, cx, cy)) in cells.iter().enumerate() {
+    // (key, col, row, swot-tint-index)
+    let cells = [
+        ("tl", 0, 0, 0),
+        ("tr", 1, 0, 1),
+        ("bl", 0, 1, 2),
+        ("br", 1, 1, 3),
+    ];
+    for (key, cx, cy, tint) in cells {
         let x0 = ox + cx * qw;
         let y0 = oy + cy * qh;
-        fill_rect(&root, x0, y0, x0 + qw, y0 + qh, &RGBColor(0xEE, 0xF2, 0xF8))?;
+        fill_rect(&root, x0, y0, x0 + qw, y0 + qh, &SWOT[tint])?;
         stroke_rect(&root, x0, y0, x0 + qw, y0 + qh, &NAVY, 2)?;
         let qd = q.get(key);
         let title = qd
@@ -430,29 +547,29 @@ fn render_quadrant(spec: &FigSpec, path: &Path) -> Result<()> {
         text(
             &root,
             title,
-            &font_c(15, &WONG[i % 8]).pos(Pos::new(HPos::Left, VPos::Top)),
-            x0 + 14,
-            y0 + 12,
+            &centered(font_b(15, &NAVY)),
+            x0 + qw / 2,
+            y0 + 22,
         )?;
         let items: Vec<String> = qd
             .and_then(|d| d.get("items"))
             .and_then(Value::as_array)
             .map(|a| a.iter().map(json_str).collect())
             .unwrap_or_default();
-        let mut yy = y0 + 46;
+        let mut yy = y0 + 52;
         for it in items.iter().take(6) {
             for (li, ln) in wrap(it, 40).iter().take(2).enumerate() {
-                let pre = if li == 0 { "• " } else { "  " };
+                let pre = if li == 0 { "•  " } else { "   " };
                 text(
                     &root,
                     &format!("{pre}{ln}"),
                     &font(12).pos(Pos::new(HPos::Left, VPos::Top)),
-                    x0 + 16,
+                    x0 + 18,
                     yy,
                 )?;
-                yy += 16;
+                yy += 17;
             }
-            yy += 2;
+            yy += 3;
         }
     }
     root.present().map_err(|e| anyhow!("present: {e}"))?;
@@ -554,7 +671,7 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
     let h = my + inner_h + 30;
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
-    text(&root, &spec.title, &centered(font(22)), w / 2, 28)?;
+    draw_title(&root, &spec.title, w)?;
 
     // node position (top-left), centring each layer vertically.
     let mut topleft = vec![(0i32, 0i32); n];
