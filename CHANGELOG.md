@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`skills/book-export/`** — a reusable book-export skill (function library +
+  driver) that turns curated DB content into professional A4 DOCX books:
+  `bookkit.py` (engine: Georgia/Calibri typography, block grammar, Word TOC,
+  page-referenced XE index, per-chapter "Sources & QR codes") + `build_book.py`
+  (driver: markdown→blocks converter, figure rendering via `render_figspec`,
+  front/back matter). One book = a manifest entry `{title, chapters:[…]}`. Used
+  to generate 23 thesis books (per dimension, per campaign+projects, solutions,
+  student notes, AI-audit), all verify_gate-compliant.
+
 - **`inbox` lifecycle** — DB-native port of the Scramblings inbox "meccano".
   `agentic inbox register | status | accept | skip | retire | dedup`. State is
   explicit (`queued → ranked → justified → accepted → archived | skipped`) rather

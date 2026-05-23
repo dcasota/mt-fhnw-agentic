@@ -110,7 +110,16 @@ crates/
 ├── agentic-export/       DOCX (FHNW template), PDF (Typst), markdown
 ├── agentic-tui/          ratatui onboarding wizard
 └── agentic-resources/    embedded templates, stylesheets, ADR/schema seeds
+
+skills/
+└── book-export/         bookkit engine + build_book driver — turn DB content
+                         into professional DOCX books (TOC, index, QR, figures)
 ```
+
+**Book export** — `skills/book-export/` renders curated content into professional
+A4 DOCX books (one book = title + ordered chapter sources): `python
+skills/book-export/build_book.py --manifest books.json --src <sources> --tools
+<code/tools> --out <dir>`. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §9.
 
 Full diagrams and the data model are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 

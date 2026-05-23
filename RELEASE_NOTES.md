@@ -12,7 +12,7 @@ change list see [`CHANGELOG.md`](CHANGELOG.md); for concepts see
 | 0.1.0 | v1 | iter 1–7 | Storage layer, content DAG, project/journal/passport, import, export |
 | 0.1.1 | v1 | iter 7–8 | Import per-file failures surfaced; ARM Linux native build; bootstrap `--json` |
 | 0.1.3 | v2–v3 | iter 8–13 | Wizard drafts (v2); embeddings (v3); checks; EN-core; quality remediation |
-| 0.1.3+ (unreleased) | **v4** | **iter 13–14** | **content ingest/checkout (DB = source of truth); PQC audit + ML-DSA-87 signing** |
+| 0.1.3+ (unreleased) | **v4–v5** | **iter 13–14** | **content ingest/checkout (DB = source of truth); PQC audit + ML-DSA-87 signing; check-tree boot gate; inbox lifecycle; book-export skill** |
 
 ## Database schema history
 
