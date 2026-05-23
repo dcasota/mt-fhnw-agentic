@@ -5,6 +5,7 @@ mod check;
 mod config;
 mod content;
 mod inbox;
+mod normalize;
 mod doctor;
 mod embed;
 mod export;
@@ -29,6 +30,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Content { action } => content::run(&args.db, action, args.json),
         Command::Audit { action } => audit::run(&args.db, action, args.json),
         Command::Inbox { action } => inbox::run(&args.db, action, args.json),
+        Command::Normalize { project, prefix } => normalize::run(&args.db, &project, &prefix, args.json),
         Command::Check { action } => check::run(&args.db, action, args.json).await,
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,

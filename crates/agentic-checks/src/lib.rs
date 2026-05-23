@@ -11,6 +11,8 @@
 
 pub mod citation_tracker;
 pub mod contamination;
+pub mod deliverable_gate;
+pub mod normalize;
 pub mod self_check;
 pub mod tree_integrity;
 pub mod writing_quality;

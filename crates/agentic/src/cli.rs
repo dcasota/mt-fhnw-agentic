@@ -188,6 +188,16 @@ pub enum Command {
         #[command(subcommand)]
         action: InboxAction,
     },
+
+    /// Deterministically normalise content-store markdown (expand prediction×mode
+    /// codes, shorten over-long figure captions, apply verified-facts
+    /// corrections). Writes changed blobs back in a single commit.
+    Normalize {
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = "out/sources/")]
+        prefix: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -437,6 +447,15 @@ pub enum CheckAction {
         root: std::path::PathBuf,
         /// Restrict to a path prefix (e.g. "specs/").
         #[arg(long, default_value = "")]
+        prefix: String,
+    },
+    /// Deliverable acceptance gate (ADR-0036/0037/0038 + figure-standards) over
+    /// content-store markdown. Fails on any ERROR finding.
+    Deliverable {
+        #[arg(long)]
+        project: String,
+        /// Restrict to a path prefix (e.g. "out/sources/").
+        #[arg(long, default_value = "out/sources/")]
         prefix: String,
     },
 }

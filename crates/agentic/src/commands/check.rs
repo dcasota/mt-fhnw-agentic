@@ -22,6 +22,16 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
         CheckAction::Contamination { project, offline } => {
             agentic_checks::contamination::run(&conn, &project, !offline).await?
         }
+        CheckAction::Deliverable { project, prefix } => {
+            let entries = agentic_core::worktree::list(&conn, &project, &prefix)?;
+            let mut findings = Vec::new();
+            for (path, _sha) in entries.iter().filter(|(p, _)| p.ends_with(".md")) {
+                let blob = agentic_core::worktree::read_at(&conn, &project, path)?;
+                let text = String::from_utf8_lossy(&blob.content);
+                findings.extend(agentic_checks::deliverable_gate::findings_for(path, &text));
+            }
+            agentic_checks::CheckReport::new("deliverable", findings)
+        }
         CheckAction::Tree { project, root, prefix } => {
             let r = agentic_checks::tree_integrity::run(&conn, &project, &root, &prefix)?;
             // Record the boot integrity verdict so the check is itself audited.
