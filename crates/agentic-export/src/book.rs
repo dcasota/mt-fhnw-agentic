@@ -10,8 +10,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use docx_rs::{
-    AlignmentType, BreakType, Docx, PageMargin, Paragraph, Pic, Run, RunFonts, Shading, Table,
-    TableCell, TableOfContents, TableRow, WidthType,
+    AlignmentType, BreakType, Docx, Footer, PageMargin, PageNum, Paragraph, Pic, Run, RunFonts,
+    Shading, Style, StyleType, Table, TableCell, TableOfContents, TableRow, WidthType,
 };
 
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
@@ -209,12 +209,37 @@ fn render_block(mut doc: Docx, b: &DocxBlock, figdir: &Path, figno: &mut u32, ch
 
 /// Render a complete book to DOCX bytes. `chapters` are `(label, markdown)`
 /// with figures already rendered under `figdir`.
+/// Define the Heading1–4 paragraph styles (with outline levels so the Word TOC
+/// field populates) + the caption style. docx-rs does not ship Heading styles,
+/// so referencing them without defining them yields an empty TOC.
+fn with_styles(mut doc: Docx) -> Docx {
+    let specs = [(1u8, 44usize, NAVY), (2, 32, NAVY), (3, 26, HEAD2), (4, 23, HEAD2)];
+    for (lvl, size, color) in specs {
+        doc = doc.add_style(
+            Style::new(format!("Heading{lvl}"), StyleType::Paragraph)
+                .name(format!("heading {lvl}"))
+                .based_on("Normal")
+                .size(size)
+                .bold()
+                .color(color)
+                .fonts(head_fonts())
+                .outline_lvl(usize::from(lvl) - 1),
+        );
+    }
+    doc
+}
+
 pub fn render_book(meta: &BookMeta, chapters: &[(String, String)], figdir: &Path) -> Result<Vec<u8>> {
-    let mut doc = Docx::new()
-        .default_fonts(body_fonts())
-        .default_size(22)
-        .page_size(11906, 16838)
-        .page_margin(PageMargin::new().top(1417).bottom(1417).left(1304).right(1304));
+    let mut doc = with_styles(
+        Docx::new()
+            .default_fonts(body_fonts())
+            .default_size(22)
+            .page_size(11906, 16838)
+            .page_margin(PageMargin::new().top(1417).bottom(1417).left(1304).right(1304)),
+    )
+    .footer(Footer::new().add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_page_num(PageNum::new()),
+    ));
 
     doc = title_page(doc, meta);
     doc = doc.add_paragraph(

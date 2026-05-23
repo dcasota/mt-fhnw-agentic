@@ -199,21 +199,11 @@ pub enum Command {
         prefix: String,
     },
 
-    /// Render professional DOCX books from a manifest, sourcing chapter markdown
-    /// from the content store and rendering figspec figures (the Rust book
-    /// engine). Manifest: {"books":[{"key","title","subtitle","chapters":[…]}]}.
+    /// Render professional DOCX books (the Rust book engine) and audit render
+    /// quality against the previous iteration.
     Book {
-        #[arg(long)]
-        project: String,
-        /// Path to the books manifest JSON.
-        #[arg(long)]
-        manifest: PathBuf,
-        /// Output directory for the .docx files.
-        #[arg(long)]
-        out: PathBuf,
-        /// Build only this book key.
-        #[arg(long)]
-        only: Option<String>,
+        #[command(subcommand)]
+        action: BookAction,
     },
 
     /// Assemble a generation prompt with the mandatory rules prepended (Rust port
@@ -221,6 +211,34 @@ pub enum Command {
     Gen {
         #[command(subcommand)]
         action: GenAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BookAction {
+    /// Render books from a manifest, sourcing chapters from the content store.
+    /// Manifest: {"books":[{"key","title","subtitle","chapters":[DB paths]}]}.
+    Build {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Output directory for the .docx files (kept clean: only .docx + report).
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        only: Option<String>,
+    },
+    /// Audit render quality of a books directory, comparing each book against
+    /// the previous iteration (figures, heading styles, page size, size). Fails
+    /// on regression.
+    Audit {
+        /// Current books directory.
+        #[arg(long)]
+        current: PathBuf,
+        /// Previous iteration's books directory to compare against.
+        #[arg(long)]
+        previous: Option<PathBuf>,
     },
 }
 

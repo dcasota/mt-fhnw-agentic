@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 2026-05-23
 
+### Fixed — book render quality + the missing render-audit gate
+
+- **Heading styles now defined** (`Heading1–4` with outline levels): docx-rs ships
+  no heading styles, so the prior `agentic book` referenced them undefined →
+  **empty TOC** and inconsistent heading formatting. Now defined, so the Word TOC
+  field populates and headings are consistent (Calibri/navy).
+- **Page-number footer** restored (`Footer` + `PageNum`).
+- **`agentic book build` leaves no intermediates**: figures render in a per-book
+  system-temp scratch dir created and deleted *within* the step (not a global
+  `_work/` in the output, not a blanket end-of-run wipe). Output dir holds only
+  `.docx` + a `_render_report.json`.
+- **`agentic book audit --current <dir> [--previous <dir>]`** — the render-quality
+  gate that was missing: inspects each rendered DOCX (figure count, Heading-style
+  presence, page size, byte size) and **compares against the previous iteration**,
+  failing on regression (figures dropped, size collapsed, heading styles lost).
+  This is why the earlier regression went undetected — `check deliverable` only
+  validates *source* policy, never *rendered* fidelity.
+- **All 21 Python toolchain scripts purged** from the content store (figures,
+  gate, normalize, book builders, `gen_*`, `prompt_rules` are now Rust). The
+  framework is Rust-only.
+
 ### Changed — Python→Rust toolchain migration
 
 - **`agentic book` (Rust book engine)** replaces the Python `bookkit`/`build_book`

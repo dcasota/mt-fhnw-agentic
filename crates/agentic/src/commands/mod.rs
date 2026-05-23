@@ -34,9 +34,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Audit { action } => audit::run(&args.db, action, args.json),
         Command::Inbox { action } => inbox::run(&args.db, action, args.json),
         Command::Normalize { project, prefix } => normalize::run(&args.db, &project, &prefix, args.json),
-        Command::Book { project, manifest, out, only } => {
-            book::run(&args.db, &project, &manifest, &out, only.as_deref(), args.json)
-        }
+        Command::Book { action } => book::run(&args.db, action, args.json),
         Command::Gen { action } => generate::run(action, args.json),
         Command::Check { action } => check::run(&args.db, action, args.json).await,
         Command::Doctor => doctor::run(args.json),
