@@ -30,6 +30,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # agentic-figures -> plotters -> font-kit -> fontconfig-sys needs these on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev pkg-config fonts-dejavu-core
       # Note: pedantic + nursery lints are warn-level workspace-wide.
       # We don't `-D warnings` yet — that lands once the existing
       # warnings are systematically addressed (tracking issue: #N).
@@ -46,6 +48,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Linux: figure rendering (plotters/font-kit) needs fontconfig + a font.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev pkg-config fonts-dejavu-core
       - run: cargo test --workspace --all-features
 
   audit:
