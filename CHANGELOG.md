@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`check tree`** — boot-time DB⇄disk integrity gate. Compares every on-disk
+  file (under an optional `--prefix`, skipping dot-dirs/`target`/`node_modules`/
+  `__pycache__` and the DB files) against its DB blob: on-disk files that differ
+  are `tree-drift` (Error → FAIL → exit 1), on-disk files not in the DB are
+  `tree-untracked` (Warn), DB paths not materialised are `tree-unmaterialised`
+  (Info). Records the verdict in `audit_verdicts`. New core
+  `worktree::reconcile`. Run after `check self` at session start.
 - **`content ingest` + `content checkout`** — the database can now be the source
   of truth. `ingest` bulk-stages many files in a single commit (`--from-list`
   for an explicit `git ls-files` set; `--replace` makes HEAD's tree exactly the

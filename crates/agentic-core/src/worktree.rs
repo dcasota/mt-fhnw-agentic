@@ -192,6 +192,98 @@ pub fn list(conn: &Connection, project_id: &str, prefix: &str) -> Result<Vec<(St
     Ok(out)
 }
 
+/// Result of comparing the DB working tree against the on-disk files.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReconcileReport {
+    /// On-disk files present in the DB with identical bytes.
+    pub matched: usize,
+    /// On-disk files present in the DB but with DIFFERENT bytes (integrity drift).
+    pub modified: Vec<String>,
+    /// On-disk files (under prefix) NOT present in the DB (un-ingested).
+    pub extra_on_disk: Vec<String>,
+    /// DB paths NOT materialised on disk (expected after a checkout-only setup).
+    pub missing_on_disk: Vec<String>,
+}
+
+/// Compare the project's DB working tree against the files on disk under `root`
+/// (filtered by `prefix`). Dot-directories, `target/`, `node_modules/`,
+/// `__pycache__/`, and the database files themselves are skipped. This is the
+/// boot-time integrity check: any on-disk file that differs from its DB blob is
+/// `modified` (drift); a file in the DB but not on disk is merely
+/// `missing_on_disk` (not materialised).
+pub fn reconcile(
+    conn: &Connection,
+    project_id: &str,
+    prefix: &str,
+    root: &std::path::Path,
+) -> Result<ReconcileReport> {
+    use std::collections::{HashMap, HashSet};
+    let db: HashMap<String, String> = list(conn, project_id, prefix)?.into_iter().collect();
+
+    // Walk the on-disk tree under root, collecting forward-slash relative paths.
+    let mut disk_paths: Vec<String> = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || name == "__pycache__"
+                {
+                    continue;
+                }
+                stack.push(path);
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if rel == ".project-id" || rel.starts_with("thesis.db") {
+                    continue;
+                }
+                if prefix.is_empty() || rel.starts_with(prefix) {
+                    disk_paths.push(rel);
+                }
+            }
+        }
+    }
+
+    let disk_set: HashSet<&String> = disk_paths.iter().collect();
+    let (mut modified, mut extra_on_disk) = (Vec::new(), Vec::new());
+    let mut matched = 0usize;
+    for rel in &disk_paths {
+        match db.get(rel) {
+            Some(sha) => {
+                let blob = blob::get_blob(conn, sha)?;
+                let native = rel.replace('/', std::path::MAIN_SEPARATOR_STR);
+                let disk_bytes = std::fs::read(root.join(native)).unwrap_or_default();
+                if disk_bytes == blob.content {
+                    matched += 1;
+                } else {
+                    modified.push(rel.clone());
+                }
+            }
+            None => extra_on_disk.push(rel.clone()),
+        }
+    }
+    let mut missing_on_disk: Vec<String> = db
+        .keys()
+        .filter(|p| !disk_set.contains(*p))
+        .cloned()
+        .collect();
+    modified.sort();
+    extra_on_disk.sort();
+    missing_on_disk.sort();
+    Ok(ReconcileReport {
+        matched,
+        modified,
+        extra_on_disk,
+        missing_on_disk,
+    })
+}
+
 /// Resolve the project's HEAD commit's tree (None if no commits yet).
 pub fn head_tree(conn: &Connection, project_id: &str) -> Result<Option<Tree>> {
     let branch_name = project_default_branch(project_id);

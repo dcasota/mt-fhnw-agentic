@@ -22,6 +22,21 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
         CheckAction::Contamination { project, offline } => {
             agentic_checks::contamination::run(&conn, &project, !offline).await?
         }
+        CheckAction::Tree { project, root, prefix } => {
+            let r = agentic_checks::tree_integrity::run(&conn, &project, &root, &prefix)?;
+            // Record the boot integrity verdict so the check is itself audited.
+            let verdict = match r.verdict {
+                Verdict::Pass => "PASS",
+                Verdict::Warn => "WARN",
+                Verdict::Fail => "FAIL",
+            };
+            let _ = conn.execute(
+                "INSERT INTO audit_verdicts (project_id, checkpoint, verdict, findings_json) \
+                 VALUES (?1, 'pre_iteration', ?2, ?3)",
+                rusqlite::params![project, verdict, serde_json::to_string(&r.findings).ok()],
+            );
+            r
+        }
     };
     print_report(&report, json_out);
     if matches!(report.verdict, Verdict::Fail) {

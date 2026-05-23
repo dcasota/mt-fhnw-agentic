@@ -341,6 +341,17 @@ pub enum CheckAction {
         #[arg(long)]
         offline: bool,
     },
+    /// Boot integrity: do the on-disk files still match the DB? Fails on drift.
+    Tree {
+        #[arg(long)]
+        project: String,
+        /// Root directory the DB paths are relative to.
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
+        /// Restrict to a path prefix (e.g. "specs/").
+        #[arg(long, default_value = "")]
+        prefix: String,
+    },
 }
 
 #[derive(Debug, clap::Args)]

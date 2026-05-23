@@ -12,6 +12,7 @@
 pub mod citation_tracker;
 pub mod contamination;
 pub mod self_check;
+pub mod tree_integrity;
 pub mod writing_quality;
 
 use serde::{Deserialize, Serialize};

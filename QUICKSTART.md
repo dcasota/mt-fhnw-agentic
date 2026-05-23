@@ -70,6 +70,33 @@ git/DB, because PQC keys exceed the OS-keychain blob limit). Back it up securely
 losing it means you can sign new commits with a new key but cannot reproduce the
 old signatures. See [`AUDIT.md`](AUDIT.md).
 
+## 4b Boot integrity check (DB ⇄ disk)
+
+When source files are materialised on disk *and* stored in the DB, they can
+drift. Run the boot check at the **start of every session** — it fails (exit 1)
+if any on-disk file differs from its DB blob:
+
+```powershell
+& $agx check self                                  # DB structural integrity
+& $agx check tree --project $proj --root "."        # DB ⇄ disk consistency (boot gate)
+& $agx check tree --project $proj --root "." --prefix "specs/"   # scope to one area
+```
+
+- **`tree-drift` (Error → FAIL)**: an on-disk file differs from the DB → reconcile
+  before working. Restore the authoritative bytes from the DB (not git, which may
+  re-apply line-ending normalisation):
+  ```powershell
+  & $agx content checkout --project $proj --to "." --prefix "specs/adr/0039-….md"
+  ```
+  Or, if the on-disk edit is the intended new truth, capture it:
+  `agentic content ingest … --replace`.
+- **`tree-untracked` (Warn)**: a file on disk is not yet in the DB → `content ingest`.
+- **`tree-unmaterialised` (Info)**: a DB path isn't on disk (expected when the DB
+  is the file's only home) → `content checkout` if you need it locally.
+
+The verdict is recorded in `audit_verdicts` (checkpoint `pre_iteration`), so the
+boot check is itself part of the audit trail.
+
 ## 5 A typical iteration
 
 ```
