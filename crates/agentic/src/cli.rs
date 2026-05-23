@@ -215,6 +215,30 @@ pub enum Command {
         #[arg(long)]
         only: Option<String>,
     },
+
+    /// Assemble a generation prompt with the mandatory rules prepended (Rust port
+    /// of prompt_rules.py + gen_*.py). Pipe the output to your LLM CLI.
+    Gen {
+        #[command(subcommand)]
+        action: GenAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GenAction {
+    /// Print the mandatory generation + figure rules only.
+    Rules,
+    /// Print a rule-prefixed prompt for an artefact kind.
+    Prompt {
+        /// dimension | campaign | project | condense | generic
+        #[arg(long, default_value = "generic")]
+        kind: String,
+        #[arg(long)]
+        topic: String,
+        /// Extra task-specific instructions.
+        #[arg(long)]
+        extra: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

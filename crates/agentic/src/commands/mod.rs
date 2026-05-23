@@ -5,6 +5,8 @@ mod book;
 mod check;
 mod config;
 mod content;
+#[path = "gen.rs"]
+mod generate;
 mod inbox;
 mod normalize;
 mod doctor;
@@ -35,6 +37,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Book { project, manifest, out, only } => {
             book::run(&args.db, &project, &manifest, &out, only.as_deref(), args.json)
         }
+        Command::Gen { action } => generate::run(action, args.json),
         Command::Check { action } => check::run(&args.db, action, args.json).await,
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,

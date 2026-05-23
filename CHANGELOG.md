@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`agentic check deliverable`** (Rust port of `verify_gate.py`) and
   **`agentic normalize`** (port of `normalize_deliverable.py`) in `agentic-checks`,
   operating on the content store.
+- **`agentic gen`** (Rust port of `prompt_rules.py` + the `gen_*.py` family):
+  `gen rules` prints the mandatory generation/figure rules; `gen prompt --kind …
+  --topic …` assembles a rule-prefixed prompt to pipe to an LLM CLI. The
+  deterministic prompt logic now lives in Rust.
 - Used to regenerate 22 thesis books (incl. a merged dimension combining
   Dimensions 03 + 07 with the imported AI Norms & Regulations book) — all
   `check deliverable`-compliant.
