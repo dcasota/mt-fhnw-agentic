@@ -13,7 +13,7 @@ use tracing::{debug, info};
 use crate::{Error, Result};
 
 /// Newest schema version known to this build.
-pub const NEWEST_SCHEMA_VERSION: u32 = 4;
+pub const NEWEST_SCHEMA_VERSION: u32 = 5;
 
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (
@@ -35,6 +35,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         4,
         "0004_audit_signatures",
         include_str!("../migrations/0004_audit_signatures.sql"),
+    ),
+    (
+        5,
+        "0005_inbox_items",
+        include_str!("../migrations/0005_inbox_items.sql"),
     ),
 ];
 

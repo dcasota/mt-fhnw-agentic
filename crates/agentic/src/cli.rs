@@ -180,6 +180,74 @@ pub enum Command {
         #[command(subcommand)]
         action: AuditAction,
     },
+
+    /// Inbox lifecycle: register / status / accept / skip / retire / dedup.
+    /// Processed items are retired (disk copy removed; the DB blob is the
+    /// permanent archive — "empty inbox = done").
+    Inbox {
+        #[command(subcommand)]
+        action: InboxAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InboxAction {
+    /// Register inbox blobs from the content store as queued items (idempotent).
+    Register {
+        #[arg(long)]
+        project: String,
+    },
+    /// Show every inbox item and its lifecycle state.
+    Status {
+        #[arg(long)]
+        project: String,
+    },
+    /// Mark an item accepted (acceptance level reached).
+    Accept {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        score: Option<f64>,
+        /// thesis_main | thesis_appendix | lowrankings
+        #[arg(long)]
+        placement: Option<String>,
+        /// Passport id / ranking-deliverable path / note.
+        #[arg(long)]
+        justification: Option<String>,
+        /// Record the acceptance as human-confirmed (else autonomous).
+        #[arg(long)]
+        hitl: bool,
+    },
+    /// Mark an item skipped (non-input, e.g. a folder README).
+    Skip {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        path: String,
+    },
+    /// Retire a processed item: delete its on-disk copy (the DB blob remains the
+    /// permanent archive) and journal the move. Refuses unless the content is in
+    /// the DB and the item is accepted/justified/skipped.
+    Retire {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
+    },
+    /// Report duplicates: exact (shared SHA) and, if embeddings exist, semantic
+    /// near-duplicates (cosine ≥ threshold).
+    Dedup {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value_t = 0.90)]
+        threshold: f32,
+    },
 }
 
 #[derive(Debug, Subcommand)]

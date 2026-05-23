@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`inbox` lifecycle** — DB-native port of the Scramblings inbox "meccano".
+  `agentic inbox register | status | accept | skip | retire | dedup`. State is
+  explicit (`queued → ranked → justified → accepted → archived | skipped`) rather
+  than encoded by file location. **Retirement** deletes only the on-disk copy and
+  journals an `inbox_archive` entry — the content blob in the store is the
+  permanent archive ("empty inbox = done"; nothing is destroyed). Dedup is
+  **exact (SHA-256, built-in) + semantic (embedding cosine ≥ 0.90)**, replacing
+  the original `text[:80]` lexical method (research: embedding cosine beats
+  MinHash/SimHash on near-dup accuracy — RETSim, SemHash). New core
+  `inbox` module + migration `0005`.
 - **`check tree`** — boot-time DB⇄disk integrity gate. Compares every on-disk
   file (under an optional `--prefix`, skipping dot-dirs/`target`/`node_modules`/
   `__pycache__` and the DB files) against its DB blob: on-disk files that differ

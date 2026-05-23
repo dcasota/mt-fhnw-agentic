@@ -97,6 +97,29 @@ if any on-disk file differs from its DB blob:
 The verdict is recorded in `audit_verdicts` (checkpoint `pre_iteration`), so the
 boot check is itself part of the audit trail.
 
+## 4c Inbox lifecycle (intake → acceptance → retirement)
+
+Raw inputs land in `inbox/`. The lifecycle has explicit states
+(`queued → ranked → justified → accepted → archived | skipped`); the content
+blob in the DB is the permanent archive, so **retiring** an item removes only
+its on-disk copy ("empty inbox = done", nothing destroyed).
+
+```powershell
+& $agx inbox register --project $proj                       # capture inbox/* blobs as queued
+& $agx inbox dedup    --project $proj --model <embed-model>  # exact (SHA) + semantic (cosine) dups
+# … rank (embed/classify) + justify (passport claim_audit_results) …
+& $agx inbox accept   --project $proj --path "inbox/x.md" --placement thesis_main `
+      --justification "out/sources/Inbox_x_ranking_EN.md" [--hitl]
+& $agx inbox skip     --project $proj --path "inbox/README.md"      # non-input
+& $agx inbox retire   --project $proj --path "inbox/x.md"           # delete disk copy; blob kept
+& $agx inbox status   --project $proj                               # "empty-inbox = done"
+```
+
+`retire` refuses unless the content blob is in the DB **and** the item is
+accepted/justified/skipped — so an item is never removed from disk before it is
+both captured and adjudicated. Restore a retired item's file with
+`content checkout --to . --prefix inbox/x.md`.
+
 ## 5 A typical iteration
 
 ```

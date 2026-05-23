@@ -12,6 +12,7 @@ pub mod content;
 pub mod db;
 pub mod embeddings;
 pub mod error;
+pub mod inbox;
 pub mod journal;
 pub mod passport;
 pub mod project;
