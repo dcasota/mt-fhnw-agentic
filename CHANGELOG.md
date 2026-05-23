@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`agentic-figures` crate** — pure-Rust `figspec` JSON → PNG renderer
+  (`plotters`; bar/hbar/line/matrix/quadrant/flow + `resolve_markdown`). The Rust
+  port of `render_figspec.py`, first step of the Python→Rust migration of the
+  toolchain (no system/C deps; native fonts).
 - **`skills/book-export/`** — a reusable book-export skill (function library +
   driver) that turns curated DB content into professional A4 DOCX books:
   `bookkit.py` (engine: Georgia/Calibri typography, block grammar, Word TOC,

@@ -47,6 +47,7 @@ git-tracked set; `content checkout` reproduces it. (See ADR / QUICKSTART.)
         ▼
    thesis.db (SQLite, WAL)            agentic-tui (onboarding wizard)
                                       agentic-resources (templates, seeds)
+                                      agentic-figures (figspec→PNG, plotters)
 ```
 
 `agentic-core` is the only crate that talks to SQLite. It stays crypto-pure

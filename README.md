@@ -108,6 +108,7 @@ crates/
 ├── agentic-checks/       integrity checkers (self, citations, contamination, writing_quality)
 ├── agentic-import/       proposal/draft import (md/DOCX/PDF), recursive classification
 ├── agentic-export/       DOCX (FHNW template), PDF (Typst), markdown
+├── agentic-figures/      figspec JSON → PNG (plotters; Rust port of render_figspec)
 ├── agentic-tui/          ratatui onboarding wizard
 └── agentic-resources/    embedded templates, stylesheets, ADR/schema seeds
 
