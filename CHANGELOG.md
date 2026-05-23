@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 2026-05-23
 
+### Changed — Python→Rust toolchain migration
+
+- **`agentic book` (Rust book engine)** replaces the Python `bookkit`/`build_book`
+  skill: `agentic-export::book` (docx-rs — A4 typography, Word TOC, shaded-header
+  tables, embedded figures + captions) + extended `markdown` parser (tables,
+  images). One book = a manifest entry `{key,title,subtitle,chapters:[DB paths]}`;
+  figures rendered by `agentic-figures`. The `skills/book-export/*.py` are removed.
+- **`agentic check deliverable`** (Rust port of `verify_gate.py`) and
+  **`agentic normalize`** (port of `normalize_deliverable.py`) in `agentic-checks`,
+  operating on the content store.
+- Used to regenerate 22 thesis books (incl. a merged dimension combining
+  Dimensions 03 + 07 with the imported AI Norms & Regulations book) — all
+  `check deliverable`-compliant.
+
 ### Added
 
 - **`agentic-figures` crate** — pure-Rust `figspec` JSON → PNG renderer

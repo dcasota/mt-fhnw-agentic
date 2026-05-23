@@ -1,0 +1,258 @@
+//! Book renderer — the Rust port of the bookkit engine.
+//!
+//! Builds a professional A4 DOCX (title page, TOC, styled headings, tables with
+//! shaded headers, embedded figures with captions) from chapter markdown via
+//! `docx-rs`. Figures are expected already rendered (paths under `figdir`); the
+//! caller resolves `figspec` blocks with `agentic-figures` first.
+
+use std::io::Cursor;
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use docx_rs::{
+    AlignmentType, BreakType, Docx, PageMargin, Paragraph, Pic, Run, RunFonts, Shading, Table,
+    TableCell, TableOfContents, TableRow, WidthType,
+};
+
+use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
+
+const NAVY: &str = "1F497D";
+const HEAD2: &str = "2E4A7A";
+const GREY: &str = "666666";
+const HEADBG: &str = "1F3864";
+const ALTBG: &str = "F4F6FA";
+const BODY: &str = "Georgia";
+const HEADF: &str = "Calibri";
+const MONO: &str = "Consolas";
+
+const CONTENT_TWIPS: usize = 9298; // A4 (11906) − 2×1304 margins
+
+#[derive(Debug, Clone)]
+pub struct BookMeta {
+    pub title: String,
+    pub subtitle: String,
+    pub author: String,
+    pub context: String,
+}
+
+fn body_fonts() -> RunFonts {
+    RunFonts::new().ascii(BODY).hi_ansi(BODY)
+}
+fn head_fonts() -> RunFonts {
+    RunFonts::new().ascii(HEADF).hi_ansi(HEADF)
+}
+
+fn page_break() -> Paragraph {
+    Paragraph::new().add_run(Run::new().add_break(BreakType::Page))
+}
+
+fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
+    for _ in 0..3 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
+        Run::new().add_text(&m.title).bold().size(72).color(NAVY).fonts(head_fonts()),
+    ));
+    if !m.subtitle.is_empty() {
+        doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new().add_text(&m.subtitle).size(30).color(GREY).fonts(head_fonts()),
+        ));
+    }
+    for _ in 0..6 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
+        Run::new().add_text(&m.author).size(28).color("1A1A1A").fonts(head_fonts()),
+    ));
+    doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
+        Run::new().add_text(&m.context).size(22).color(GREY).fonts(head_fonts()),
+    ));
+    doc.add_paragraph(page_break())
+}
+
+fn heading_para(level: u8, text: &str, page_break_before: bool) -> Paragraph {
+    let (size, color) = match level {
+        1 => (44, NAVY),
+        2 => (32, NAVY),
+        3 => (26, HEAD2),
+        _ => (23, HEAD2),
+    };
+    let mut p = Paragraph::new().style(&format!("Heading{}", level.min(4)));
+    if page_break_before {
+        p = p.add_run(Run::new().add_break(BreakType::Page));
+    }
+    p.add_run(Run::new().add_text(text).bold().size(size).color(color).fonts(head_fonts()))
+}
+
+fn run_of(r: &DocxRun) -> Run {
+    let mut run = Run::new().add_text(&r.text).size(22);
+    run = if r.code { run.fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO)) } else { run.fonts(body_fonts()) };
+    if r.bold {
+        run = run.bold();
+    }
+    if r.italic {
+        run = run.italic();
+    }
+    run
+}
+
+fn para_of(runs: &[DocxRun]) -> Paragraph {
+    let mut p = Paragraph::new();
+    for r in runs {
+        p = p.add_run(run_of(r));
+    }
+    p
+}
+
+/// Parse PNG width/height from the IHDR chunk (bytes 16..24, big-endian).
+fn png_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[1..4] != b"PNG" {
+        return None;
+    }
+    let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    Some((w, h))
+}
+
+fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
+    let ncols = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(1)).max(1);
+    let colw = CONTENT_TWIPS / ncols;
+    let mut trows = Vec::new();
+    if !header.is_empty() {
+        let cells = header
+            .iter()
+            .map(|h| {
+                TableCell::new()
+                    .shading(Shading::new().fill(HEADBG))
+                    .width(colw, WidthType::Dxa)
+                    .add_paragraph(Paragraph::new().add_run(
+                        Run::new().add_text(h).bold().size(19).color("FFFFFF").fonts(body_fonts()),
+                    ))
+            })
+            .collect();
+        trows.push(TableRow::new(cells));
+    }
+    for (ri, row) in rows.iter().enumerate() {
+        let fill = if ri % 2 == 0 { ALTBG } else { "FFFFFF" };
+        let mut cells = Vec::with_capacity(ncols);
+        for c in 0..ncols {
+            let val = row.get(c).map(String::as_str).unwrap_or("");
+            cells.push(
+                TableCell::new()
+                    .shading(Shading::new().fill(fill))
+                    .width(colw, WidthType::Dxa)
+                    .add_paragraph(Paragraph::new().add_run(
+                        Run::new().add_text(val).size(19).fonts(body_fonts()),
+                    )),
+            );
+        }
+        trows.push(TableRow::new(cells));
+    }
+    Table::new(trows).set_grid(vec![colw; ncols]).width(CONTENT_TWIPS, WidthType::Dxa)
+}
+
+fn render_block(mut doc: Docx, b: &DocxBlock, figdir: &Path, figno: &mut u32, chapter_start: bool) -> Docx {
+    match b {
+        DocxBlock::Heading { level, text } => {
+            doc.add_paragraph(heading_para(*level, text, chapter_start && *level <= 2))
+        }
+        DocxBlock::Paragraph(runs) => doc.add_paragraph(para_of(runs)),
+        DocxBlock::BulletItem(runs) => {
+            let mut p = Paragraph::new().add_run(Run::new().add_text("•  ").size(22).color(NAVY).bold().fonts(body_fonts()));
+            for r in runs {
+                p = p.add_run(run_of(r));
+            }
+            doc.add_paragraph(p)
+        }
+        DocxBlock::OrderedItem(runs) => {
+            let mut p = Paragraph::new().add_run(Run::new().add_text("–  ").size(22).color(NAVY).bold().fonts(body_fonts()));
+            for r in runs {
+                p = p.add_run(run_of(r));
+            }
+            doc.add_paragraph(p)
+        }
+        DocxBlock::CodeBlock { body, .. } => {
+            let mut p = Paragraph::new();
+            for (i, line) in body.split('\n').enumerate() {
+                if i > 0 {
+                    p = p.add_run(Run::new().add_break(BreakType::TextWrapping));
+                }
+                p = p.add_run(Run::new().add_text(line).size(19).fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO)));
+            }
+            doc.add_paragraph(p)
+        }
+        DocxBlock::HorizontalRule => doc.add_paragraph(
+            Paragraph::new().add_run(Run::new().add_text("────────────").color(GREY)),
+        ),
+        DocxBlock::Table { header, rows } => doc.add_table(table_block(header, rows)),
+        DocxBlock::Image { path, caption } => {
+            let full = figdir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if let Ok(bytes) = std::fs::read(&full) {
+                *figno += 1;
+                let target_w: u32 = 5_400_000; // 15 cm in EMU
+                let h_emu = png_dims(&bytes)
+                    .map(|(w, h)| ((u64::from(h) * u64::from(target_w)) / u64::from(w.max(1))) as u32)
+                    .unwrap_or(3_400_000);
+                let pic = Pic::new(&bytes).size(target_w, h_emu);
+                doc = doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(Run::new().add_image(pic)));
+                doc.add_paragraph(Paragraph::new().align(AlignmentType::Center).add_run(
+                    Run::new().add_text(format!("Figure {}. {caption}", *figno)).italic().size(18).color(GREY).fonts(body_fonts()),
+                ))
+            } else {
+                doc.add_paragraph(Paragraph::new().add_run(
+                    Run::new().add_text(format!("[figure missing: {path}]")).italic().color(GREY),
+                ))
+            }
+        }
+    }
+}
+
+/// Render a complete book to DOCX bytes. `chapters` are `(label, markdown)`
+/// with figures already rendered under `figdir`.
+pub fn render_book(meta: &BookMeta, chapters: &[(String, String)], figdir: &Path) -> Result<Vec<u8>> {
+    let mut doc = Docx::new()
+        .default_fonts(body_fonts())
+        .default_size(22)
+        .page_size(11906, 16838)
+        .page_margin(PageMargin::new().top(1417).bottom(1417).left(1304).right(1304));
+
+    doc = title_page(doc, meta);
+    doc = doc.add_paragraph(
+        Paragraph::new().add_run(Run::new().add_text("Contents").bold().size(44).color(NAVY).fonts(head_fonts())),
+    );
+    doc = doc.add_table_of_contents(TableOfContents::new().heading_styles_range(1, 3).auto());
+    doc = doc.add_paragraph(page_break());
+
+    let mut figno = 0u32;
+    for (ci, (_label, md)) in chapters.iter().enumerate() {
+        let blocks = to_docx_blocks(md);
+        let mut first = true;
+        for b in &blocks {
+            doc = render_block(doc, b, figdir, &mut figno, first && ci > 0);
+            first = false;
+        }
+    }
+
+    let mut cur = Cursor::new(Vec::<u8>::new());
+    doc.build().pack(&mut cur).context("pack book docx")?;
+    Ok(cur.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_book_with_table_and_heading() {
+        let meta = BookMeta {
+            title: "T".into(),
+            subtitle: "S".into(),
+            author: "A".into(),
+            context: "C".into(),
+        };
+        let md = "# Chapter\n\nA **bold** paragraph.\n\n| H1 | H2 |\n|----|----|\n| a | b |\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+        assert!(bytes.len() > 2000);
+    }
+}

@@ -7,6 +7,7 @@
 #![warn(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 
+pub mod book;
 pub mod collect;
 pub mod docx;
 pub mod markdown;

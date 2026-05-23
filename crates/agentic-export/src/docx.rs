@@ -72,6 +72,22 @@ pub fn render(title: &str, chapters: &[Chapter]) -> Result<Vec<u8>> {
                 DocxBlock::HorizontalRule => {
                     doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text("───────────")))
                 }
+                DocxBlock::Table { header, rows } => {
+                    let mut d = doc;
+                    if !header.is_empty() {
+                        d = d.add_paragraph(
+                            Paragraph::new().add_run(Run::new().add_text(header.join(" | ")).bold()),
+                        );
+                    }
+                    for r in &rows {
+                        d = d.add_paragraph(Paragraph::new().add_run(Run::new().add_text(r.join(" | "))));
+                    }
+                    d
+                }
+                DocxBlock::Image { path, caption } => doc.add_paragraph(
+                    Paragraph::new()
+                        .add_run(Run::new().add_text(format!("[figure {path}: {caption}]")).italic()),
+                ),
             };
         }
         // Page break between chapters.

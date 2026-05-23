@@ -19,6 +19,7 @@ agentic-providers    = { workspace = true }
 agentic-checks       = { workspace = true }
 agentic-import       = { workspace = true }
 agentic-export       = { workspace = true }
+agentic-figures      = { workspace = true }
 walkdir              = { workspace = true }
 agentic-tui          = { workspace = true }
 agentic-resources    = { workspace = true }

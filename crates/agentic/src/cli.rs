@@ -198,6 +198,23 @@ pub enum Command {
         #[arg(long, default_value = "out/sources/")]
         prefix: String,
     },
+
+    /// Render professional DOCX books from a manifest, sourcing chapter markdown
+    /// from the content store and rendering figspec figures (the Rust book
+    /// engine). Manifest: {"books":[{"key","title","subtitle","chapters":[…]}]}.
+    Book {
+        #[arg(long)]
+        project: String,
+        /// Path to the books manifest JSON.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Output directory for the .docx files.
+        #[arg(long)]
+        out: PathBuf,
+        /// Build only this book key.
+        #[arg(long)]
+        only: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

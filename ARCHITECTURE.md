@@ -139,32 +139,45 @@ Working language is English (`--lang en`); DE/FR/IT/RM/HI exports are supported
 via the `--lang` flag and the `i18n_strings` table (translation pipeline is gated
 behind explicit go-ahead).
 
-## 9 Book-export skill (`skills/book-export/`)
+## 9 Book export (`agentic book`, all-Rust)
 
-A reusable **skill** (function library + driver), not a Rust command, that turns
-curated DB content into professional A4 DOCX books:
+Turning curated DB content into professional A4 DOCX books is a **Rust command**,
+not a Python skill (the Python toolchain has been ported out — see §10):
 
 ```
- content sources (DB)  ──render_figspec──►  resolved md + figures/
-        │                                          │
+ content sources (DB)  ──agentic-figures──►  resolved md + figures/*.png
+        │  (figspec→PNG, plotters)                 │
         ▼                                          ▼
- build_book.py  ──md→blocks──►  bookkit.py engine  ──►  Book.docx
- (driver: manifest = title +    (typography, block grammar,   (title page,
-  ordered chapter sources)       TOC, XE index, QR boxes)      TOC, index, QR)
+ agentic book  ──markdown→blocks──►  agentic-export::book  ──►  Book.docx
+ (cmd: manifest = title +           (docx-rs: A4 typography, TOC,   (title page,
+  ordered DB chapter paths)          tables, embedded figures)       TOC, figures)
 ```
 
-- **`bookkit.py`** — the engine: Georgia/Calibri A4 typography, a block-dict
-  grammar (`h/p/bullets/numbered/table/img/callout/quote/qrlink`), Word **TOC**
-  (heading outline levels), a page-referenced **INDEX** (hidden XE fields), and
-  per-chapter **"Sources & QR codes"** boxes. `MEDIA`/`QR_DIR` are runtime-set so
-  the engine is content-agnostic.
-- **`build_book.py`** — the driver: a markdown→blocks converter, figure
-  rendering via `render_figspec.py`, front matter (title/disclaimer/TOC) and
-  back matter (index). One book = one manifest entry
-  `{title, subtitle, chapters:[source md…]}`.
+- **`agentic-figures`** — `figspec` JSON → PNG via `plotters` (bar/hbar/line/
+  matrix/quadrant/flow) + `resolve_markdown()`. Pure Rust, no system deps.
+- **`agentic-export::book`** — `docx-rs` renderer: A4 Georgia/Calibri typography,
+  Word **TOC** (heading styles), shaded-header tables, embedded figures with
+  captions. `markdown.rs` parses headings/paragraphs/lists/**tables**/**images**.
+- **`agentic book`** (CLI) — reads a manifest `{books:[{key,title,subtitle,
+  chapters:[DB paths]}]}`, pulls each chapter from the content store, resolves
+  figures, and writes one DOCX per book.
 
-Invoked like the other builders:
-`python build_book.py --manifest books.json --src <sources> --tools <code/tools> --out <dir>`.
-Every chapter source is the same gate-passing markdown the framework already
-governs, so books inherit the English-core / reference / number / figure-standard
-compliance (verify with `verify_gate.py` per chapter).
+```
+agentic book --project <ID> --manifest books.json --out <dir> [--only <key>]
+```
+
+Chapters are the same gate-passing markdown the framework governs, so books
+inherit English-core / reference / number / figure-standard compliance (verify
+with `agentic check deliverable`).
+
+## 10 Toolchain is Rust (no Python in the pipeline)
+
+The deliverable pipeline that once lived in `code/tools/*.py` is now Rust:
+
+| Was (Python) | Now (Rust) |
+|---|---|
+| `render_figspec.py` | `agentic-figures` crate |
+| `verify_gate.py` | `agentic-checks::deliverable_gate` (`agentic check deliverable`) |
+| `normalize_deliverable.py` | `agentic-checks::normalize` (`agentic normalize`) |
+| `bookkit.py` + `build_book.py` + `build_*_docx.py` | `agentic-export::book` (`agentic book`) |
+| `gen_*.py` + `prompt_rules.py` (generation orchestration) | being ported to `agentic` commands + `agentic-providers` |

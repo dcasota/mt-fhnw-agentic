@@ -128,6 +128,8 @@ pub enum DocxBlock {
     OrderedItem(Vec<DocxRun>),
     CodeBlock { lang: String, body: String },
     HorizontalRule,
+    Table { header: Vec<String>, rows: Vec<Vec<String>> },
+    Image { path: String, caption: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +162,13 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
     let mut list_stack: Vec<bool> = Vec::new(); // true = ordered
     let mut code_lang = String::new();
     let mut code_body = String::new();
+    let mut tbl_header: Vec<String> = Vec::new();
+    let mut tbl_rows: Vec<Vec<String>> = Vec::new();
+    let mut cur_row: Vec<String> = Vec::new();
+    let mut cur_cell = String::new();
+    let mut in_table = false;
+    let mut in_head = false;
+    let mut img: Option<(String, String)> = None; // (url, alt)
 
     for ev in parser {
         match ev {
@@ -238,14 +247,26 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                 state = ParseState::Top;
             }
             Event::Code(s) => {
-                current_runs.push(DocxRun {
-                    text: s.to_string(),
-                    code: true,
-                    ..DocxRun::plain("")
-                });
+                if in_table {
+                    cur_cell.push_str(&s);
+                } else if img.is_some() {
+                    if let Some((_, alt)) = img.as_mut() {
+                        alt.push_str(&s);
+                    }
+                } else {
+                    current_runs.push(DocxRun {
+                        text: s.to_string(),
+                        code: true,
+                        ..DocxRun::plain("")
+                    });
+                }
             }
             Event::Text(s) => {
-                if matches!(state, ParseState::Code) {
+                if in_table {
+                    cur_cell.push_str(&s);
+                } else if let Some((_, alt)) = img.as_mut() {
+                    alt.push_str(&s);
+                } else if matches!(state, ParseState::Code) {
                     code_body.push_str(&s);
                 } else {
                     current_runs.push(DocxRun {
@@ -257,9 +278,51 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                current_runs.push(DocxRun::plain(" "));
+                if in_table {
+                    cur_cell.push(' ');
+                } else if !img.is_some() {
+                    current_runs.push(DocxRun::plain(" "));
+                }
             }
             Event::Rule => blocks.push(DocxBlock::HorizontalRule),
+            // Tables
+            Event::Start(Tag::Table(_)) => {
+                in_table = true;
+                tbl_header.clear();
+                tbl_rows.clear();
+            }
+            Event::End(TagEnd::Table) => {
+                in_table = false;
+                blocks.push(DocxBlock::Table {
+                    header: std::mem::take(&mut tbl_header),
+                    rows: std::mem::take(&mut tbl_rows),
+                });
+            }
+            Event::Start(Tag::TableHead) => {
+                in_head = true;
+                cur_row.clear();
+            }
+            Event::End(TagEnd::TableHead) => {
+                in_head = false;
+                tbl_header = std::mem::take(&mut cur_row);
+            }
+            Event::Start(Tag::TableRow) => cur_row.clear(),
+            Event::End(TagEnd::TableRow) => {
+                if !in_head {
+                    tbl_rows.push(std::mem::take(&mut cur_row));
+                }
+            }
+            Event::Start(Tag::TableCell) => cur_cell.clear(),
+            Event::End(TagEnd::TableCell) => cur_row.push(std::mem::take(&mut cur_cell).trim().to_string()),
+            // Images
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                img = Some((dest_url.into_string(), String::new()));
+            }
+            Event::End(TagEnd::Image) => {
+                if let Some((url, alt)) = img.take() {
+                    blocks.push(DocxBlock::Image { path: url, caption: alt });
+                }
+            }
             _ => {}
         }
     }
