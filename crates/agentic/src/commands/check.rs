@@ -32,6 +32,9 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
             }
             agentic_checks::CheckReport::new("deliverable", findings)
         }
+        CheckAction::Docs { project, root } => {
+            agentic_checks::docs_gate::run(&conn, &project, &root)?
+        }
         CheckAction::Tree {
             project,
             root,

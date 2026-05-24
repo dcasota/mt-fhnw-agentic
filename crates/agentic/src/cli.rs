@@ -550,6 +550,15 @@ pub enum CheckAction {
         #[arg(long, default_value = "out/sources/")]
         prefix: String,
     },
+    /// Mission-control documentation currency gate (CLAUDE.md rule 9): the
+    /// governance docs must exist and PROGRESS.md must not lag the journal.
+    Docs {
+        #[arg(long)]
+        project: String,
+        /// Root directory holding the mission-control docs.
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, clap::Args)]
