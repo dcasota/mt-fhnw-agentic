@@ -10,10 +10,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use docx_rs::{
-    AlignmentType, BreakType, Docx, Footer, HeightRule, LineSpacing, LineSpacingType, PageMargin,
-    PageNum, PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty,
-    Shading, Style, StyleType, Table, TableCell, TableCellMargins, TableLayoutType,
-    TableOfContents, TableRow, TextDirectionType, VAlignType, WidthType,
+    AlignmentType, BorderType, BreakType, Docx, Footer, HeightRule, LineSpacing, LineSpacingType,
+    PageMargin, PageNum, PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts,
+    SectionProperty, Shading, Style, StyleType, Table, TableCell, TableCellBorder,
+    TableCellBorderPosition, TableCellMargins, TableLayoutType, TableOfContents, TableRow,
+    TextDirectionType, VAlignType, WidthType,
 };
 
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
@@ -345,6 +346,55 @@ fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
     doc.add_paragraph(spacer())
 }
 
+/// bookkit.py admonition: a colour-coded shaded box with a left accent border
+/// and a bold label, for note / tip / warning asides. Rendered as a single-cell
+/// table so the fill + left border survive in Word.
+fn admonition_box(mut doc: Docx, kind: &str, body: &str) -> Docx {
+    let (label, fill, edge) = match kind {
+        "tip" => ("\u{2714} Tip", "EAF6EC", "2E7D32"),
+        "warning" => ("\u{26A0} Warning", "FBF1E2", "C77F18"),
+        _ => ("\u{2139} Note", "EAF1FB", "1F3864"),
+    };
+    let text: String = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
+    let cell = TableCell::new()
+        .shading(Shading::new().fill(fill))
+        .width(CONTENT_TWIPS, WidthType::Dxa)
+        .set_border(
+            TableCellBorder::new(TableCellBorderPosition::Left)
+                .color(edge)
+                .size(24)
+                .border_type(BorderType::Single),
+        )
+        .add_paragraph(
+            Paragraph::new()
+                .line_spacing(body_spacing())
+                .add_run(
+                    Run::new()
+                        .add_text(format!("{label}  "))
+                        .bold()
+                        .size(21)
+                        .color(edge)
+                        .fonts(head_fonts()),
+                )
+                .add_run(Run::new().add_text(text).size(22).fonts(body_fonts())),
+        );
+    doc = doc.add_paragraph(spacer());
+    doc = doc.add_table(
+        Table::new(vec![TableRow::new(vec![cell])])
+            .set_grid(vec![CONTENT_TWIPS])
+            .width(CONTENT_TWIPS, WidthType::Dxa)
+            .layout(TableLayoutType::Fixed)
+            .margins(TableCellMargins::new().margin(70, 120, 70, 120)),
+    );
+    doc.add_paragraph(spacer())
+}
+
 /// chapter_extras.py per-chapter "Review questions": `Q:`/`A:` line pairs become
 /// a numbered bold question + a grey italic answer.
 fn quiz_block(mut doc: Docx, body: &str) -> Docx {
@@ -445,6 +495,8 @@ fn render_block(
             "keypoints" => keypoints_box(doc, body),
             // chapter_extras.py port: the per-chapter "Review questions".
             "quiz" => quiz_block(doc, body),
+            // bookkit.py port: note / tip / warning admonition callouts.
+            "note" | "tip" | "warning" => admonition_box(doc, lang, body),
             _ => {
                 let mut p = Paragraph::new();
                 for (i, line) in body.split('\n').enumerate() {
@@ -622,6 +674,20 @@ mod tests {
         };
         let md = "# Chapter\n\nA **bold** paragraph.\n\n| H1 | H2 |\n|----|----|\n| a | b |\n"
             .to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+        assert!(bytes.len() > 2000);
+    }
+
+    #[test]
+    fn admonition_renders() {
+        let meta = BookMeta {
+            title: "T".into(),
+            subtitle: String::new(),
+            author: "A".into(),
+            context: "C".into(),
+        };
+        let md = "# C\n\n```warning\nThe EU AI Act has extraterritorial reach.\n```\n".to_string();
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 2000);
