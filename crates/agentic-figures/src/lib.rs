@@ -190,6 +190,8 @@ pub fn render_figspec(spec_json: &str, out_path: &Path) -> Result<()> {
         "heatmap" => render_heatmap(&spec, out_path),
         "regstack" => render_regstack(&spec, out_path),
         "govmap" => render_govmap(&spec, out_path),
+        "treemap" => render_treemap(&spec, out_path),
+        "procmap" => render_procmap(&spec, out_path),
         other => Err(anyhow!("unknown figspec type '{other}'")),
     }
 }
@@ -1324,6 +1326,350 @@ fn strs_pairs(v: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// ---- squarified treemap (Bruls et al.); port of the `squarify` library ----
+#[derive(Clone, Copy)]
+struct TRect {
+    x: f64,
+    y: f64,
+    dx: f64,
+    dy: f64,
+}
+fn tm_layout(sizes: &[f64], x: f64, y: f64, dx: f64, dy: f64) -> Vec<TRect> {
+    let covered: f64 = sizes.iter().sum();
+    let mut out = Vec::with_capacity(sizes.len());
+    if dx >= dy {
+        let width = covered / dy.max(1e-9);
+        let mut yy = y;
+        for &s in sizes {
+            let h = s / width.max(1e-9);
+            out.push(TRect {
+                x,
+                y: yy,
+                dx: width,
+                dy: h,
+            });
+            yy += h;
+        }
+    } else {
+        let height = covered / dx.max(1e-9);
+        let mut xx = x;
+        for &s in sizes {
+            let wv = s / height.max(1e-9);
+            out.push(TRect {
+                x: xx,
+                y,
+                dx: wv,
+                dy: height,
+            });
+            xx += wv;
+        }
+    }
+    out
+}
+fn tm_leftover(sizes: &[f64], x: f64, y: f64, dx: f64, dy: f64) -> (f64, f64, f64, f64) {
+    let covered: f64 = sizes.iter().sum();
+    if dx >= dy {
+        let width = covered / dy.max(1e-9);
+        (x + width, y, dx - width, dy)
+    } else {
+        let height = covered / dx.max(1e-9);
+        (x, y + height, dx, dy - height)
+    }
+}
+fn tm_worst(sizes: &[f64], x: f64, y: f64, dx: f64, dy: f64) -> f64 {
+    tm_layout(sizes, x, y, dx, dy)
+        .iter()
+        .map(|r| (r.dx / r.dy.max(1e-9)).max(r.dy / r.dx.max(1e-9)))
+        .fold(0.0, f64::max)
+}
+fn squarify(sizes: &[f64], x: f64, y: f64, dx: f64, dy: f64) -> Vec<TRect> {
+    if sizes.is_empty() {
+        return vec![];
+    }
+    if sizes.len() == 1 {
+        return tm_layout(sizes, x, y, dx, dy);
+    }
+    let mut i = 1;
+    while i < sizes.len()
+        && tm_worst(&sizes[..i], x, y, dx, dy) >= tm_worst(&sizes[..=i], x, y, dx, dy)
+    {
+        i += 1;
+    }
+    let (lx, ly, ldx, ldy) = tm_leftover(&sizes[..i], x, y, dx, dy);
+    let mut r = tm_layout(&sizes[..i], x, y, dx, dy);
+    r.extend(squarify(&sizes[i..], lx, ly, ldx, ldy));
+    r
+}
+
+/// `gen_popmap.py` → squarified population treemap: region-coloured tiles sized
+/// by value, white borders, size-conditional labels, region legend.
+fn render_treemap(spec: &FigSpec, out: &Path) -> Result<()> {
+    let regions: std::collections::HashMap<String, String> = spec
+        .data
+        .get("regions")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("#888888").to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut items: Vec<(String, f64, String)> = spec
+        .data
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|it| {
+                    let c = it.as_array().cloned().unwrap_or_default();
+                    (
+                        c.first().map(json_str).unwrap_or_default(),
+                        c.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+                        c.get(2).map(json_str).unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Err(anyhow!("treemap: missing data.items"));
+    }
+    items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let w = 1120i32;
+    let h = 760i32;
+    let (ax, ay, aw, ah) = (
+        20.0_f64,
+        84.0_f64,
+        f64::from(w - 40),
+        f64::from(h - 84 - 72),
+    );
+    let total: f64 = items.iter().map(|i| i.1).sum();
+    let scale = aw * ah / total.max(1e-9);
+    let sizes: Vec<f64> = items.iter().map(|i| i.1 * scale).collect();
+    let rects = squarify(&sizes, ax, ay, aw, ah);
+
+    let root = BitMapBackend::new(out, (w as u32, h as u32)).into_drawing_area();
+    root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
+    if !spec.title.is_empty() {
+        text(&root, &spec.title, &font_b(20, &NAVY), 20, 32)?;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    for (r, (name, val, region)) in rects.iter().zip(items.iter()) {
+        let (x0, y0) = (r.x as i32, r.y as i32);
+        let (x1, y1) = ((r.x + r.dx) as i32, (r.y + r.dy) as i32);
+        let col = hex_color(regions.get(region).map_or("#888888", String::as_str));
+        fill_rect(&root, x0, y0, x1, y1, &col)?;
+        stroke_rect(&root, x0, y0, x1, y1, &WHITEC, 2)?;
+        if r.dx > 52.0 && r.dy > 26.0 {
+            let lines: Vec<String> = if *val >= 1000.0 {
+                vec![name.clone(), format!("{:.2} bn", val / 1000.0)]
+            } else if *val >= 45.0 {
+                vec![name.clone(), format!("{} mn", *val as i64)]
+            } else if *val >= 25.0 {
+                vec![name.clone()]
+            } else {
+                vec![]
+            };
+            if !lines.is_empty() {
+                ml_centered(
+                    &root,
+                    &lines,
+                    &font_b(13, &WHITEC),
+                    (r.x + r.dx / 2.0) as i32,
+                    (r.y + r.dy / 2.0) as i32,
+                    16,
+                );
+            }
+        }
+    }
+    // region legend along the bottom
+    let mut lx = 20;
+    let ly = h - 44;
+    for (name, col) in &regions {
+        let c = hex_color(col);
+        fill_rect(&root, lx, ly, lx + 22, ly + 18, &c)?;
+        text(&root, name, &font_c(13, &GREY), lx + 28, ly + 9)?;
+        lx += 28 + 9 * name.chars().count() as i32 + 28;
+        if lx > w - 160 {
+            lx = 20;
+        }
+    }
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
+    Ok(())
+}
+
+/// `gen_5338.py` → process map: side-by-side panels of grouped, type-tagged
+/// chips (Generic / Modified / AI-specific), with a type legend. A clean,
+/// self-drawn replacement for the watermarked ISO 5338 image.
+fn render_procmap(spec: &FigSpec, out: &Path) -> Result<()> {
+    // type -> (fill, edge, text)
+    let types: std::collections::HashMap<String, (RGBColor, RGBColor, RGBColor)> = spec
+        .data
+        .get("types")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| {
+                    let a = v.as_array().cloned().unwrap_or_default();
+                    let col = |i: usize, d: &str| {
+                        hex_color(a.get(i).map_or(d, |x| x.as_str().unwrap_or(d)))
+                    };
+                    (
+                        k.clone(),
+                        (col(0, "#EFEFEF"), col(1, "#9A9A9A"), col(2, "#333333")),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let deftype = (
+        RGBColor(0xEF, 0xEF, 0xEF),
+        RGBColor(0x9A, 0x9A, 0x9A),
+        RGBColor(0x33, 0x33, 0x33),
+    );
+
+    let panels = spec
+        .data
+        .get("panels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if panels.is_empty() {
+        return Err(anyhow!("procmap: missing data.panels"));
+    }
+    let w = 1120i32;
+    let content_x0 = 20;
+    let content_w = w - 40;
+    let total_weight: f64 = panels
+        .iter()
+        .map(|p| p.get("weight").and_then(Value::as_f64).unwrap_or(1.0))
+        .sum();
+    let gap = 16;
+    let hdr_h = 30;
+    let chip_h = 34;
+    let chip_gap = 8;
+    let grp_gap = 16;
+    let top = 76;
+
+    // geometry per panel
+    let mut panel_x = content_x0;
+    // first pass for height
+    let mut max_bottom = top;
+    struct Draw {
+        x0: i32,
+        y0: i32,
+        w: i32,
+        kind: u8, // 0 = header, 1 = chip
+        text: String,
+        ty: String,
+    }
+    let mut draws: Vec<Draw> = Vec::new();
+    for p in &panels {
+        let weight = p.get("weight").and_then(Value::as_f64).unwrap_or(1.0);
+        let pw = ((weight / total_weight) * f64::from(content_w - gap * (panels.len() as i32 - 1)))
+            as i32;
+        let mut y = top;
+        for g in p
+            .get("groups")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let title = g.get("title").and_then(Value::as_str).unwrap_or("");
+            let cols = g.get("cols").and_then(Value::as_u64).unwrap_or(1).max(1) as i32;
+            draws.push(Draw {
+                x0: panel_x,
+                y0: y,
+                w: pw,
+                kind: 0,
+                text: title.to_string(),
+                ty: String::new(),
+            });
+            y += hdr_h + 8;
+            let chips: Vec<Value> = g
+                .get("chips")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let colw = (pw - (cols - 1) * 10) / cols;
+            let per_col = (chips.len() as i32 + cols - 1) / cols;
+            let mut col_bottoms = vec![y; cols as usize];
+            for (ci, chip) in chips.iter().enumerate() {
+                let col = ci as i32 / per_col.max(1);
+                let col = col.min(cols - 1);
+                let c = chip.as_array().cloned().unwrap_or_default();
+                let label = c.first().map(json_str).unwrap_or_default();
+                let ty = c.get(1).map(json_str).unwrap_or_default();
+                let cx0 = panel_x + col * (colw + 10);
+                draws.push(Draw {
+                    x0: cx0,
+                    y0: col_bottoms[col as usize],
+                    w: colw,
+                    kind: 1,
+                    text: label,
+                    ty,
+                });
+                col_bottoms[col as usize] += chip_h + chip_gap;
+            }
+            y = *col_bottoms.iter().max().unwrap_or(&y) + grp_gap;
+        }
+        max_bottom = max_bottom.max(y);
+        panel_x += pw + gap;
+    }
+    let h = max_bottom + 64;
+
+    let root = BitMapBackend::new(out, (w as u32, h as u32)).into_drawing_area();
+    root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
+    if !spec.title.is_empty() {
+        text(&root, &spec.title, &font_b(16, &NAVY), 20, 30)?;
+    }
+    for d in &draws {
+        if d.kind == 0 {
+            fill_rect(&root, d.x0, d.y0, d.x0 + d.w, d.y0 + hdr_h, &HEADBG)?;
+            text(
+                &root,
+                &d.text,
+                &font_b(13, &WHITEC),
+                d.x0 + 8,
+                d.y0 + hdr_h / 2,
+            )?;
+        } else {
+            let (fc, ec, tc) = types.get(&d.ty).copied().unwrap_or(deftype);
+            fill_rect(&root, d.x0, d.y0, d.x0 + d.w, d.y0 + chip_h, &fc)?;
+            stroke_rect(&root, d.x0, d.y0, d.x0 + d.w, d.y0 + chip_h, &ec, 1)?;
+            text(
+                &root,
+                &d.text,
+                &centered(font_c(12, &tc)),
+                d.x0 + d.w / 2,
+                d.y0 + chip_h / 2,
+            )?;
+        }
+    }
+    // type legend along the bottom
+    let legend: Vec<Value> = spec
+        .data
+        .get("legend")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut lx = 20;
+    let ly = h - 40;
+    for item in &legend {
+        let c = item.as_array().cloned().unwrap_or_default();
+        let label = c.first().map(json_str).unwrap_or_default();
+        let ty = c.get(1).map(json_str).unwrap_or_default();
+        let (fc, ec, _tc) = types.get(&ty).copied().unwrap_or(deftype);
+        fill_rect(&root, lx, ly, lx + 26, ly + 20, &fc)?;
+        stroke_rect(&root, lx, ly, lx + 26, ly + 20, &ec, 1)?;
+        text(&root, &label, &font_c(12, &GREY), lx + 32, ly + 10)?;
+        lx += 32 + 8 * label.chars().count() as i32 + 30;
+    }
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1363,6 +1709,14 @@ mod tests {
             (
                 "govmap_tiers",
                 r#"{"id":"gt","type":"govmap","title":"GT","caption":"c","data":{"layout":"tiers","tiers":[["Heads of state",[["ASEAN Summit",false]]],["Ministerial",[["ADGMIN",true]]]],"checks":["Consensus-based."]}}"#,
+            ),
+            (
+                "treemap",
+                r##"{"id":"tm","type":"treemap","title":"Pop","caption":"c","data":{"regions":{"Asia":"#1F3864","Europe":"#0B5C9E"},"items":[["India",1438,"Asia"],["China",1416,"Asia"],["Germany",84,"Europe"],["Switzerland",9,"Europe"]]}}"##,
+            ),
+            (
+                "procmap",
+                r##"{"id":"pm","type":"procmap","title":"5338","caption":"c","data":{"types":{"G":["#EFEFEF","#9A9A9A","#333333"],"AI":["#FCE9C8","#C77F18","#8A5A12"]},"panels":[{"weight":1,"groups":[{"title":"Technical","cols":2,"chips":[["Design (6.4.5)","G"],["AI data engineering (6.4.8)","AI"]]}]}],"legend":[["Generic","G"],["AI-specific","AI"]]}}"##,
             ),
         ];
         for (name, spec) in cases {

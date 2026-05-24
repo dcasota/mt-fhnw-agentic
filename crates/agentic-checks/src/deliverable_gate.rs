@@ -33,6 +33,7 @@ static FIGSPEC: LazyLock<Regex> =
 const GRAPHICAL: &[&str] = &[
     "bar", "hbar", "line", "matrix", "flow", "quadrant", // base chart types
     "icon", "heatmap", "regstack", "govmap", // book-figure types (AI-Norms generator ports)
+    "treemap", "procmap", // population treemap + ISO-5338-style process map
 ];
 
 /// All gate findings for one markdown document. `label` prefixes locations.
