@@ -144,9 +144,15 @@ pub fn apa7(v: &Value) -> String {
             .unwrap_or("Anonymous")
             .to_owned(),
     };
+    // Render year cleanly whether stored as a JSON number or string (a string
+    // "n.d." must not come out quoted); empty/absent → "n.d.".
     let year = v
         .get("year")
-        .map(|y| y.to_string())
+        .map(|y| match y {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .filter(|s| !s.is_empty() && s != "null")
         .unwrap_or_else(|| "n.d.".into());
     let title = v.get("title").and_then(Value::as_str).unwrap_or("Untitled");
     let venue = v.get("venue").and_then(Value::as_str).unwrap_or("");

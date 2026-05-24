@@ -35,6 +35,9 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
         CheckAction::Docs { project, root } => {
             agentic_checks::docs_gate::run(&conn, &project, &root)?
         }
+        CheckAction::Bibliography { project, prefix } => {
+            agentic_checks::bibliography_gate::run(&conn, &project, &prefix)?
+        }
         CheckAction::Tree {
             project,
             root,

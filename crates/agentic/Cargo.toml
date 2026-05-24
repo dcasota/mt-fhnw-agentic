@@ -34,6 +34,7 @@ tracing              = { workspace = true }
 tracing-subscriber   = { workspace = true }
 serde                = { workspace = true }
 serde_json           = { workspace = true }
+regex                = { workspace = true }
 indicatif            = { workspace = true }
 dirs                 = { workspace = true }
 chrono               = { workspace = true }

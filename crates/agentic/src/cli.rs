@@ -67,6 +67,13 @@ pub enum Command {
         action: CheckAction,
     },
 
+    /// Per-dimension APA7 bibliography: harvest web/email/user traces into the
+    /// material passport, and emit the reference list (non-repudiation, Phase 1).
+    Bibliography {
+        #[command(subcommand)]
+        action: BibAction,
+    },
+
     /// Diagnose the environment + binary configuration.
     Doctor,
 
@@ -558,6 +565,35 @@ pub enum CheckAction {
         /// Root directory holding the mission-control docs.
         #[arg(long, default_value = ".")]
         root: std::path::PathBuf,
+    },
+    /// Per-dimension bibliography coverage (Phase 1): every dimension must carry
+    /// a reference and no web URL in a dimension source may be orphaned.
+    Bibliography {
+        #[arg(long)]
+        project: String,
+        /// Restrict the orphan-URL scan to a path prefix.
+        #[arg(long, default_value = "out/sources/")]
+        prefix: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BibAction {
+    /// Scan content for web URLs (+ add a per-dimension user-input trace) and
+    /// append them to the literature_corpus passport, bound to HEAD.
+    Harvest {
+        #[arg(long)]
+        project: String,
+        /// Content path prefix to scan (dimension sources + emailresearch).
+        #[arg(long, default_value = "")]
+        prefix: String,
+    },
+    /// Emit the per-dimension APA7 reference list (all dimensions or one).
+    Emit {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        dimension: Option<i64>,
     },
 }
 

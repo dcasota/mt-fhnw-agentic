@@ -1,6 +1,7 @@
 //! Subcommand dispatchers. Each `mod` here owns one top-level verb.
 
 mod audit;
+mod bibliography;
 mod book;
 mod check;
 mod config;
@@ -41,6 +42,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Gen { action } => generate::run(action, args.json),
         Command::Risk { action } => risk::run(action, args.json),
         Command::Check { action } => check::run(&args.db, action, args.json).await,
+        Command::Bibliography { action } => bibliography::run(&args.db, action, args.json),
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,
         Command::Config { action } => config::run(action, args.json),
