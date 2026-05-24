@@ -289,6 +289,117 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
         .margins(TableCellMargins::new().margin(60, 100, 60, 100))
 }
 
+/// chapter_extras.py "Key topics at a glance" box: a shaded single-column table
+/// (navy header + zebra key-point rows), with breathing room around it.
+fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
+    let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
+    let mut rows = vec![TableRow::new(vec![
+        TableCell::new()
+            .shading(Shading::new().fill(HEADBG))
+            .width(CONTENT_TWIPS, WidthType::Dxa)
+            .add_paragraph(
+                Paragraph::new().add_run(
+                    Run::new()
+                        .add_text("Key topics at a glance")
+                        .bold()
+                        .size(21)
+                        .color("FFFFFF")
+                        .fonts(head_fonts()),
+                ),
+            ),
+    ])];
+    for (i, line) in body
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['-', '•', '*', ' ']).trim())
+        .filter(|l| !l.is_empty())
+        .enumerate()
+    {
+        let fill = if i % 2 == 0 { ALTBG } else { "FFFFFF" };
+        rows.push(TableRow::new(vec![
+            TableCell::new()
+                .shading(Shading::new().fill(fill))
+                .width(CONTENT_TWIPS, WidthType::Dxa)
+                .add_paragraph(
+                    Paragraph::new()
+                        .line_spacing(LineSpacing::new().after(40))
+                        .add_run(
+                            Run::new()
+                                .add_text("•  ")
+                                .bold()
+                                .size(21)
+                                .color(NAVY)
+                                .fonts(body_fonts()),
+                        )
+                        .add_run(Run::new().add_text(line).size(21).fonts(body_fonts())),
+                ),
+        ]));
+    }
+    doc = doc.add_paragraph(spacer());
+    doc = doc.add_table(
+        Table::new(rows)
+            .set_grid(vec![CONTENT_TWIPS])
+            .width(CONTENT_TWIPS, WidthType::Dxa)
+            .layout(TableLayoutType::Fixed)
+            .margins(TableCellMargins::new().margin(70, 120, 70, 120)),
+    );
+    doc.add_paragraph(spacer())
+}
+
+/// chapter_extras.py per-chapter "Review questions": `Q:`/`A:` line pairs become
+/// a numbered bold question + a grey italic answer.
+fn quiz_block(mut doc: Docx, body: &str) -> Docx {
+    doc = doc.add_paragraph(
+        Paragraph::new()
+            .line_spacing(
+                LineSpacing::new()
+                    .before(SPACE_BEFORE_HEAD)
+                    .after(SPACE_AFTER_HEAD),
+            )
+            .add_run(
+                Run::new()
+                    .add_text("Review questions")
+                    .bold()
+                    .size(26)
+                    .color(HEAD2)
+                    .fonts(head_fonts()),
+            ),
+    );
+    let mut qn = 0u32;
+    let mut cur_q: Option<String> = None;
+    for line in body.lines() {
+        let l = line.trim();
+        if let Some(q) = l.strip_prefix("Q:") {
+            cur_q = Some(q.trim().to_string());
+        } else if let Some(a) = l.strip_prefix("A:") {
+            qn += 1;
+            let q = cur_q.take().unwrap_or_default();
+            doc = doc.add_paragraph(
+                Paragraph::new()
+                    .line_spacing(LineSpacing::new().before(80).after(30))
+                    .add_run(
+                        Run::new()
+                            .add_text(format!("{qn}. {q}"))
+                            .bold()
+                            .size(22)
+                            .color("1A1A1A")
+                            .fonts(body_fonts()),
+                    ),
+            );
+            doc = doc.add_paragraph(
+                Paragraph::new().line_spacing(body_spacing()).add_run(
+                    Run::new()
+                        .add_text(a.trim())
+                        .italic()
+                        .size(21)
+                        .color(GREY)
+                        .fonts(body_fonts()),
+                ),
+            );
+        }
+    }
+    doc
+}
+
 fn render_block(
     mut doc: Docx,
     b: &DocxBlock,
@@ -329,21 +440,27 @@ fn render_block(
             }
             doc.add_paragraph(p)
         }
-        DocxBlock::CodeBlock { body, .. } => {
-            let mut p = Paragraph::new();
-            for (i, line) in body.split('\n').enumerate() {
-                if i > 0 {
-                    p = p.add_run(Run::new().add_break(BreakType::TextWrapping));
+        DocxBlock::CodeBlock { lang, body } => match lang.as_str() {
+            // chapter_extras.py port: the "Key topics at a glance" box.
+            "keypoints" => keypoints_box(doc, body),
+            // chapter_extras.py port: the per-chapter "Review questions".
+            "quiz" => quiz_block(doc, body),
+            _ => {
+                let mut p = Paragraph::new();
+                for (i, line) in body.split('\n').enumerate() {
+                    if i > 0 {
+                        p = p.add_run(Run::new().add_break(BreakType::TextWrapping));
+                    }
+                    p = p.add_run(
+                        Run::new()
+                            .add_text(line)
+                            .size(19)
+                            .fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO)),
+                    );
                 }
-                p = p.add_run(
-                    Run::new()
-                        .add_text(line)
-                        .size(19)
-                        .fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO)),
-                );
+                doc.add_paragraph(p)
             }
-            doc.add_paragraph(p)
-        }
+        },
         DocxBlock::HorizontalRule => doc.add_paragraph(
             Paragraph::new().add_run(Run::new().add_text("────────────").color(GREY)),
         ),
