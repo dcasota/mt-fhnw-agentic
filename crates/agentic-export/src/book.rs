@@ -857,7 +857,7 @@ pub fn render_book(
                 .fonts(body_fonts()),
         ),
     );
-    doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2 \\z 1031", "")));
+    doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "")));
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
