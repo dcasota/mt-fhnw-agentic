@@ -26,7 +26,13 @@ pub fn run(db_path: &Path, action: PassportAction, json_out: bool) -> Result<()>
             } else {
                 payload
             };
-            let id = passport::append(&conn, &project, section, &payload_json, None, replaces)?;
+            // Non-repudiation provenance (ADR-0039): pin each entry to the
+            // content commit that was HEAD when it was appended, so a ranking
+            // or justification is bound to the exact source state it was
+            // scored against. `None` only if the project has no commits yet.
+            let head = agentic_core::worktree::head_commit(&conn, &project)?.map(|c| c.sha256);
+            let id =
+                passport::append(&conn, &project, section, &payload_json, head.as_deref(), replaces)?;
             if json_out {
                 println!("{}", json!({ "id": id }));
             } else {
