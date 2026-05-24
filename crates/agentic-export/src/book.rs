@@ -10,11 +10,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use docx_rs::{
-    AlignmentType, BorderType, BreakType, Docx, Footer, HeightRule, LineSpacing, LineSpacingType,
-    PageMargin, PageNum, PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts,
-    SectionProperty, Shading, Style, StyleType, Table, TableCell, TableCellBorder,
-    TableCellBorderPosition, TableCellMargins, TableLayoutType, TableOfContents, TableRow,
-    TextDirectionType, VAlignType, WidthType,
+    AlignmentType, BorderType, BreakType, Docx, FieldCharType, Footer, HeightRule, Hyperlink,
+    HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin, PageNum,
+    PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty, Shading, Style,
+    StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition, TableCellMargins,
+    TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType, WidthType,
 };
 
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
@@ -22,6 +22,7 @@ use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
 const NAVY: &str = "1F497D";
 const HEAD2: &str = "2E4A7A";
 const GREY: &str = "666666";
+const ACCENT: &str = "0B5C9E"; // hyperlink blue
 const HEADBG: &str = "1F3864";
 const ALTBG: &str = "F4F6FA";
 const BODY: &str = "Georgia";
@@ -202,12 +203,35 @@ fn run_of(r: &DocxRun) -> Run {
     run
 }
 
-fn para_of(runs: &[DocxRun]) -> Paragraph {
-    let mut p = Paragraph::new().line_spacing(body_spacing());
+/// A blue, underlined run for hyperlink text.
+fn link_run(r: &DocxRun) -> Run {
+    let mut run = Run::new()
+        .add_text(&r.text)
+        .size(22)
+        .color(ACCENT)
+        .underline("single")
+        .fonts(body_fonts());
+    if r.bold {
+        run = run.bold();
+    }
+    run
+}
+
+/// Add a run sequence to a paragraph, emitting clickable hyperlinks for any run
+/// that carries a URL (markdown `[label](url)`).
+fn add_runs(mut p: Paragraph, runs: &[DocxRun]) -> Paragraph {
     for r in runs {
-        p = p.add_run(run_of(r));
+        if let Some(url) = &r.link {
+            p = p.add_hyperlink(Hyperlink::new(url, HyperlinkType::External).add_run(link_run(r)));
+        } else {
+            p = p.add_run(run_of(r));
+        }
     }
     p
+}
+
+fn para_of(runs: &[DocxRun]) -> Paragraph {
+    add_runs(Paragraph::new().line_spacing(body_spacing()), runs)
 }
 
 /// Parse PNG width/height from the IHDR chunk (bytes 16..24, big-endian).
@@ -395,6 +419,56 @@ fn admonition_box(mut doc: Docx, kind: &str, body: &str) -> Docx {
     doc.add_paragraph(spacer())
 }
 
+/// bookkit.py generic callout: a navy left-bordered shaded box; the first line
+/// (if it ends with a colon) is a bold navy title, the rest is the body.
+fn callout_box(mut doc: Docx, body: &str) -> Docx {
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let (title, rest) = match lines.split_first() {
+        Some((first, tail)) if first.ends_with(':') => (Some(*first), tail.join(" ")),
+        _ => (None, lines.join(" ")),
+    };
+    let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
+    let mut cell = TableCell::new()
+        .shading(Shading::new().fill("EEF2F8"))
+        .width(CONTENT_TWIPS, WidthType::Dxa)
+        .set_border(
+            TableCellBorder::new(TableCellBorderPosition::Left)
+                .color(NAVY)
+                .size(24)
+                .border_type(BorderType::Single),
+        );
+    if let Some(t) = title {
+        cell = cell.add_paragraph(
+            Paragraph::new().add_run(
+                Run::new()
+                    .add_text(t.trim_end_matches(':'))
+                    .bold()
+                    .size(21)
+                    .color(NAVY)
+                    .fonts(head_fonts()),
+            ),
+        );
+    }
+    cell = cell.add_paragraph(
+        Paragraph::new()
+            .line_spacing(body_spacing())
+            .add_run(Run::new().add_text(rest).size(22).fonts(body_fonts())),
+    );
+    doc = doc.add_paragraph(spacer());
+    doc = doc.add_table(
+        Table::new(vec![TableRow::new(vec![cell])])
+            .set_grid(vec![CONTENT_TWIPS])
+            .width(CONTENT_TWIPS, WidthType::Dxa)
+            .layout(TableLayoutType::Fixed)
+            .margins(TableCellMargins::new().margin(70, 120, 70, 120)),
+    );
+    doc.add_paragraph(spacer())
+}
+
 /// chapter_extras.py per-chapter "Review questions": `Q:`/`A:` line pairs become
 /// a numbered bold question + a grey italic answer.
 fn quiz_block(mut doc: Docx, body: &str) -> Docx {
@@ -450,18 +524,110 @@ fn quiz_block(mut doc: Docx, body: &str) -> Docx {
     doc
 }
 
+/// A Word field `{ instr }` with a cached display value — lets us emit arbitrary
+/// fields (SEQ, TOC \c, XE, INDEX) that docx-rs has no builder for.
+fn field_run(instr: &str, cached: &str) -> Run {
+    let mut r = Run::new()
+        .add_field_char(FieldCharType::Begin, false)
+        .add_instr_text(InstrText::Unsupported(instr.to_string()))
+        .add_field_char(FieldCharType::Separate, false);
+    if !cached.is_empty() {
+        r = r.add_text(cached.to_string());
+    }
+    r.add_field_char(FieldCharType::End, false)
+}
+
+/// Curated index terms (bookkit.py port). Matched case-insensitively in body
+/// text; the first hit per term per book gets an XE field so the INDEX field can
+/// compile a real, page-referenced index.
+const INDEX_TERMS: &[&str] = &[
+    "ISO/IEC 42001",
+    "ISO/IEC 27001",
+    "ISO/IEC 23894",
+    "ISO/IEC 5338",
+    "NIST AI RMF",
+    "NIST Cybersecurity Framework",
+    "EU AI Act",
+    "CVSS",
+    "Process Autonomy Matrix",
+    "reproducible build",
+    "SBOM",
+    "CBOM",
+    "post-quantum cryptography",
+    "ML-DSA",
+    "MITRE ATLAS",
+    "MITRE ATT&CK",
+    "AI Master",
+    "Team 4.0",
+    "Habitat",
+    "human-in-the-loop",
+    "FINMA",
+    "BACS",
+    "FDPIC",
+    "Photon OS",
+    "Broadcom",
+    "verification gate",
+    "three-agent consensus",
+    "crypto-agility",
+    "ISO 42001",
+];
+
+/// XE index-entry field runs for any curated term first seen in `text`.
+fn index_marks(text: &str, seen: &mut std::collections::HashSet<String>) -> Vec<Run> {
+    let lower = text.to_lowercase();
+    let mut out = Vec::new();
+    for term in INDEX_TERMS {
+        if !seen.contains(*term) && lower.contains(&term.to_lowercase()) {
+            seen.insert((*term).to_string());
+            out.push(field_run(&format!("XE \"{term}\""), ""));
+        }
+    }
+    out
+}
+
+/// A "List of Figures"/"List of Tables" section: a heading + a `TOC \c` field
+/// that Word fills from the caption SEQ fields.
+fn list_of(seq: &str, heading: &str) -> [Paragraph; 2] {
+    [
+        Paragraph::new()
+            .style("Heading1")
+            .line_spacing(
+                LineSpacing::new()
+                    .before(SPACE_BEFORE_HEAD)
+                    .after(SPACE_AFTER_HEAD),
+            )
+            .add_run(
+                Run::new()
+                    .add_text(heading)
+                    .bold()
+                    .size(32)
+                    .color(NAVY)
+                    .fonts(head_fonts()),
+            ),
+        Paragraph::new().add_run(field_run(&format!("TOC \\h \\z \\c \"{seq}\""), "")),
+    ]
+}
+
 fn render_block(
     mut doc: Docx,
     b: &DocxBlock,
     figdir: &Path,
     figno: &mut u32,
     chapter_start: bool,
+    idx_seen: &mut std::collections::HashSet<String>,
 ) -> Docx {
     match b {
         DocxBlock::Heading { level, text } => {
             doc.add_paragraph(heading_para(*level, text, chapter_start && *level <= 2))
         }
-        DocxBlock::Paragraph(runs) => doc.add_paragraph(para_of(runs)),
+        DocxBlock::Paragraph(runs) => {
+            let mut p = para_of(runs);
+            let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+            for xe in index_marks(&text, idx_seen) {
+                p = p.add_run(xe);
+            }
+            doc.add_paragraph(p)
+        }
         DocxBlock::BulletItem(runs) => {
             let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
                 Run::new()
@@ -471,9 +637,7 @@ fn render_block(
                     .bold()
                     .fonts(body_fonts()),
             );
-            for r in runs {
-                p = p.add_run(run_of(r));
-            }
+            p = add_runs(p, runs);
             doc.add_paragraph(p)
         }
         DocxBlock::OrderedItem(runs) => {
@@ -485,9 +649,7 @@ fn render_block(
                     .bold()
                     .fonts(body_fonts()),
             );
-            for r in runs {
-                p = p.add_run(run_of(r));
-            }
+            p = add_runs(p, runs);
             doc.add_paragraph(p)
         }
         DocxBlock::CodeBlock { lang, body } => match lang.as_str() {
@@ -497,6 +659,8 @@ fn render_block(
             "quiz" => quiz_block(doc, body),
             // bookkit.py port: note / tip / warning admonition callouts.
             "note" | "tip" | "warning" => admonition_box(doc, lang, body),
+            // bookkit.py port: a generic titled key-point callout box.
+            "callout" => callout_box(doc, body),
             _ => {
                 let mut p = Paragraph::new();
                 for (i, line) in body.split('\n').enumerate() {
@@ -557,18 +721,22 @@ fn render_block(
                         .add_run(Run::new().add_image(pic)),
                 );
                 // Caption with generous room after, so the next text isn't crammed.
+                // Caption with a SEQ field so a List of Figures can collect it.
+                let cap_style = |t: &str| {
+                    Run::new()
+                        .add_text(t.to_string())
+                        .italic()
+                        .size(18)
+                        .color(GREY)
+                        .fonts(body_fonts())
+                };
                 doc.add_paragraph(
                     Paragraph::new()
                         .align(AlignmentType::Center)
                         .line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG))
-                        .add_run(
-                            Run::new()
-                                .add_text(format!("Figure {}. {caption}", *figno))
-                                .italic()
-                                .size(18)
-                                .color(GREY)
-                                .fonts(body_fonts()),
-                        ),
+                        .add_run(cap_style("Figure "))
+                        .add_run(field_run("SEQ Figure \\* ARABIC", &format!("{}", *figno)))
+                        .add_run(cap_style(&format!(". {caption}"))),
                 )
             } else {
                 doc.add_paragraph(
@@ -644,16 +812,46 @@ pub fn render_book(
     );
     doc = doc.add_table_of_contents(TableOfContents::new().heading_styles_range(1, 3).auto());
     doc = doc.add_paragraph(page_break());
+    // List of Figures (filled from the caption SEQ fields on field update).
+    for p in list_of("Figure", "List of Figures") {
+        doc = doc.add_paragraph(p);
+    }
+    doc = doc.add_paragraph(page_break());
 
     let mut figno = 0u32;
+    let mut idx_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (ci, (_label, md)) in chapters.iter().enumerate() {
         let blocks = to_docx_blocks(md);
         let mut first = true;
         for b in &blocks {
-            doc = render_block(doc, b, figdir, &mut figno, first && ci > 0);
+            doc = render_block(doc, b, figdir, &mut figno, first && ci > 0, &mut idx_seen);
             first = false;
         }
     }
+
+    // Back-of-book index: the INDEX field, filled from XE entries on update.
+    doc = doc.add_paragraph(page_break());
+    doc = doc.add_paragraph(
+        Paragraph::new().style("Heading1").add_run(
+            Run::new()
+                .add_text("Index")
+                .bold()
+                .size(32)
+                .color(NAVY)
+                .fonts(head_fonts()),
+        ),
+    );
+    doc = doc.add_paragraph(
+        Paragraph::new().add_run(
+            Run::new()
+                .add_text("Right-click and choose \u{201c}Update Field\u{201d} to build the index.")
+                .italic()
+                .size(18)
+                .color(GREY)
+                .fonts(body_fonts()),
+        ),
+    );
+    doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2 \\z 1031", "")));
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;

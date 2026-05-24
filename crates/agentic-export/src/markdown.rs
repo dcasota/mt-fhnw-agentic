@@ -150,6 +150,8 @@ pub struct DocxRun {
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
+    /// External URL when this run is part of a markdown link.
+    pub link: Option<String>,
 }
 
 impl DocxRun {
@@ -159,6 +161,7 @@ impl DocxRun {
             bold: false,
             italic: false,
             code: false,
+            link: None,
         }
     }
 }
@@ -181,6 +184,7 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
     let mut in_table = false;
     let mut in_head = false;
     let mut img: Option<(String, String)> = None; // (url, alt)
+    let mut cur_link: Option<String> = None; // active hyperlink URL
 
     for ev in parser {
         match ev {
@@ -286,8 +290,15 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                         bold: style.bold,
                         italic: style.italic,
                         code: false,
+                        link: cur_link.clone(),
                     });
                 }
+            }
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                cur_link = Some(dest_url.into_string());
+            }
+            Event::End(TagEnd::Link) => {
+                cur_link = None;
             }
             Event::SoftBreak | Event::HardBreak => {
                 if in_table {
