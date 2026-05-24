@@ -527,9 +527,15 @@ fn quiz_block(mut doc: Docx, body: &str) -> Docx {
 /// A Word field `{ instr }` with a cached display value — lets us emit arbitrary
 /// fields (SEQ, TOC \c, XE, INDEX) that docx-rs has no builder for.
 fn field_run(instr: &str, cached: &str) -> Run {
+    // `InstrText::Unsupported` is written verbatim (no escaping), so a term such
+    // as "MITRE ATT&CK" would emit a raw `&` and break the XML. Escape it.
+    let instr = instr
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
     let mut r = Run::new()
         .add_field_char(FieldCharType::Begin, false)
-        .add_instr_text(InstrText::Unsupported(instr.to_string()))
+        .add_instr_text(InstrText::Unsupported(instr))
         .add_field_char(FieldCharType::Separate, false);
     if !cached.is_empty() {
         r = r.add_text(cached.to_string());
@@ -875,6 +881,48 @@ mod tests {
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 2000);
+    }
+
+    #[test]
+    fn field_instructions_are_xml_escaped() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            subtitle: String::new(),
+            author: "A".into(),
+            context: "C".into(),
+        };
+        // "MITRE ATT&CK" is a curated index term; its XE field must escape '&'.
+        let md = "# C\n\nThe MITRE ATT&CK framework catalogues adversary tactics.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(xml.contains("ATT&amp;CK"), "field instr must be escaped");
+        // no raw ampersand that isn't an entity
+        assert!(
+            !regex_lite_has_raw_amp(&xml),
+            "document.xml has a raw unescaped '&'"
+        );
+    }
+
+    fn regex_lite_has_raw_amp(s: &str) -> bool {
+        let b = s.as_bytes();
+        for (i, &c) in b.iter().enumerate() {
+            if c == b'&' {
+                let tail = &s[i + 1..];
+                let ok = ["amp;", "lt;", "gt;", "quot;", "apos;", "#"]
+                    .iter()
+                    .any(|e| tail.starts_with(e));
+                if !ok {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     #[test]
