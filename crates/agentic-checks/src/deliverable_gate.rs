@@ -30,7 +30,10 @@ static NUMSRC: LazyLock<Regex> =
 static FIGSPEC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```figspec\s*\n(.*?)\n```").unwrap());
 
-const GRAPHICAL: &[&str] = &["bar", "hbar", "line", "matrix", "flow", "quadrant"];
+const GRAPHICAL: &[&str] = &[
+    "bar", "hbar", "line", "matrix", "flow", "quadrant", // base chart types
+    "icon", "heatmap", "regstack", "govmap", // book-figure types (AI-Norms generator ports)
+];
 
 /// All gate findings for one markdown document. `label` prefixes locations.
 #[must_use]
