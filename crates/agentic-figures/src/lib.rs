@@ -189,6 +189,7 @@ pub fn render_figspec(spec_json: &str, out_path: &Path) -> Result<()> {
         "icon" => render_icon(&spec, out_path),
         "heatmap" => render_heatmap(&spec, out_path),
         "regstack" => render_regstack(&spec, out_path),
+        "govmap" => render_govmap(&spec, out_path),
         other => Err(anyhow!("unknown figspec type '{other}'")),
     }
 }
@@ -1076,6 +1077,253 @@ fn render_regstack(spec: &FigSpec, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Split an explicit-`\n` label, else word-wrap to `width` chars.
+fn box_lines(label: &str, width: usize) -> Vec<String> {
+    if label.contains('\n') {
+        label.split('\n').map(str::to_string).collect()
+    } else {
+        wrap(label, width)
+    }
+}
+fn ml_centered(a: &Area<'_>, lines: &[String], st: &TextStyle<'static>, cx: i32, cy: i32, lh: i32) {
+    let n = lines.len() as i32;
+    let y0 = cy - (n - 1) * lh / 2;
+    for (i, ln) in lines.iter().enumerate() {
+        let _ = text(a, ln, &centered(st.clone()), cx, y0 + i as i32 * lh);
+    }
+}
+
+/// `gen_gov.py` → government-structure diagram. `layout`="branches" (L/E/J
+/// columns, optional party band) or "tiers" (supranational blocs); AI/cyber
+/// bodies tinted amber; a checks-&-balances panel + legend at the foot.
+fn render_govmap(spec: &FigSpec, out: &Path) -> Result<()> {
+    let aifill = RGBColor(0xFC, 0xE9, 0xC8);
+    let aiedge = RGBColor(0xC7, 0x7F, 0x18);
+    let branchfill = RGBColor(0xE6, 0xEB, 0xF3);
+    let panelfill = RGBColor(0xF4, 0xF6, 0xFA);
+    let panel_edge = RGBColor(0x9A, 0xA8, 0xBF);
+    let box_edge = RGBColor(0x9A, 0xA8, 0xBF);
+
+    let w = 1120i32;
+    let layout = spec
+        .data
+        .get("layout")
+        .and_then(Value::as_str)
+        .unwrap_or("branches");
+    let checks = strs_pairs(spec.data.get("checks"));
+    let lh = 18;
+
+    // Helper to size a box from a label.
+    let box_h = |lines: usize| -> i32 { 26 + lh * lines as i32 };
+
+    // ---- compute body geometry (pass 1) ----
+    // returns the y at which the body ends (before the checks panel).
+    let mut body_items: Vec<(i32, i32, i32, i32, Vec<String>, bool)> = Vec::new(); // x0,y0,w,h,lines,ai
+    let mut headers: Vec<(i32, i32, i32, String)> = Vec::new(); // x0,y,w,name
+    let mut arrows: Vec<(i32, i32, i32)> = Vec::new(); // cx, y_from, y_to
+    let mut party: Option<String> = spec
+        .data
+        .get("party")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut top = 70;
+    if party.is_some() {
+        top = 124; // leave room for the party band at y 70..108
+    }
+
+    let body_bottom;
+    if layout == "tiers" {
+        party = None; // blocs have no party band
+        let tiers = spec.data.get("tiers").and_then(Value::as_array);
+        let mut y = top;
+        let tiers = tiers.cloned().unwrap_or_default();
+        let nt = tiers.len();
+        for (ti, tier) in tiers.iter().enumerate() {
+            let t = tier.as_array().cloned().unwrap_or_default();
+            let tname = t.first().map(json_str).unwrap_or_default();
+            let boxes = t
+                .get(1)
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            headers.push((24, y, 0, format!("\u{25B8} {tname}"))); // tier label (w=0 → plain text)
+            let m = boxes.len().max(1) as i32;
+            let avail = w - 320;
+            let bw = (avail / m - 16).clamp(160, 440);
+            let total = bw * m + 16 * (m - 1);
+            let x_start = w - 40 - total;
+            let row_y = y + 6;
+            let mut maxh = 0;
+            for (bi, b) in boxes.iter().enumerate() {
+                let c = b.as_array().cloned().unwrap_or_default();
+                let label = c.first().map(json_str).unwrap_or_default();
+                let ai = c.get(1).and_then(Value::as_bool).unwrap_or(false);
+                let lines = box_lines(&label, 26);
+                let h = box_h(lines.len());
+                maxh = maxh.max(h);
+                let bx = x_start + bi as i32 * (bw + 16);
+                body_items.push((bx, row_y, bw, h, lines, ai));
+            }
+            if ti + 1 < nt {
+                arrows.push((w / 2, row_y + maxh, row_y + maxh + 26));
+            }
+            y = row_y + maxh + 40;
+        }
+        body_bottom = y;
+    } else {
+        // three branches L / E / J
+        let centers = [205, 560, 915];
+        let half = 165;
+        let names = [("L", "LEGISLATIVE"), ("E", "EXECUTIVE"), ("J", "JUDICIAL")];
+        let mut max_bottom = top;
+        for (i, (key, disp)) in names.iter().enumerate() {
+            let cx = centers[i];
+            headers.push((cx - half, top, half * 2, (*disp).to_string()));
+            let mut y = top + 34 + 12;
+            let arr = spec
+                .data
+                .get("branches")
+                .and_then(|b| b.get(key))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for item in &arr {
+                let c = item.as_array().cloned().unwrap_or_default();
+                let label = c.first().map(json_str).unwrap_or_default();
+                let ai = c.get(1).and_then(Value::as_bool).unwrap_or(false);
+                let lines = box_lines(&label, 30);
+                let h = box_h(lines.len());
+                body_items.push((cx - half, y, half * 2, h, lines, ai));
+                y += h + 12;
+            }
+            max_bottom = max_bottom.max(y);
+        }
+        body_bottom = max_bottom;
+    }
+
+    // checks panel + legend geometry
+    let panel_top = body_bottom + 24;
+    let panel_h = if checks.is_empty() {
+        0
+    } else {
+        40 + 22 * checks.len() as i32 + 12
+    };
+    let legend_y = panel_top + panel_h + 18;
+    let h = legend_y + 44;
+
+    // ---- draw (pass 2) ----
+    let root = BitMapBackend::new(out, (w as u32, h as u32)).into_drawing_area();
+    root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
+    if !spec.title.is_empty() {
+        text(&root, &spec.title, &centered(font_b(20, &NAVY)), w / 2, 28)?;
+    }
+    if let Some(p) = &party {
+        fill_rect(&root, 40, 70, w - 40, 108, &RGBColor(0xD9, 0x53, 0x4F))?;
+        text(&root, p, &centered(font_b(15, &WHITEC)), w / 2, 89)?;
+    }
+    for (x0, y, bw, name) in &headers {
+        if *bw == 0 {
+            // tier label (italic-ish): plain navy bold, left aligned
+            text(&root, name, &font_b(13, &NAVY), *x0, *y + 10)?;
+        } else {
+            fill_rect(&root, *x0, *y, *x0 + *bw, *y + 34, &HEADBG)?;
+            text(
+                &root,
+                name,
+                &centered(font_b(15, &WHITEC)),
+                *x0 + *bw / 2,
+                *y + 17,
+            )?;
+        }
+    }
+    for (cx, yf, yt) in &arrows {
+        line(&root, vec![(*cx, *yf), (*cx, *yt)], &panel_edge, 2)?;
+        fill_poly(
+            &root,
+            vec![(*cx - 6, *yt - 8), (*cx + 6, *yt - 8), (*cx, *yt)],
+            &panel_edge,
+        )?;
+    }
+    for (x0, y, bw, bh, lines, ai) in &body_items {
+        let (fc, ec) = if *ai {
+            (aifill, aiedge)
+        } else {
+            (branchfill, box_edge)
+        };
+        fill_rect(&root, *x0, *y, *x0 + *bw, *y + *bh, &fc)?;
+        stroke_rect(
+            &root,
+            *x0,
+            *y,
+            *x0 + *bw,
+            *y + *bh,
+            &ec,
+            if *ai { 2 } else { 1 },
+        )?;
+        ml_centered(
+            &root,
+            lines,
+            &font_c(13, &INK),
+            *x0 + *bw / 2,
+            *y + *bh / 2,
+            lh,
+        );
+    }
+    // checks panel
+    if !checks.is_empty() {
+        fill_rect(
+            &root,
+            40,
+            panel_top,
+            w - 40,
+            panel_top + panel_h,
+            &panelfill,
+        )?;
+        stroke_rect(
+            &root,
+            40,
+            panel_top,
+            w - 40,
+            panel_top + panel_h,
+            &panel_edge,
+            1,
+        )?;
+        text(
+            &root,
+            "Key checks & balances and law-making powers",
+            &font_b(14, &NAVY),
+            58,
+            panel_top + 22,
+        )?;
+        let mut yy = panel_top + 52;
+        for ln in &checks {
+            text(&root, "\u{25B8}", &font_b(13, &aiedge), 58, yy)?;
+            text(&root, ln, &font_c(13, &INK), 80, yy)?;
+            yy += 22;
+        }
+    }
+    // legend
+    fill_rect(&root, 40, legend_y, 78, legend_y + 26, &aifill)?;
+    stroke_rect(&root, 40, legend_y, 78, legend_y + 26, &aiedge, 2)?;
+    text(
+        &root,
+        "= body with an AI / cybersecurity regulation role",
+        &font_c(13, &INK),
+        90,
+        legend_y + 13,
+    )?;
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
+    Ok(())
+}
+
+/// Read a JSON array of strings (the checks list).
+fn strs_pairs(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array)
+        .map(|a| a.iter().map(json_str).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,6 +1355,14 @@ mod tests {
             (
                 "regstack",
                 r##"{"id":"r","type":"regstack","title":"R","caption":"c","data":{"layers":[{"name":"AI","band":"#FCEFD9","edge":"#C77F18","chips":[["EU AI Act",1],["GPAI Code",0]]}]}}"##,
+            ),
+            (
+                "govmap_branches",
+                r#"{"id":"g","type":"govmap","title":"G","caption":"c","data":{"layout":"branches","party":"CPC","branches":{"L":[["NPC",false]],"E":[["State Council",false],["CAC",true]],"J":[["SPC",false]]},"checks":["Party leadership.","No judicial review."]}}"#,
+            ),
+            (
+                "govmap_tiers",
+                r#"{"id":"gt","type":"govmap","title":"GT","caption":"c","data":{"layout":"tiers","tiers":[["Heads of state",[["ASEAN Summit",false]]],["Ministerial",[["ADGMIN",true]]]],"checks":["Consensus-based."]}}"#,
             ),
         ];
         for (name, spec) in cases {
