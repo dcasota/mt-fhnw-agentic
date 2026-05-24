@@ -10,8 +10,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use docx_rs::{
-    AlignmentType, BreakType, Docx, Footer, PageMargin, PageNum, Paragraph, Pic, Run, RunFonts,
-    Shading, Style, StyleType, Table, TableCell, TableOfContents, TableRow, WidthType,
+    AlignmentType, BreakType, Docx, Footer, HeightRule, LineSpacing, LineSpacingType, PageMargin,
+    PageNum, Paragraph, Pic, Run, RunFonts, Shading, Style, StyleType, Table, TableCell,
+    TableCellMargins, TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType,
+    WidthType,
 };
 
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
@@ -26,6 +28,24 @@ const HEADF: &str = "Calibri";
 const MONO: &str = "Consolas";
 
 const CONTENT_TWIPS: usize = 9298; // A4 (11906) − 2×1304 margins
+
+// Relaxed readability (ADR-0030): 1.5 line spacing + breathing room after each
+// block so text and tables are not packed edge-to-edge.
+const LINE_15: i32 = 360; // 1.5× single (240 = single)
+const SPACE_AFTER: u32 = 160; // ≈8 pt after body paragraphs
+const SPACE_AFTER_HEAD: u32 = 120; // after headings
+const SPACE_BEFORE_HEAD: u32 = 280; // before headings (separate from prose above)
+const SPACE_AROUND_TABLE: u32 = 140; // spacer paragraphs hugging a table
+// Below this column width (≈2.2 cm) header labels are rotated to read bottom-up.
+const ROTATE_COLW: usize = 1250;
+
+/// 1.5-spaced body paragraph spacing with a little room after the block.
+fn body_spacing() -> LineSpacing {
+    LineSpacing::new()
+        .line_rule(LineSpacingType::Auto)
+        .line(LINE_15)
+        .after(SPACE_AFTER)
+}
 
 #[derive(Debug, Clone)]
 pub struct BookMeta {
@@ -102,7 +122,13 @@ fn heading_para(level: u8, text: &str, page_break_before: bool) -> Paragraph {
         3 => (26, HEAD2),
         _ => (23, HEAD2),
     };
-    let mut p = Paragraph::new().style(&format!("Heading{}", level.min(4)));
+    let mut p = Paragraph::new()
+        .style(&format!("Heading{}", level.min(4)))
+        .line_spacing(
+            LineSpacing::new()
+                .before(SPACE_BEFORE_HEAD)
+                .after(SPACE_AFTER_HEAD),
+        );
     if page_break_before {
         p = p.add_run(Run::new().add_break(BreakType::Page));
     }
@@ -133,7 +159,7 @@ fn run_of(r: &DocxRun) -> Run {
 }
 
 fn para_of(runs: &[DocxRun]) -> Paragraph {
-    let mut p = Paragraph::new();
+    let mut p = Paragraph::new().line_spacing(body_spacing());
     for r in runs {
         p = p.add_run(run_of(r));
     }
@@ -156,27 +182,44 @@ fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
         .max(rows.iter().map(Vec::len).max().unwrap_or(1))
         .max(1);
     let colw = CONTENT_TWIPS / ncols;
+    // Narrow many-column tables: rotate non-trivial header labels to read
+    // bottom-up so they stay legible instead of wrapping into a sliver.
+    let rotate_headers = colw < ROTATE_COLW && header.iter().any(|h| h.trim().chars().count() > 4);
     let mut trows = Vec::new();
     if !header.is_empty() {
         let cells = header
             .iter()
             .map(|h| {
-                TableCell::new()
+                let para = Paragraph::new()
+                    .align(if rotate_headers {
+                        AlignmentType::Center
+                    } else {
+                        AlignmentType::Left
+                    })
+                    .add_run(
+                        Run::new()
+                            .add_text(h)
+                            .bold()
+                            .size(19)
+                            .color("FFFFFF")
+                            .fonts(body_fonts()),
+                    );
+                let mut cell = TableCell::new()
                     .shading(Shading::new().fill(HEADBG))
                     .width(colw, WidthType::Dxa)
-                    .add_paragraph(
-                        Paragraph::new().add_run(
-                            Run::new()
-                                .add_text(h)
-                                .bold()
-                                .size(19)
-                                .color("FFFFFF")
-                                .fonts(body_fonts()),
-                        ),
-                    )
+                    .vertical_align(VAlignType::Center);
+                if rotate_headers {
+                    cell = cell.text_direction(TextDirectionType::BtLr);
+                }
+                cell.add_paragraph(para)
             })
             .collect();
-        trows.push(TableRow::new(cells));
+        let mut hrow = TableRow::new(cells);
+        if rotate_headers {
+            // Give the rotated labels vertical room.
+            hrow = hrow.row_height(1600.0).height_rule(HeightRule::AtLeast);
+        }
+        trows.push(hrow);
     }
     for (ri, row) in rows.iter().enumerate() {
         let fill = if ri % 2 == 0 { ALTBG } else { "FFFFFF" };
@@ -187,6 +230,7 @@ fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
                 TableCell::new()
                     .shading(Shading::new().fill(fill))
                     .width(colw, WidthType::Dxa)
+                    .vertical_align(VAlignType::Center)
                     .add_paragraph(
                         Paragraph::new()
                             .add_run(Run::new().add_text(val).size(19).fonts(body_fonts())),
@@ -198,6 +242,11 @@ fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
     Table::new(trows)
         .set_grid(vec![colw; ncols])
         .width(CONTENT_TWIPS, WidthType::Dxa)
+        // Fixed layout makes Word honour the grid and wrap text, so a wide table
+        // can never expand past the page margins (ADR-0030).
+        .layout(TableLayoutType::Fixed)
+        // Cell padding so text never touches the borders.
+        .margins(TableCellMargins::new().margin(60, 100, 60, 100))
 }
 
 fn render_block(
@@ -213,7 +262,7 @@ fn render_block(
         }
         DocxBlock::Paragraph(runs) => doc.add_paragraph(para_of(runs)),
         DocxBlock::BulletItem(runs) => {
-            let mut p = Paragraph::new().add_run(
+            let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
                 Run::new()
                     .add_text("•  ")
                     .size(22)
@@ -227,7 +276,7 @@ fn render_block(
             doc.add_paragraph(p)
         }
         DocxBlock::OrderedItem(runs) => {
-            let mut p = Paragraph::new().add_run(
+            let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
                 Run::new()
                     .add_text("–  ")
                     .size(22)
@@ -258,7 +307,14 @@ fn render_block(
         DocxBlock::HorizontalRule => doc.add_paragraph(
             Paragraph::new().add_run(Run::new().add_text("────────────").color(GREY)),
         ),
-        DocxBlock::Table { header, rows } => doc.add_table(table_block(header, rows)),
+        DocxBlock::Table { header, rows } => {
+            // Breathing room around the table (ADR-0030 relaxed placement).
+            let spacer =
+                || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
+            doc = doc.add_paragraph(spacer());
+            doc = doc.add_table(table_block(header, rows));
+            doc.add_paragraph(spacer())
+        }
         DocxBlock::Image { path, caption } => {
             let full = figdir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
             if let Ok(bytes) = std::fs::read(&full) {
