@@ -128,7 +128,10 @@ pub enum DocxBlock {
     },
     Paragraph(Vec<DocxRun>),
     BulletItem(Vec<DocxRun>),
-    OrderedItem(Vec<DocxRun>),
+    OrderedItem {
+        number: u64,
+        runs: Vec<DocxRun>,
+    },
     CodeBlock {
         lang: String,
         body: String,
@@ -137,6 +140,9 @@ pub enum DocxBlock {
     Table {
         header: Vec<String>,
         rows: Vec<Vec<String>>,
+        /// Optional caption (bookkit "Table N." caption-above), populated by the
+        /// renderer from a preceding `Table:`-prefixed paragraph.
+        caption: Option<String>,
     },
     Image {
         path: String,
@@ -175,6 +181,8 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
     let mut style = RunStyle::default();
     let mut state = ParseState::Top;
     let mut list_stack: Vec<bool> = Vec::new(); // true = ordered
+    let mut ordered_counters: Vec<u64> = Vec::new(); // next ordinal per ordered list
+    let mut cur_ordinal: u64 = 0; // ordinal of the item currently open
     let mut code_lang = String::new();
     let mut code_body = String::new();
     let mut tbl_header: Vec<String> = Vec::new();
@@ -212,7 +220,10 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                 let runs = std::mem::take(&mut current_runs);
                 if !runs.is_empty() {
                     if list_stack.last().copied() == Some(true) {
-                        blocks.push(DocxBlock::OrderedItem(runs));
+                        blocks.push(DocxBlock::OrderedItem {
+                            number: cur_ordinal,
+                            runs,
+                        });
                     } else if list_stack.last().copied() == Some(false) {
                         blocks.push(DocxBlock::BulletItem(runs));
                     } else {
@@ -223,11 +234,21 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
             }
             Event::Start(Tag::List(start)) => {
                 list_stack.push(start.is_some());
+                // `start` is the first ordinal (usually 1); track the next value.
+                ordered_counters.push(start.unwrap_or(1));
             }
             Event::End(TagEnd::List(_)) => {
                 list_stack.pop();
+                ordered_counters.pop();
             }
             Event::Start(Tag::Item) => {
+                // Assign + advance this item's ordinal if it sits in an ordered list.
+                if list_stack.last().copied() == Some(true) {
+                    if let Some(n) = ordered_counters.last_mut() {
+                        cur_ordinal = *n;
+                        *n += 1;
+                    }
+                }
                 state = ParseState::Item;
             }
             Event::End(TagEnd::Item) => {
@@ -236,7 +257,10 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                 if !current_runs.is_empty() {
                     let runs = std::mem::take(&mut current_runs);
                     if list_stack.last().copied() == Some(true) {
-                        blocks.push(DocxBlock::OrderedItem(runs));
+                        blocks.push(DocxBlock::OrderedItem {
+                            number: cur_ordinal,
+                            runs,
+                        });
                     } else {
                         blocks.push(DocxBlock::BulletItem(runs));
                     }
@@ -319,6 +343,7 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                 blocks.push(DocxBlock::Table {
                     header: std::mem::take(&mut tbl_header),
                     rows: std::mem::take(&mut tbl_rows),
+                    caption: None,
                 });
             }
             Event::Start(Tag::TableHead) => {

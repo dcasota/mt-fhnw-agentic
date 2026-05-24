@@ -214,15 +214,17 @@ pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(Stri
         let json = &after[body_start..body_start + end_rel];
         let spec = parse(json)?;
         let png = figdir.join(format!("{}.png", spec.id));
-        if render_figspec(json, &png).is_ok() {
-            out.push_str(&format!(
-                "![{}](figures/{}/{}.png)",
-                spec.caption.replace(['[', ']'], ""),
-                subdir,
-                spec.id
-            ));
-            n += 1;
-        }
+        // Surface a render failure instead of silently dropping the figure: a
+        // deliverable must never lose a figspec without a trace (non-repudiation).
+        render_figspec(json, &png)
+            .map_err(|e| anyhow!("rendering figspec '{}': {e}", spec.id))?;
+        out.push_str(&format!(
+            "![{}](figures/{}/{}.png)",
+            spec.caption.replace(['[', ']'], ""),
+            subdir,
+            spec.id
+        ));
+        n += 1;
         // skip past the closing ```
         let consumed = body_start + end_rel + 3;
         rest = &after[consumed..];
@@ -1474,6 +1476,17 @@ fn render_treemap(spec: &FigSpec, out: &Path) -> Result<()> {
     if items.is_empty() {
         return Err(anyhow!("treemap: missing data.items"));
     }
+    // Optional short-name aliases for tight tiles (gen_popmap SHORT fallback).
+    let short: std::collections::HashMap<String, String> = spec
+        .data
+        .get("short")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or(k).to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let w = 1120i32;
@@ -1501,26 +1514,39 @@ fn render_treemap(spec: &FigSpec, out: &Path) -> Result<()> {
         let col = hex_color(regions.get(region).map_or("#888888", String::as_str));
         fill_rect(&root, x0, y0, x1, y1, &col)?;
         stroke_rect(&root, x0, y0, x1, y1, &WHITEC, 2)?;
-        if r.dx > 52.0 && r.dy > 26.0 {
-            let lines: Vec<String> = if *val >= 1000.0 {
-                vec![name.clone(), format!("{:.2} bn", val / 1000.0)]
-            } else if *val >= 45.0 {
-                vec![name.clone(), format!("{} mn", *val as i64)]
-            } else if *val >= 25.0 {
-                vec![name.clone()]
-            } else {
-                vec![]
-            };
-            if !lines.is_empty() {
-                ml_centered(
-                    &root,
-                    &lines,
-                    &font_b(13, &WHITEC),
-                    (r.x + r.dx / 2.0) as i32,
-                    (r.y + r.dy / 2.0) as i32,
-                    16,
-                );
+        let cx = (r.x + r.dx / 2.0) as i32;
+        let cy = (r.y + r.dy / 2.0) as i32;
+        // Tight tiles fall back to a short alias if one is provided.
+        let tight = r.dx < 80.0;
+        let nm = if tight {
+            short.get(name).cloned().unwrap_or_else(|| name.clone())
+        } else {
+            name.clone()
+        };
+        let val_line = if *val >= 1000.0 {
+            Some(format!("{:.2} bn", val / 1000.0))
+        } else if *val >= 45.0 {
+            Some(format!("{} mn", *val as i64))
+        } else {
+            None
+        };
+        // Portrait tiles: rotate the label 90° so it stays readable (gen_popmap).
+        if r.dy > r.dx * 1.4 && r.dy > 60.0 && r.dx > 22.0 {
+            text(
+                &root,
+                &nm,
+                &font_b(12, &WHITEC).transform(FontTransform::Rotate270),
+                cx,
+                cy,
+            )?;
+        } else if r.dx > 44.0 && r.dy > 24.0 {
+            let mut lines = vec![nm];
+            if r.dy > 40.0 {
+                if let Some(v) = val_line {
+                    lines.push(v);
+                }
             }
+            ml_centered(&root, &lines, &font_b(13, &WHITEC), cx, cy, 16);
         }
     }
     // region legend along the bottom

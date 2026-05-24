@@ -28,6 +28,18 @@ struct BookSpec {
     author: Option<String>,
     #[serde(default)]
     context: Option<String>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    dedication: Option<String>,
+    #[serde(default)]
+    epigraph: Option<String>,
+    #[serde(default)]
+    epigraph_by: Option<String>,
+    #[serde(default)]
+    disclaimer: Option<String>,
+    #[serde(default)]
+    index_terms: Vec<String>,
     chapters: Vec<String>,
 }
 
@@ -135,6 +147,13 @@ fn build_one(
     work: &Path,
     out: &Path,
 ) -> Result<(usize, u64)> {
+    // Pre-render the three admonition icons (gen_icons port) into the work dir
+    // so the book renderer can embed icon_{tip,note,warning}.png in callouts.
+    for kind in ["tip", "note", "warning"] {
+        let json =
+            format!("{{\"id\":\"icon_{kind}\",\"type\":\"icon\",\"data\":{{\"variant\":\"{kind}\"}}}}");
+        let _ = agentic_figures::render_figspec(&json, &work.join(format!("icon_{kind}.png")));
+    }
     let mut chapters: Vec<(String, String)> = Vec::new();
     let mut figs = 0usize;
     for ch in &spec.chapters {
@@ -144,8 +163,10 @@ fn build_one(
         };
         let md = String::from_utf8_lossy(&blob.content).to_string();
         let subdir = sanitize(ch.rsplit('/').next().unwrap_or(ch));
-        let (resolved, n) =
-            agentic_figures::resolve_markdown(&md, work, &subdir).unwrap_or((md.clone(), 0));
+        // Surface (don't swallow) a figure-resolution failure: a dropped figspec
+        // must not vanish silently from a deliverable (non-repudiation).
+        let (resolved, n) = agentic_figures::resolve_markdown(&md, work, &subdir)
+            .with_context(|| format!("resolving figspecs in chapter {ch}"))?;
         figs += n;
         chapters.push((ch.clone(), resolved));
     }
@@ -160,6 +181,12 @@ fn build_one(
             .context
             .clone()
             .unwrap_or_else(|| "MAS Cybersecurity, IWI, FHNW — May 2026".into()),
+        description: spec.description.clone(),
+        dedication: spec.dedication.clone(),
+        epigraph: spec.epigraph.clone(),
+        epigraph_by: spec.epigraph_by.clone(),
+        disclaimer: spec.disclaimer.clone(),
+        index_terms: spec.index_terms.clone(),
     };
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));

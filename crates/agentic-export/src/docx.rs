@@ -54,7 +54,7 @@ pub fn render(title: &str, chapters: &[Chapter]) -> Result<Vec<u8>> {
                         .numbering(NumberingId::new(2), IndentLevel::new(0));
                     doc.add_paragraph(p)
                 }
-                DocxBlock::OrderedItem(runs) => {
+                DocxBlock::OrderedItem { runs, .. } => {
                     let p = paragraph_from_runs(&runs)
                         .numbering(NumberingId::new(1), IndentLevel::new(0));
                     doc.add_paragraph(p)
@@ -72,7 +72,7 @@ pub fn render(title: &str, chapters: &[Chapter]) -> Result<Vec<u8>> {
                 DocxBlock::HorizontalRule => {
                     doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text("───────────")))
                 }
-                DocxBlock::Table { header, rows } => {
+                DocxBlock::Table { header, rows, .. } => {
                     let mut d = doc;
                     if !header.is_empty() {
                         d = d.add_paragraph(
