@@ -575,6 +575,12 @@ pub enum CheckAction {
         #[arg(long, default_value = "out/sources/")]
         prefix: String,
     },
+    /// AIBOM chronological-ledger integrity (Phase 2): every commit signed, the
+    /// journal covers the commit span, and AI decisions are recorded.
+    Aibom {
+        #[arg(long)]
+        project: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

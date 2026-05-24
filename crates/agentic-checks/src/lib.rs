@@ -9,6 +9,7 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::missing_errors_doc, clippy::module_name_repetitions, dead_code)]
 
+pub mod aibom_gate;
 pub mod bibliography_gate;
 pub mod citation_tracker;
 pub mod contamination;

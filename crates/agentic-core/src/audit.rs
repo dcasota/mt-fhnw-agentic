@@ -556,7 +556,57 @@ pub fn render_markdown(rep: &AuditReport) -> String {
         o.push('\n');
     }
 
-    o.push_str("## 7 Integrity seal (ML-DSA-87, FIPS 204)\n\n");
+    // --- 7. AIBOM — single chronological ledger of every auditable event ----
+    o.push_str("## 7 AIBOM — chronological decision-and-change ledger\n\n");
+    o.push_str(
+        "A merged, strictly time-ordered record of every journal action, content \
+commit, AI/LLM decision and gate verdict — the AI Bill of Materials chronology. \
+Sealed by this report's signature.\n\n",
+    );
+    let trunc = |s: &str, n: usize| s.replace('|', "\\|").chars().take(n).collect::<String>();
+    let mut events: Vec<(String, &'static str, String)> = Vec::new();
+    for a in &rep.user_actions {
+        events.push((
+            a.ts.clone(),
+            "journal",
+            format!("[{}] {}", a.action_type, trunc(&a.description, 90)),
+        ));
+    }
+    for c in &rep.changes {
+        events.push((
+            c.timestamp.clone(),
+            if c.signed { "commit (signed)" } else { "commit (UNSIGNED)" },
+            format!("{} {}", &c.sha256[..c.sha256.len().min(12)], trunc(&c.message, 72)),
+        ));
+    }
+    for d in &rep.llm_decisions {
+        events.push((
+            d.ts.clone(),
+            "ai-decision",
+            format!("{} -> {}", trunc(&d.action, 60), d.result),
+        ));
+    }
+    for v in &rep.verdicts {
+        events.push((
+            v.ts.clone(),
+            "gate",
+            format!("{}: {}", v.checkpoint, v.verdict),
+        ));
+    }
+    events.sort_by(|x, y| x.0.cmp(&y.0));
+    o.push_str(&format!(
+        "_{} events, {} -> {}_\n\n",
+        events.len(),
+        events.first().map_or("-", |e| e.0.as_str()),
+        events.last().map_or("-", |e| e.0.as_str()),
+    ));
+    o.push_str("| When | Kind | Event |\n|---|---|---|\n");
+    for (ts, kind, detail) in &events {
+        o.push_str(&format!("| {ts} | {kind} | {detail} |\n"));
+    }
+    o.push('\n');
+
+    o.push_str("## 8 Integrity seal (ML-DSA-87, FIPS 204)\n\n");
     o.push_str(&format!(
         "- HEAD commit: `{}`\n- HEAD signed: {}\n- Signed commits: {} of {}\n- Signing key id: {}\n",
         rep.seal.head_commit.as_deref().unwrap_or("(none)"),

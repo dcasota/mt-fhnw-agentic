@@ -38,6 +38,7 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
         CheckAction::Bibliography { project, prefix } => {
             agentic_checks::bibliography_gate::run(&conn, &project, &prefix)?
         }
+        CheckAction::Aibom { project } => agentic_checks::aibom_gate::run(&conn, &project)?,
         CheckAction::Tree {
             project,
             root,
