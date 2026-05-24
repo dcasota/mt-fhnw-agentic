@@ -850,113 +850,153 @@ fn render_icon(spec: &FigSpec, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `gen_normsmap.py` → standards-landscape heatmap: domain bands, coverage dots
-/// (filled = covered, hollow = listed), two heat columns, gradient legend.
+/// `gen_normsmap.py` → standards-landscape heatmap. Two balanced columns (so it
+/// fits an A4 text frame): domain bands, coverage dots (filled = covered, hollow
+/// = listed), per-column Reg./Ind. heat cells, gradient legend.
 fn render_heatmap(spec: &FigSpec, out: &Path) -> Result<()> {
-    let domains = spec.data.get("domains").and_then(Value::as_array);
-    let Some(domains) = domains else {
+    let Some(domains) = spec.data.get("domains").and_then(Value::as_array) else {
         return Err(anyhow!("heatmap: missing data.domains"));
     };
-    let total_rows: usize = domains
-        .iter()
-        .filter_map(|d| d.get("rows").and_then(Value::as_array).map(Vec::len))
-        .sum();
-    let nd = domains.len();
+    let nrows = |d: &Value| d.get("rows").and_then(Value::as_array).map_or(0, Vec::len);
+
+    // Split domains into two columns, balancing total rows (left fills to ~half).
+    let total_rows: usize = domains.iter().map(nrows).sum();
+    let target = total_rows.div_ceil(2);
+    let (mut left, mut right): (Vec<&Value>, Vec<&Value>) = (Vec::new(), Vec::new());
+    let mut acc = 0usize;
+    for d in domains {
+        if acc < target {
+            left.push(d);
+            acc += nrows(d);
+        } else {
+            right.push(d);
+        }
+    }
+
     let w = 1120i32;
-    let top = 116i32;
-    let band_h = 34i32;
-    let row_h = 30i32;
-    let h = top + (nd as i32) * (band_h + 12) + (total_rows as i32) * row_h + 96;
+    let margin = 20i32;
+    let gap = 24i32;
+    let col_w = (w - margin * 2 - gap) / 2;
+    let band_h = 30i32;
+    let row_h = 28i32;
+    let top = 102i32;
+    let col_h = |ds: &[&Value]| -> i32 {
+        ds.iter()
+            .map(|d| band_h + 10 + nrows(d) as i32 * row_h + 12)
+            .sum()
+    };
+    let body_h = col_h(&left).max(col_h(&right));
+    let h = top + body_h + 88;
+
     let root = BitMapBackend::new(out, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
-
     if !spec.title.is_empty() {
-        text(&root, &spec.title, &font_b(20, &NAVY), 24, 28)?;
+        text(&root, &spec.title, &font_b(19, &NAVY), 22, 26)?;
     }
     text(
         &root,
-        "Filled = covered here   ·   hollow = in the landscape table   ·   no mark = wider universe",
-        &font_c(13, &GREY),
-        24,
-        58,
+        "Filled = covered here · hollow = in the landscape table · no mark = wider universe · Reg.= regulators, Ind.= industry",
+        &font_c(12, &GREY),
+        22,
+        54,
     )?;
-    let x_dot = 36;
-    let x_id = 58;
-    let x_title = 320;
-    let x_reg = 840;
-    let x_ind = 970;
-    let cell_w = 110;
-    let cell_h = 24;
-    text(&root, "Regulators", &font_b(13, &NAVY), x_reg, 86)?;
-    text(&root, "Industry", &font_b(13, &NAVY), x_ind, 86)?;
 
-    let mut y = top;
-    for d in domains {
-        let name = d.get("name").and_then(Value::as_str).unwrap_or("");
-        fill_rect(&root, 20, y, w - 20, y + band_h, &HEADBG)?;
-        text(&root, name, &font_b(15, &WHITEC), 32, y + band_h / 2)?;
-        y += band_h + 12;
-        for row in d
-            .get("rows")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let cells = row.as_array().cloned().unwrap_or_default();
-            let id = cells.first().map(json_str).unwrap_or_default();
-            let title = cells.get(1).map(json_str).unwrap_or_default();
-            let rh = cells.get(2).and_then(Value::as_f64).unwrap_or(0.0);
-            let ih = cells.get(3).and_then(Value::as_f64).unwrap_or(0.0);
-            let level = cells.get(4).and_then(Value::as_i64).unwrap_or(0);
-            let cy = y + row_h / 2;
-            if level == 2 {
-                fill_circle(&root, x_dot, cy, 7, &HEADBG)?;
-            } else if level == 1 {
-                stroke_circle(&root, x_dot, cy, 7, &HEADBG, 2)?;
+    let cell_w = 46i32;
+    let cell_h = 22i32;
+    let cell_gap = 8i32;
+    let draw_col = |x0: i32, ds: &[&Value]| -> Result<()> {
+        let x_ind = x0 + col_w - cell_w - 6;
+        let x_reg = x_ind - cell_w - cell_gap;
+        let x_dot = x0 + 14;
+        let x_id = x0 + 30;
+        let x_title = x0 + 150;
+        text(
+            &root,
+            "Reg.",
+            &centered(font_b(11, &NAVY)),
+            x_reg + cell_w / 2,
+            top - 12,
+        )?;
+        text(
+            &root,
+            "Ind.",
+            &centered(font_b(11, &NAVY)),
+            x_ind + cell_w / 2,
+            top - 12,
+        )?;
+        let mut y = top;
+        for d in ds {
+            let name = d.get("name").and_then(Value::as_str).unwrap_or("");
+            fill_rect(&root, x0, y, x0 + col_w, y + band_h, &HEADBG)?;
+            text(&root, name, &font_b(13, &WHITEC), x0 + 10, y + band_h / 2)?;
+            y += band_h + 10;
+            for row in d
+                .get("rows")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let c = row.as_array().cloned().unwrap_or_default();
+                let id = c.first().map(json_str).unwrap_or_default();
+                let title = c.get(1).map(json_str).unwrap_or_default();
+                let rh = c.get(2).and_then(Value::as_f64).unwrap_or(0.0);
+                let ih = c.get(3).and_then(Value::as_f64).unwrap_or(0.0);
+                let level = c.get(4).and_then(Value::as_i64).unwrap_or(0);
+                let cy = y + row_h / 2;
+                if level == 2 {
+                    fill_circle(&root, x_dot, cy, 6, &HEADBG)?;
+                } else if level == 1 {
+                    stroke_circle(&root, x_dot, cy, 6, &HEADBG, 2)?;
+                }
+                text(&root, &id, &font_b(12, &INK), x_id, cy)?;
+                text(&root, &title, &font_c(11, &GREY), x_title, cy)?;
+                for (cx, hv) in [(x_reg, rh), (x_ind, ih)] {
+                    let col = heat_color(hv);
+                    fill_rect(
+                        &root,
+                        cx,
+                        cy - cell_h / 2,
+                        cx + cell_w,
+                        cy + cell_h / 2,
+                        &col,
+                    )?;
+                    stroke_rect(
+                        &root,
+                        cx,
+                        cy - cell_h / 2,
+                        cx + cell_w,
+                        cy + cell_h / 2,
+                        &WHITEC,
+                        2,
+                    )?;
+                    let tc = if hv >= 4.0 { WHITEC } else { INK };
+                    text(
+                        &root,
+                        &format!("{}", hv as i64),
+                        &centered(font_b(12, &tc)),
+                        cx + cell_w / 2,
+                        cy,
+                    )?;
+                }
+                y += row_h;
             }
-            text(&root, &id, &font_b(14, &INK), x_id, cy)?;
-            text(&root, &title, &font_c(13, &GREY), x_title, cy)?;
-            for (cx, hv) in [(x_reg, rh), (x_ind, ih)] {
-                let col = heat_color(hv);
-                fill_rect(
-                    &root,
-                    cx,
-                    cy - cell_h / 2,
-                    cx + cell_w,
-                    cy + cell_h / 2,
-                    &col,
-                )?;
-                stroke_rect(
-                    &root,
-                    cx,
-                    cy - cell_h / 2,
-                    cx + cell_w,
-                    cy + cell_h / 2,
-                    &WHITEC,
-                    2,
-                )?;
-                let tc = if hv >= 4.0 { WHITEC } else { INK };
-                text(
-                    &root,
-                    &format!("{}", hv as i64),
-                    &centered(font_b(13, &tc)),
-                    cx + cell_w / 2,
-                    cy,
-                )?;
-            }
-            y += row_h;
+            y += 12;
         }
-    }
-    // gradient legend
-    let (lx0, lx1, ly) = (58, 458, y + 30);
+        Ok(())
+    };
+    draw_col(margin, &left)?;
+    draw_col(margin + col_w + gap, &right)?;
+
+    // gradient legend (bottom-left)
+    let (lx0, lx1, ly) = (margin, margin + 360, h - 56);
     for i in 0..60 {
         let c = heat_color(f64::from(i) / 59.0 * 5.0);
         let sx = lx0 + (lx1 - lx0) * i / 60;
-        fill_rect(&root, sx, ly, sx + (lx1 - lx0) / 60 + 1, ly + 20, &c)?;
+        fill_rect(&root, sx, ly, sx + (lx1 - lx0) / 60 + 1, ly + 18, &c)?;
     }
-    stroke_rect(&root, lx0, ly, lx1, ly + 20, &BORDER, 1)?;
-    text(&root, "cool (0)", &font_c(12, &GREY), lx0, ly + 36)?;
-    text(&root, "hot (5)", &font_c(12, &GREY), lx1 - 40, ly + 36)?;
+    stroke_rect(&root, lx0, ly, lx1, ly + 18, &BORDER, 1)?;
+    text(&root, "cool 0", &font_c(12, &GREY), lx0, ly + 32)?;
+    text(&root, "hot 5", &font_c(12, &GREY), lx1 - 34, ly + 32)?;
     root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
