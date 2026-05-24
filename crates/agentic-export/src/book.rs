@@ -36,6 +36,7 @@ const SPACE_AFTER: u32 = 160; // ≈8 pt after body paragraphs
 const SPACE_AFTER_HEAD: u32 = 120; // after headings
 const SPACE_BEFORE_HEAD: u32 = 280; // before headings (separate from prose above)
 const SPACE_AROUND_TABLE: u32 = 140; // spacer paragraphs hugging a table
+const SPACE_AROUND_FIG: u32 = 220; // breathing room above a figure + below its caption (audit sentinel)
 // Below this column width (≈2.2 cm) header labels are rotated to read bottom-up.
 const ROTATE_COLW: usize = 1250;
 
@@ -376,20 +377,29 @@ fn render_block(
                     })
                     .unwrap_or(3_400_000);
                 let pic = Pic::new(&bytes).size(target_w, h_emu);
+                // Breathing room above the figure (ADR-0030 relaxed placement).
+                doc = doc.add_paragraph(
+                    Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG)),
+                );
                 doc = doc.add_paragraph(
                     Paragraph::new()
                         .align(AlignmentType::Center)
+                        .line_spacing(LineSpacing::new().after(80))
                         .add_run(Run::new().add_image(pic)),
                 );
+                // Caption with generous room after, so the next text isn't crammed.
                 doc.add_paragraph(
-                    Paragraph::new().align(AlignmentType::Center).add_run(
-                        Run::new()
-                            .add_text(format!("Figure {}. {caption}", *figno))
-                            .italic()
-                            .size(18)
-                            .color(GREY)
-                            .fonts(body_fonts()),
-                    ),
+                    Paragraph::new()
+                        .align(AlignmentType::Center)
+                        .line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG))
+                        .add_run(
+                            Run::new()
+                                .add_text(format!("Figure {}. {caption}", *figno))
+                                .italic()
+                                .size(18)
+                                .color(GREY)
+                                .fonts(body_fonts()),
+                        ),
                 )
             } else {
                 doc.add_paragraph(

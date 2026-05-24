@@ -172,6 +172,9 @@ struct DocxFacts {
     media: usize,
     has_heading_styles: bool,
     has_page_size: bool,
+    /// Count of the figure-spacing sentinel (ADR-0030 relaxed placement around
+    /// figures: `w:after="220"`). Each figure should contribute at least one.
+    fig_spacers: usize,
     bytes: u64,
 }
 
@@ -197,6 +200,7 @@ fn inspect_docx(path: &Path) -> Result<DocxFacts> {
         media,
         has_heading_styles: styles.contains("w:styleId=\"Heading1\""),
         has_page_size: document.contains("w:pgSz"),
+        fig_spacers: document.matches("w:after=\"220\"").count(),
         bytes,
     })
 }
@@ -209,8 +213,8 @@ fn audit(current: &Path, previous: Option<&Path>, json_out: bool) -> Result<()> 
     let mut fail = false;
     let mut rows = Vec::new();
     println!(
-        "{:<28} {:>6} {:>5} {:>5} {:>9}  {}",
-        "BOOK", "FIGS", "HEAD", "PAGE", "KB", "VS PREVIOUS"
+        "{:<28} {:>6} {:>5} {:>5} {:>5} {:>9}  {}",
+        "BOOK", "FIGS", "HEAD", "PAGE", "SPC", "KB", "VS PREVIOUS"
     );
     for b in &books {
         let name = b.file_name().unwrap().to_string_lossy().to_string();
@@ -230,6 +234,18 @@ fn audit(current: &Path, previous: Option<&Path>, json_out: bool) -> Result<()> 
         }
         if !f.has_page_size {
             notes.push("no page size".to_string());
+            fail = true;
+        }
+        // ADR-0030 relaxed placement: every figure must carry breathing-room
+        // spacing. A book with figures but no figure-spacing sentinels means the
+        // figures are cramped against surrounding text (the defect this gate now
+        // enforces — previously unaudited).
+        let figs_spaced = f.media == 0 || f.fig_spacers >= f.media;
+        if !figs_spaced {
+            notes.push(format!(
+                "figures lack relaxed spacing (ADR-0030): {} figs, {} spacers",
+                f.media, f.fig_spacers
+            ));
             fail = true;
         }
         // Cross-iteration comparison.
@@ -258,15 +274,16 @@ fn audit(current: &Path, previous: Option<&Path>, json_out: bool) -> Result<()> 
             }
         }
         println!(
-            "{:<28} {:>6} {:>5} {:>5} {:>9}  {}",
+            "{:<28} {:>6} {:>5} {:>5} {:>5} {:>9}  {}",
             name,
             f.media,
             if f.has_heading_styles { "yes" } else { "NO" },
             if f.has_page_size { "yes" } else { "NO" },
+            if figs_spaced { "yes" } else { "NO" },
             f.bytes / 1024,
             notes.join("; ")
         );
-        rows.push(serde_json::json!({ "book": name, "figures": f.media, "heading_styles": f.has_heading_styles, "kb": f.bytes/1024, "notes": notes }));
+        rows.push(serde_json::json!({ "book": name, "figures": f.media, "heading_styles": f.has_heading_styles, "figs_spaced": figs_spaced, "kb": f.bytes/1024, "notes": notes }));
     }
     if json_out {
         println!(
