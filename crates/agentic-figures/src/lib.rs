@@ -186,6 +186,9 @@ pub fn render_figspec(spec_json: &str, out_path: &Path) -> Result<()> {
         "matrix" => render_matrix(&spec, out_path),
         "quadrant" => render_quadrant(&spec, out_path),
         "flow" => render_flow(&spec, out_path),
+        "icon" => render_icon(&spec, out_path),
+        "heatmap" => render_heatmap(&spec, out_path),
+        "regstack" => render_regstack(&spec, out_path),
         other => Err(anyhow!("unknown figspec type '{other}'")),
     }
 }
@@ -725,6 +728,354 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
     Ok(())
 }
 
+// ===========================================================================
+// Book figures — Rust ports of the AI-Norms book generators (gen_icons.py,
+// gen_normsmap.py, gen_regstack.py). Driven by figspec JSON so any document
+// (dimension / campaign / solution) can embed them.
+// ===========================================================================
+
+fn fill_circle(a: &Area<'_>, x: i32, y: i32, r: i32, c: &RGBColor) -> Result<()> {
+    a.draw(&Circle::new((x, y), r, c.filled()))
+        .map_err(|e| anyhow!("circle: {e}"))
+}
+fn stroke_circle(a: &Area<'_>, x: i32, y: i32, r: i32, c: &RGBColor, w: u32) -> Result<()> {
+    a.draw(&Circle::new((x, y), r, ShapeStyle::from(c).stroke_width(w)))
+        .map_err(|e| anyhow!("circle: {e}"))
+}
+fn fill_poly(a: &Area<'_>, pts: Vec<(i32, i32)>, c: &RGBColor) -> Result<()> {
+    a.draw(&Polygon::new(pts, c.filled()))
+        .map_err(|e| anyhow!("poly: {e}"))
+}
+/// Parse "#RRGGBB" → RGBColor (falls back to grey).
+fn hex_color(s: &str) -> RGBColor {
+    let h = s.trim_start_matches('#');
+    if h.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&h[0..2], 16),
+            u8::from_str_radix(&h[2..4], 16),
+            u8::from_str_radix(&h[4..6], 16),
+        ) {
+            return RGBColor(r, g, b);
+        }
+    }
+    GREY
+}
+/// YlOrRd heat ramp over 0..=5 (matches the matplotlib `YlOrRd` cells).
+fn heat_color(h: f64) -> RGBColor {
+    const STOPS: [(u8, u8, u8); 6] = [
+        (255, 255, 204),
+        (255, 237, 160),
+        (254, 178, 76),
+        (253, 141, 60),
+        (240, 59, 32),
+        (189, 0, 38),
+    ];
+    let h = h.clamp(0.0, 5.0);
+    let i = h.floor() as usize;
+    let f = h - h.floor();
+    let (a, b) = (STOPS[i.min(5)], STOPS[(i + 1).min(5)]);
+    let lerp = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * f).round() as u8;
+    RGBColor(lerp(a.0, b.0), lerp(a.1, b.1), lerp(a.2, b.2))
+}
+/// A dashed rectangle border (for "proposed/draft" chips).
+fn dashed_rect(
+    a: &Area<'_>,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    c: &RGBColor,
+    w: u32,
+) -> Result<()> {
+    let dash = 7;
+    let gap = 4;
+    let mut seg = |ax: i32, ay: i32, bx: i32, by: i32| -> Result<()> {
+        let len = (((bx - ax).pow(2) + (by - ay).pow(2)) as f64).sqrt();
+        let n = (len / f64::from(dash + gap)).max(1.0) as i32;
+        for k in 0..n {
+            let t0 = f64::from(k) * f64::from(dash + gap) / len.max(1.0);
+            let t1 = (f64::from(k) * f64::from(dash + gap) + f64::from(dash)) / len.max(1.0);
+            let p0 = (
+                ax + ((bx - ax) as f64 * t0) as i32,
+                ay + ((by - ay) as f64 * t0) as i32,
+            );
+            let p1 = (
+                ax + ((bx - ax) as f64 * t1.min(1.0)) as i32,
+                ay + ((by - ay) as f64 * t1.min(1.0)) as i32,
+            );
+            line(a, vec![p0, p1], c, w)?;
+        }
+        Ok(())
+    };
+    seg(x0, y0, x1, y0)?;
+    seg(x1, y0, x1, y1)?;
+    seg(x1, y1, x0, y1)?;
+    seg(x0, y1, x0, y0)
+}
+
+/// `gen_icons.py` → flat admonition icon (note / tip / warning) on white.
+fn render_icon(spec: &FigSpec, out: &Path) -> Result<()> {
+    let variant = spec
+        .data
+        .get("variant")
+        .and_then(Value::as_str)
+        .unwrap_or("note");
+    let root = BitMapBackend::new(out, (200, 200)).into_drawing_area();
+    root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
+    let navy = RGBColor(0x1F, 0x38, 0x64);
+    let green = RGBColor(0x2E, 0x7D, 0x32);
+    let amber = RGBColor(0xC7, 0x7F, 0x18);
+    match variant {
+        "tip" => {
+            fill_circle(&root, 100, 100, 92, &green)?;
+            fill_circle(&root, 100, 86, 44, &WHITEC)?; // bulb
+            fill_rect(&root, 80, 126, 120, 162, &WHITEC)?; // base
+            fill_rect(&root, 86, 162, 114, 178, &green)?; // screw
+        }
+        "warning" => {
+            fill_poly(&root, vec![(100, 20), (186, 172), (14, 172)], &amber)?;
+            fill_rect(&root, 92, 64, 108, 130, &WHITEC)?; // !
+            fill_circle(&root, 100, 150, 9, &WHITEC)?;
+        }
+        _ => {
+            fill_circle(&root, 100, 100, 92, &navy)?;
+            fill_circle(&root, 100, 58, 13, &WHITEC)?; // dot of i
+            fill_rect(&root, 88, 80, 112, 150, &WHITEC)?; // stem of i
+        }
+    }
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
+    Ok(())
+}
+
+/// `gen_normsmap.py` → standards-landscape heatmap: domain bands, coverage dots
+/// (filled = covered, hollow = listed), two heat columns, gradient legend.
+fn render_heatmap(spec: &FigSpec, out: &Path) -> Result<()> {
+    let domains = spec.data.get("domains").and_then(Value::as_array);
+    let Some(domains) = domains else {
+        return Err(anyhow!("heatmap: missing data.domains"));
+    };
+    let total_rows: usize = domains
+        .iter()
+        .filter_map(|d| d.get("rows").and_then(Value::as_array).map(Vec::len))
+        .sum();
+    let nd = domains.len();
+    let w = 1120i32;
+    let top = 116i32;
+    let band_h = 34i32;
+    let row_h = 30i32;
+    let h = top + (nd as i32) * (band_h + 12) + (total_rows as i32) * row_h + 96;
+    let root = BitMapBackend::new(out, (w as u32, h as u32)).into_drawing_area();
+    root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
+
+    if !spec.title.is_empty() {
+        text(&root, &spec.title, &font_b(20, &NAVY), 24, 28)?;
+    }
+    text(
+        &root,
+        "Filled = covered here   ·   hollow = in the landscape table   ·   no mark = wider universe",
+        &font_c(13, &GREY),
+        24,
+        58,
+    )?;
+    let x_dot = 36;
+    let x_id = 58;
+    let x_title = 320;
+    let x_reg = 840;
+    let x_ind = 970;
+    let cell_w = 110;
+    let cell_h = 24;
+    text(&root, "Regulators", &font_b(13, &NAVY), x_reg, 86)?;
+    text(&root, "Industry", &font_b(13, &NAVY), x_ind, 86)?;
+
+    let mut y = top;
+    for d in domains {
+        let name = d.get("name").and_then(Value::as_str).unwrap_or("");
+        fill_rect(&root, 20, y, w - 20, y + band_h, &HEADBG)?;
+        text(&root, name, &font_b(15, &WHITEC), 32, y + band_h / 2)?;
+        y += band_h + 12;
+        for row in d
+            .get("rows")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let cells = row.as_array().cloned().unwrap_or_default();
+            let id = cells.first().map(json_str).unwrap_or_default();
+            let title = cells.get(1).map(json_str).unwrap_or_default();
+            let rh = cells.get(2).and_then(Value::as_f64).unwrap_or(0.0);
+            let ih = cells.get(3).and_then(Value::as_f64).unwrap_or(0.0);
+            let level = cells.get(4).and_then(Value::as_i64).unwrap_or(0);
+            let cy = y + row_h / 2;
+            if level == 2 {
+                fill_circle(&root, x_dot, cy, 7, &HEADBG)?;
+            } else if level == 1 {
+                stroke_circle(&root, x_dot, cy, 7, &HEADBG, 2)?;
+            }
+            text(&root, &id, &font_b(14, &INK), x_id, cy)?;
+            text(&root, &title, &font_c(13, &GREY), x_title, cy)?;
+            for (cx, hv) in [(x_reg, rh), (x_ind, ih)] {
+                let col = heat_color(hv);
+                fill_rect(
+                    &root,
+                    cx,
+                    cy - cell_h / 2,
+                    cx + cell_w,
+                    cy + cell_h / 2,
+                    &col,
+                )?;
+                stroke_rect(
+                    &root,
+                    cx,
+                    cy - cell_h / 2,
+                    cx + cell_w,
+                    cy + cell_h / 2,
+                    &WHITEC,
+                    2,
+                )?;
+                let tc = if hv >= 4.0 { WHITEC } else { INK };
+                text(
+                    &root,
+                    &format!("{}", hv as i64),
+                    &centered(font_b(13, &tc)),
+                    cx + cell_w / 2,
+                    cy,
+                )?;
+            }
+            y += row_h;
+        }
+    }
+    // gradient legend
+    let (lx0, lx1, ly) = (58, 458, y + 30);
+    for i in 0..60 {
+        let c = heat_color(f64::from(i) / 59.0 * 5.0);
+        let sx = lx0 + (lx1 - lx0) * i / 60;
+        fill_rect(&root, sx, ly, sx + (lx1 - lx0) / 60 + 1, ly + 20, &c)?;
+    }
+    stroke_rect(&root, lx0, ly, lx1, ly + 20, &BORDER, 1)?;
+    text(&root, "cool (0)", &font_c(12, &GREY), lx0, ly + 36)?;
+    text(&root, "hot (5)", &font_c(12, &GREY), lx1 - 40, ly + 36)?;
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
+    Ok(())
+}
+
+/// `gen_regstack.py` → per-jurisdiction regulation stack: themed layers of
+/// chips; solid border = in force, dashed border = proposed/draft/voluntary.
+fn render_regstack(spec: &FigSpec, out: &Path) -> Result<()> {
+    let layers = spec.data.get("layers").and_then(Value::as_array);
+    let Some(layers) = layers else {
+        return Err(anyhow!("regstack: missing data.layers"));
+    };
+    let w = 1120i32;
+    let x0 = 24;
+    let x1 = w - 24;
+    let chip_h = 40;
+    let chip_gap = 14;
+    let row_gap = 12;
+    let header_h = 34;
+    let chip_w = |label: &str| -> i32 { (12 * label.chars().count() as i32 + 40).max(150) };
+
+    // First pass: compute layout + height.
+    struct Chip {
+        x: i32,
+        y: i32,
+        w: i32,
+        label: String,
+        status: i64,
+        edge: RGBColor,
+    }
+    struct Hdr {
+        y: i32,
+        name: String,
+        band: RGBColor,
+        edge: RGBColor,
+    }
+    let mut chips = Vec::new();
+    let mut hdrs = Vec::new();
+    let mut y = 70;
+    for layer in layers {
+        let name = layer.get("name").and_then(Value::as_str).unwrap_or("");
+        let band = hex_color(
+            layer
+                .get("band")
+                .and_then(Value::as_str)
+                .unwrap_or("#ECECEC"),
+        );
+        let edge = hex_color(
+            layer
+                .get("edge")
+                .and_then(Value::as_str)
+                .unwrap_or("#555555"),
+        );
+        hdrs.push(Hdr {
+            y,
+            name: name.to_string(),
+            band,
+            edge,
+        });
+        y += header_h + 10;
+        let mut x = x0;
+        for chip in layer
+            .get("chips")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let c = chip.as_array().cloned().unwrap_or_default();
+            let label = c.first().map(json_str).unwrap_or_default();
+            let status = c.get(1).and_then(Value::as_i64).unwrap_or(1);
+            let cw = chip_w(&label);
+            if x + cw > x1 && x > x0 {
+                x = x0;
+                y += chip_h + row_gap;
+            }
+            chips.push(Chip {
+                x,
+                y,
+                w: cw,
+                label,
+                status,
+                edge,
+            });
+            x += cw + chip_gap;
+        }
+        y += chip_h + 26;
+    }
+    let h = y + 30;
+    let root = BitMapBackend::new(out, (w as u32, h as u32)).into_drawing_area();
+    root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
+    if !spec.title.is_empty() {
+        text(&root, &spec.title, &font_b(20, &NAVY), 24, 30)?;
+    }
+    for hd in &hdrs {
+        fill_rect(&root, x0, hd.y, x1, hd.y + header_h, &hd.band)?;
+        fill_rect(&root, x0, hd.y, x0 + 10, hd.y + header_h, &NAVY)?;
+        text(
+            &root,
+            &hd.name,
+            &font_b(14, &NAVY),
+            x0 + 22,
+            hd.y + header_h / 2,
+        )?;
+    }
+    for c in &chips {
+        fill_rect(&root, c.x, c.y, c.x + c.w, c.y + chip_h, &WHITEC)?;
+        if c.status == 1 {
+            stroke_rect(&root, c.x, c.y, c.x + c.w, c.y + chip_h, &c.edge, 2)?;
+        } else {
+            dashed_rect(&root, c.x, c.y, c.x + c.w, c.y + chip_h, &c.edge, 2)?;
+        }
+        text(
+            &root,
+            &c.label,
+            &centered(font_c(13, &INK)),
+            c.x + c.w / 2,
+            c.y + chip_h / 2,
+        )?;
+    }
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +1089,34 @@ mod tests {
         render_figspec(spec, &p).unwrap();
         let meta = std::fs::metadata(&p).unwrap();
         assert!(meta.len() > 1000, "png too small: {}", meta.len());
+    }
+
+    #[test]
+    fn renders_book_figure_types() {
+        let dir = std::env::temp_dir().join("agentic_bookfig_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            (
+                "icon",
+                r#"{"id":"i","type":"icon","title":"","caption":"c","data":{"variant":"warning"}}"#,
+            ),
+            (
+                "heatmap",
+                r#"{"id":"h","type":"heatmap","title":"H","caption":"c","data":{"domains":[{"name":"D","rows":[["ISO/IEC 42001","AIMS",5,5,2],["ISO/IEC 23894","risk",4,3,1]]}]}}"#,
+            ),
+            (
+                "regstack",
+                r##"{"id":"r","type":"regstack","title":"R","caption":"c","data":{"layers":[{"name":"AI","band":"#FCEFD9","edge":"#C77F18","chips":[["EU AI Act",1],["GPAI Code",0]]}]}}"##,
+            ),
+        ];
+        for (name, spec) in cases {
+            let p = dir.join(format!("{name}.png"));
+            render_figspec(spec, &p).unwrap();
+            assert!(
+                std::fs::metadata(&p).unwrap().len() > 500,
+                "{name} png too small"
+            );
+        }
     }
 
     #[test]
