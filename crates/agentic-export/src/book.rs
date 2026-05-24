@@ -11,9 +11,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use docx_rs::{
     AlignmentType, BreakType, Docx, Footer, HeightRule, LineSpacing, LineSpacingType, PageMargin,
-    PageNum, Paragraph, Pic, Run, RunFonts, Shading, Style, StyleType, Table, TableCell,
-    TableCellMargins, TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType,
-    WidthType,
+    PageNum, PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty,
+    Shading, Style, StyleType, Table, TableCell, TableCellMargins, TableLayoutType,
+    TableOfContents, TableRow, TextDirectionType, VAlignType, WidthType,
 };
 
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
@@ -39,12 +39,54 @@ const SPACE_AROUND_TABLE: u32 = 140; // spacer paragraphs hugging a table
 // Below this column width (≈2.2 cm) header labels are rotated to read bottom-up.
 const ROTATE_COLW: usize = 1250;
 
+// A table with at least this many columns is too cramped for portrait A4 even
+// with fixed layout + rotated headers, so it is placed on its own A4 *landscape*
+// page (ADR-0030). Mirrors the old thesis's landscape wide-table pages.
+const LANDSCAPE_COLS: usize = 7;
+// A4 landscape content width: 16838 − 2×1304 margins.
+const LAND_CONTENT_TWIPS: usize = 14230;
+
 /// 1.5-spaced body paragraph spacing with a little room after the block.
 fn body_spacing() -> LineSpacing {
     LineSpacing::new()
         .line_rule(LineSpacingType::Auto)
         .line(LINE_15)
         .after(SPACE_AFTER)
+}
+
+/// The standard page margins, shared by the body and every mid-document section.
+fn std_margin() -> PageMargin {
+    PageMargin::new()
+        .top(1417)
+        .bottom(1417)
+        .left(1304)
+        .right(1304)
+}
+
+/// `sectPr` for a portrait A4 section (default next-page break).
+fn portrait_sectpr() -> SectionProperty {
+    SectionProperty::new()
+        .page_size(PageSize::new().size(11906, 16838))
+        .page_margin(std_margin())
+}
+
+/// `sectPr` for a landscape A4 section (default next-page break).
+fn landscape_sectpr() -> SectionProperty {
+    SectionProperty::new()
+        .page_size(
+            PageSize::new()
+                .size(16838, 11906)
+                .orient(PageOrientationType::Landscape),
+        )
+        .page_margin(std_margin())
+}
+
+/// Effective column count of a markdown table (header or widest row).
+fn col_count(header: &[String], rows: &[Vec<String>]) -> usize {
+    header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(1))
+        .max(1)
 }
 
 #[derive(Debug, Clone)]
@@ -176,12 +218,9 @@ fn png_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
-    let ncols = header
-        .len()
-        .max(rows.iter().map(Vec::len).max().unwrap_or(1))
-        .max(1);
-    let colw = CONTENT_TWIPS / ncols;
+fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) -> Table {
+    let ncols = col_count(header, rows);
+    let colw = content_twips / ncols;
     // Narrow many-column tables: rotate non-trivial header labels to read
     // bottom-up so they stay legible instead of wrapping into a sliver.
     let rotate_headers = colw < ROTATE_COLW && header.iter().any(|h| h.trim().chars().count() > 4);
@@ -241,7 +280,7 @@ fn table_block(header: &[String], rows: &[Vec<String>]) -> Table {
     }
     Table::new(trows)
         .set_grid(vec![colw; ncols])
-        .width(CONTENT_TWIPS, WidthType::Dxa)
+        .width(content_twips, WidthType::Dxa)
         // Fixed layout makes Word honour the grid and wrap text, so a wide table
         // can never expand past the page margins (ADR-0030).
         .layout(TableLayoutType::Fixed)
@@ -308,12 +347,23 @@ fn render_block(
             Paragraph::new().add_run(Run::new().add_text("────────────").color(GREY)),
         ),
         DocxBlock::Table { header, rows } => {
-            // Breathing room around the table (ADR-0030 relaxed placement).
-            let spacer =
-                || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
-            doc = doc.add_paragraph(spacer());
-            doc = doc.add_table(table_block(header, rows));
-            doc.add_paragraph(spacer())
+            if col_count(header, rows) >= LANDSCAPE_COLS {
+                // Wide table → its own A4 landscape page (ADR-0030). The empty
+                // paragraph carrying the portrait sectPr ends the portrait
+                // section; the table then lives in the landscape section, which
+                // the trailing landscape-sectPr paragraph closes before portrait
+                // content resumes.
+                doc = doc.add_paragraph(Paragraph::new().section_property(portrait_sectpr()));
+                doc = doc.add_table(table_block(header, rows, LAND_CONTENT_TWIPS));
+                doc.add_paragraph(Paragraph::new().section_property(landscape_sectpr()))
+            } else {
+                // Breathing room around the table (ADR-0030 relaxed placement).
+                let spacer =
+                    || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
+                doc = doc.add_paragraph(spacer());
+                doc = doc.add_table(table_block(header, rows, CONTENT_TWIPS));
+                doc.add_paragraph(spacer())
+            }
         }
         DocxBlock::Image { path, caption } => {
             let full = figdir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -392,13 +442,7 @@ pub fn render_book(
             .default_fonts(body_fonts())
             .default_size(22)
             .page_size(11906, 16838)
-            .page_margin(
-                PageMargin::new()
-                    .top(1417)
-                    .bottom(1417)
-                    .left(1304)
-                    .right(1304),
-            ),
+            .page_margin(std_margin()),
     )
     .footer(
         Footer::new().add_paragraph(
@@ -454,5 +498,41 @@ mod tests {
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 2000);
+    }
+
+    #[test]
+    fn wide_table_emits_landscape_section() {
+        let meta = BookMeta {
+            title: "T".into(),
+            subtitle: String::new(),
+            author: "A".into(),
+            context: "C".into(),
+        };
+        // 7 columns ⇒ at/above LANDSCAPE_COLS ⇒ rendered on a landscape page.
+        let header: Vec<String> = (1..=7).map(|i| format!("H{i}")).collect();
+        let row: Vec<String> = (1..=7).map(|i| format!("c{i}")).collect();
+        let docx = render_book_to_docx(&meta, &header, &row);
+        // Unzip document.xml and assert a landscape sectPr is present.
+        let mut zip = zip::ZipArchive::new(Cursor::new(docx)).unwrap();
+        let mut xml = String::new();
+        {
+            use std::io::Read;
+            zip.by_name("word/document.xml")
+                .unwrap()
+                .read_to_string(&mut xml)
+                .unwrap();
+        }
+        assert!(
+            xml.contains("orient=\"landscape\""),
+            "wide table should produce a landscape section"
+        );
+    }
+
+    fn render_book_to_docx(meta: &BookMeta, header: &[String], row: &[String]) -> Vec<u8> {
+        let head = header.join(" | ");
+        let sep = vec!["---"; header.len()].join(" | ");
+        let cells = row.join(" | ");
+        let md = format!("# Chapter\n\n| {head} |\n| {sep} |\n| {cells} |\n");
+        render_book(meta, &[("c1".into(), md)], Path::new(".")).unwrap()
     }
 }

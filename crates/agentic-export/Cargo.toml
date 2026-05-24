@@ -25,6 +25,7 @@ chrono         = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true
