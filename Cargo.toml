@@ -10,6 +10,7 @@ members = [
     "crates/agentic-tui",
     "crates/agentic-resources",
     "crates/agentic-figures",
+    "crates/agentic-risk",
 ]
 
 [workspace.package]
@@ -31,6 +32,7 @@ agentic-export    = { path = "crates/agentic-export" }
 agentic-tui       = { path = "crates/agentic-tui" }
 agentic-resources = { path = "crates/agentic-resources" }
 agentic-figures   = { path = "crates/agentic-figures" }
+agentic-risk      = { path = "crates/agentic-risk" }
 
 # CLI + runtime
 clap          = { version = "4.5", features = ["derive", "env", "wrap_help"] }

@@ -212,6 +212,39 @@ pub enum Command {
         #[command(subcommand)]
         action: GenAction,
     },
+
+    /// RAMP — Risk-Adjusted Metadata Prediction (ADR-0040): predict SLOC,
+    /// human-hours, impact, risk, market projections and reskilling surge from
+    /// declared metadata, across region/Broadcom scenarios and operating modes.
+    Risk {
+        #[command(subcommand)]
+        action: RiskAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RiskAction {
+    /// Compute the model and emit results as JSON (optionally one --item).
+    Compute {
+        /// RAMP corpus metadata JSON (see ADR-0040). `-` reads stdin.
+        #[arg(long)]
+        input: String,
+        /// Restrict output to a single item id.
+        #[arg(long)]
+        item: Option<String>,
+    },
+    /// Emit a six-page markdown risk-assessment chapter for one item.
+    Chapter {
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        item: String,
+    },
+    /// Emit an aggregate "graphical illustrations" chapter across all items.
+    Graphics {
+        #[arg(long)]
+        input: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

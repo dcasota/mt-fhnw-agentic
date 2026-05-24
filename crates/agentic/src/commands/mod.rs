@@ -19,6 +19,7 @@ mod normalize;
 mod passport;
 mod project;
 mod provider;
+mod risk;
 
 use anyhow::Result;
 
@@ -38,6 +39,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         }
         Command::Book { action } => book::run(&args.db, action, args.json),
         Command::Gen { action } => generate::run(action, args.json),
+        Command::Risk { action } => risk::run(action, args.json),
         Command::Check { action } => check::run(&args.db, action, args.json).await,
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,
