@@ -137,7 +137,9 @@ CREATE TABLE IF NOT EXISTS audit_verdicts (
     checkpoint      TEXT NOT NULL CHECK (checkpoint IN (
         'pre_iteration','post_iteration','pre_commit',
         'stage_25_integrity','stage_45_integrity','submission_freeze',
-        'raise','prisma_trace','claim_audit','writing_quality','temporal','compliance_consolidated'
+        'raise','prisma_trace','claim_audit','writing_quality','temporal','compliance_consolidated',
+        -- gate checkers (ADR-0041: every `agentic check` records its verdict)
+        'self','tree','deliverable','citation_tracker','contamination','bibliography','aibom','docs'
     )),
     verdict         TEXT NOT NULL CHECK (verdict IN ('PASS','WARN','FAIL')),
     findings_json   TEXT,

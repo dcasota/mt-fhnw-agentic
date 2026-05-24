@@ -11,17 +11,23 @@ use crate::cli::CheckAction;
 
 pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<()> {
     let conn = agentic_core::db::open(db_path)?;
-    let report = match action {
-        CheckAction::Self_ { project: _ } => agentic_checks::self_check::run(&conn)?,
-        CheckAction::WritingQuality { project } => {
-            agentic_checks::writing_quality::run(&conn, &project)?
-        }
-        CheckAction::Citations { project } => {
-            agentic_checks::citation_tracker::run(&conn, &project)?
-        }
-        CheckAction::Contamination { project, offline } => {
-            agentic_checks::contamination::run(&conn, &project, !offline).await?
-        }
+    // Each arm yields (report, project?) so EVERY check can record an
+    // audit_verdict (ADR-0041: enhanced checks after the research-skill must
+    // themselves be auditable — their verdicts land in the AIBOM/report).
+    let (report, project): (CheckReport, Option<String>) = match action {
+        CheckAction::Self_ { project } => (agentic_checks::self_check::run(&conn)?, project),
+        CheckAction::WritingQuality { project } => (
+            agentic_checks::writing_quality::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Citations { project } => (
+            agentic_checks::citation_tracker::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Contamination { project, offline } => (
+            agentic_checks::contamination::run(&conn, &project, !offline).await?,
+            Some(project),
+        ),
         CheckAction::Deliverable { project, prefix } => {
             let entries = agentic_core::worktree::list(&conn, &project, &prefix)?;
             let mut findings = Vec::new();
@@ -30,35 +36,51 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
                 let text = String::from_utf8_lossy(&blob.content);
                 findings.extend(agentic_checks::deliverable_gate::findings_for(path, &text));
             }
-            agentic_checks::CheckReport::new("deliverable", findings)
+            (
+                agentic_checks::CheckReport::new("deliverable", findings),
+                Some(project),
+            )
         }
-        CheckAction::Docs { project, root } => {
-            agentic_checks::docs_gate::run(&conn, &project, &root)?
+        CheckAction::Docs { project, root } => (
+            agentic_checks::docs_gate::run(&conn, &project, &root)?,
+            Some(project),
+        ),
+        CheckAction::Bibliography { project, prefix } => (
+            agentic_checks::bibliography_gate::run(&conn, &project, &prefix)?,
+            Some(project),
+        ),
+        CheckAction::Aibom { project } => {
+            (agentic_checks::aibom_gate::run(&conn, &project)?, Some(project))
         }
-        CheckAction::Bibliography { project, prefix } => {
-            agentic_checks::bibliography_gate::run(&conn, &project, &prefix)?
-        }
-        CheckAction::Aibom { project } => agentic_checks::aibom_gate::run(&conn, &project)?,
         CheckAction::Tree {
             project,
             root,
             prefix,
-        } => {
-            let r = agentic_checks::tree_integrity::run(&conn, &project, &root, &prefix)?;
-            // Record the boot integrity verdict so the check is itself audited.
-            let verdict = match r.verdict {
-                Verdict::Pass => "PASS",
-                Verdict::Warn => "WARN",
-                Verdict::Fail => "FAIL",
-            };
-            let _ = conn.execute(
-                "INSERT INTO audit_verdicts (project_id, checkpoint, verdict, findings_json) \
-                 VALUES (?1, 'pre_iteration', ?2, ?3)",
-                rusqlite::params![project, verdict, serde_json::to_string(&r.findings).ok()],
-            );
-            r
-        }
+        } => (
+            agentic_checks::tree_integrity::run(&conn, &project, &root, &prefix)?,
+            Some(project),
+        ),
     };
+
+    // Record the verdict so the gate run is itself auditable (ADR-0041).
+    if let Some(p) = &project {
+        let verdict = match report.verdict {
+            Verdict::Pass => "PASS",
+            Verdict::Warn => "WARN",
+            Verdict::Fail => "FAIL",
+        };
+        let _ = conn.execute(
+            "INSERT INTO audit_verdicts (project_id, checkpoint, verdict, findings_json) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                p,
+                report.checker,
+                verdict,
+                serde_json::to_string(&report.findings).ok()
+            ],
+        );
+    }
+
     print_report(&report, json_out);
     if matches!(report.verdict, Verdict::Fail) {
         std::process::exit(1);
