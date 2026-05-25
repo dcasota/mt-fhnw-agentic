@@ -1,0 +1,127 @@
+//! `agentic check rr-matrix` — revise-and-resubmit traceability matrix (ADR-0044).
+//!
+//! The ARS R&R Traceability Matrix (Schema 11) tracks each reviewer point to the
+//! author's response, the change location, and an independent `Verified?` flag.
+//! When a deliverable contains such a matrix (a markdown table whose header row
+//! carries a "Verified" column), this gate validates that the required columns
+//! are present:
+//!
+//!   * reviewer point/comment,
+//!   * author's claim/response,
+//!   * change location (section/line/page),
+//!   * `Verified?`.
+//!
+//! A matrix missing a required column → WARN `RR_MATRIX_INCOMPLETE`. No matrix
+//! present → INFO (not applicable to this build).
+
+use anyhow::Result;
+use rusqlite::Connection;
+
+use agentic_core::worktree;
+
+use crate::{CheckReport, Finding, Severity};
+
+/// Required column groups; each is a set of acceptable header substrings.
+const REQUIRED: &[(&str, &[&str])] = &[
+    (
+        "reviewer point",
+        &["reviewer", "comment", "point", "concern"],
+    ),
+    (
+        "author's claim",
+        &["claim", "response", "author", "action taken"],
+    ),
+    (
+        "change location",
+        &["location", "section", "line", "page", "where"],
+    ),
+    ("verified", &["verified"]),
+];
+
+/// R&R-context tokens — a `Verified?` column alone is not enough (many fact
+/// tables carry one); the header must also name the review/response context.
+const RR_CONTEXT: &[&str] = &[
+    "reviewer", "review", "r&r", "resubmit", "rebuttal", "response to", "revision",
+];
+
+/// Is `header` (a lower-cased markdown table header row) an R&R matrix header?
+/// Requires both a `verified` column and an R&R-context token, so ordinary
+/// verified-facts tables are not mistaken for revision matrices.
+#[must_use]
+pub fn is_rr_header(header: &str) -> bool {
+    header.contains("verified") && RR_CONTEXT.iter().any(|t| header.contains(t))
+}
+
+/// Missing required column groups for a lower-cased header row.
+#[must_use]
+pub fn missing_columns(header: &str) -> Vec<&'static str> {
+    REQUIRED
+        .iter()
+        .filter(|(_, alts)| !alts.iter().any(|a| header.contains(a)))
+        .map(|(label, _)| *label)
+        .collect()
+}
+
+pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
+    let mut findings = Vec::new();
+    let mut matrices = 0usize;
+    for (path, sha) in worktree::list(conn, project, "")? {
+        if !path.ends_with(".md") {
+            continue;
+        }
+        let Ok(blob) = agentic_core::content::blob::get_blob(conn, &sha) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&blob.content);
+        for (idx, ln) in text.lines().enumerate() {
+            // A markdown table header row contains pipes and (here) "verified".
+            if ln.contains('|') {
+                let lower = ln.to_lowercase();
+                if is_rr_header(&lower) {
+                    matrices += 1;
+                    let missing = missing_columns(&lower);
+                    if !missing.is_empty() {
+                        findings.push(Finding {
+                            category: "RR_MATRIX_INCOMPLETE".into(),
+                            severity: Severity::Warn,
+                            message: format!(
+                                "R&R matrix missing column(s): {}",
+                                missing.join(", ")
+                            ),
+                            location: Some(format!("{path}:{}", idx + 1)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    findings.push(Finding {
+        category: "RR_MATRIX_SUMMARY".into(),
+        severity: Severity::Info,
+        message: if matrices == 0 {
+            "no R&R traceability matrix found — not applicable to this build".into()
+        } else {
+            format!("{matrices} R&R matrix header(s) validated")
+        },
+        location: Some("rr_matrix".into()),
+    });
+    Ok(CheckReport::new("rr_matrix", findings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_header_ok() {
+        let h = "| reviewer comment | author response | section | verified? |";
+        assert!(is_rr_header(h));
+        assert!(missing_columns(h).is_empty());
+    }
+
+    #[test]
+    fn missing_location_flagged() {
+        let h = "| reviewer point | author claim | verified |";
+        assert!(missing_columns(h).contains(&"change location"));
+    }
+}

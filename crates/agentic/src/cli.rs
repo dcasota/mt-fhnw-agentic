@@ -262,6 +262,50 @@ pub enum Command {
         #[command(subcommand)]
         action: MergeAction,
     },
+
+    /// Monolithic SDD full-cycle orchestrator. Chains the EXISTING in-tool steps
+    /// into the enforced cascade: boot gate → inbox intake/rank → (auto)
+    /// regenerate dimensions → merge → build the MERGED book → gate suite → seal.
+    /// Composes existing commands; does not reimplement them.
+    Cascade {
+        #[command(subcommand)]
+        action: CascadeAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CascadeAction {
+    /// Run the full 7-step SDD cascade end-to-end.
+    Run {
+        /// Project ID (ULID).
+        #[arg(long)]
+        project: String,
+        /// Book manifest consumed by the build step.
+        #[arg(long, default_value = "out/book_manifest.json")]
+        manifest: PathBuf,
+        /// Output directory for the rendered .docx books.
+        #[arg(long, default_value = "out/books")]
+        out: PathBuf,
+        /// Skip regenerating the dimension sources before merging. Regeneration
+        /// (bounded `claude` sub-sessions, one per dimension) is ON by default;
+        /// pass `--no-regenerate` to skip it.
+        #[arg(long = "no-regenerate")]
+        no_regenerate: bool,
+        /// Also build the individual per-dimension books (R2: by default only the
+        /// merged book is built).
+        #[arg(long)]
+        per_dimension: bool,
+        /// Manifest key of the merged book to build.
+        #[arg(long, default_value = "master_thesis")]
+        merged_key: String,
+        /// Print the ordered plan and run only the cheap read-only gates; skip LLM
+        /// regeneration, book render and signing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Root directory the DB paths / sub-sessions are relative to.
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -812,6 +856,40 @@ pub enum CheckAction {
         /// Maximum allowed estimated pages.
         #[arg(long, default_value_t = 60)]
         max_pages: usize,
+    },
+    /// ARS 7-mode integrity scan (ADR-0044): hallucinated results, method
+    /// fabrication, shortcuts, impl-bug admissions, frame-lock, unverified
+    /// results, overclaims — over deliverable markdown.
+    Integrity {
+        #[arg(long)]
+        project: String,
+    },
+    /// Deterministic figure-hygiene gate (ADR-0044): empty alt text, missing
+    /// captions, orphan "Figure N" references (ERROR), unreferenced figures.
+    FigureQuality {
+        #[arg(long)]
+        project: String,
+    },
+    /// AI-disclosure presence + venue match (ADR-0044): a named venue/track
+    /// without a disclosure statement is an ERROR.
+    Disclosure {
+        #[arg(long)]
+        project: String,
+        /// Optional explicit venue/track to require a disclosure for.
+        #[arg(long)]
+        venue: Option<String>,
+    },
+    /// R&R traceability-matrix column validation (ADR-0044): a matrix (a table
+    /// with a "Verified?" column) must also carry reviewer/claim/location columns.
+    RrMatrix {
+        #[arg(long)]
+        project: String,
+    },
+    /// Reviewer FNR/FPR calibration (ADR-0044) vs `out/calibration_gold.json`;
+    /// FAILs if FNR ≥ 0.15 or FPR ≥ 0.10. INFO when no gold set is present.
+    Calibration {
+        #[arg(long)]
+        project: String,
     },
 }
 

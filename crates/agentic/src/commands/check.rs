@@ -116,6 +116,26 @@ pub async fn run(db_path: &Path, action: CheckAction, lang: &str, json_out: bool
             agentic_checks::reproducibility_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::Integrity { project } => (
+            agentic_checks::integrity_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::FigureQuality { project } => (
+            agentic_checks::figure_quality_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Disclosure { project, venue } => (
+            agentic_checks::disclosure_gate::run(&conn, &project, venue.as_deref())?,
+            Some(project),
+        ),
+        CheckAction::RrMatrix { project } => (
+            agentic_checks::rr_matrix_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Calibration { project } => (
+            agentic_checks::calibration_gate::run(&conn, &project)?,
+            Some(project),
+        ),
         CheckAction::PageBoundary {
             project,
             prefix,

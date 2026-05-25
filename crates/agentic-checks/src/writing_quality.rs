@@ -126,6 +126,94 @@ pub fn em_dash_count(text: &str) -> usize {
     text.matches('—').count() + text.matches(" -- ").count()
 }
 
+/// Sentence-opening throat-clearing phrases (ARS writing-quality, ADR-0044).
+const THROAT_CLEARING: &[&str] = &[
+    "it is worth noting",
+    "it should be noted",
+    "it is important to note",
+    "it is interesting to note",
+    "needless to say",
+    "it goes without saying",
+    "as we can see",
+    "as mentioned earlier",
+    "in essence",
+    "simply put",
+    "at the end of the day",
+    "when it comes to",
+    "it is clear that",
+    "notably,",
+    "importantly,",
+];
+
+/// Count sentence-initial throat-clearing openers (case-insensitive).
+#[must_use]
+pub fn throat_clearing_count(text: &str) -> usize {
+    let lower = text.to_lowercase();
+    // Sentence boundaries: start of text, or after . ! ? and whitespace.
+    let mut count = 0usize;
+    for seg in lower.split(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
+        let s = seg.trim_start();
+        if THROAT_CLEARING.iter().any(|p| s.starts_with(p)) {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Sentence-length coefficient of variation (burstiness). `None` if too few
+/// sentences to judge. Low CV ⇒ uniform rhythm (an AI-typical tell).
+#[must_use]
+pub fn sentence_burstiness(text: &str) -> Option<f64> {
+    let lengths: Vec<usize> = text
+        .split(|c| c == '.' || c == '!' || c == '?')
+        .map(|s| s.split_whitespace().count())
+        .filter(|&w| w > 0)
+        .collect();
+    if lengths.len() < 8 {
+        return None;
+    }
+    let avg = lengths.iter().sum::<usize>() as f64 / lengths.len() as f64;
+    if avg == 0.0 {
+        return None;
+    }
+    let var = lengths
+        .iter()
+        .map(|&l| (l as f64 - avg).powi(2))
+        .sum::<f64>()
+        / lengths.len() as f64;
+    Some(var.sqrt() / avg)
+}
+
+/// Longest run of consecutive non-empty paragraphs sharing the same opening
+/// word (structural anaphora — an AI-typical template tell).
+#[must_use]
+pub fn max_anaphora_run(text: &str) -> usize {
+    let first_words: Vec<String> = text
+        .split("\n\n")
+        .filter_map(|p| {
+            let t = p.trim_start_matches(['#', '-', '*', '>', ' ', '\t']).trim();
+            t.split_whitespace().next().map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut best = 0usize;
+    let mut run = 0usize;
+    let mut prev: Option<&String> = None;
+    for w in &first_words {
+        if prev == Some(w) {
+            run += 1;
+        } else {
+            run = 1;
+        }
+        best = best.max(run);
+        prev = Some(w);
+    }
+    best
+}
+
 #[must_use]
 pub fn paragraph_lengths_uniform(text: &str) -> bool {
     let paragraphs: Vec<&str> = text
@@ -190,6 +278,46 @@ pub fn check_text(text: &str, path: &str) -> Vec<Finding> {
             category: "STYLE".into(),
             severity: Severity::Warn,
             message: "Paragraph lengths are uniform (CV < 0.20). Vary sentence rhythm.".into(),
+            location: Some(path.to_owned()),
+        });
+    }
+
+    // 3a. Throat-clearing openers (ARS parity, ADR-0044).
+    let tc = throat_clearing_count(text);
+    if tc >= 3 {
+        findings.push(Finding {
+            category: "STYLE".into(),
+            severity: Severity::Warn,
+            message: format!(
+                "Throat-clearing openers ('It is worth noting', 'Notably,' …) {tc}× -- drop or rephrase."
+            ),
+            location: Some(path.to_owned()),
+        });
+    }
+
+    // 3b. Sentence burstiness (low variance ⇒ AI-typical uniform rhythm).
+    if let Some(cv) = sentence_burstiness(text) {
+        if cv < 0.30 {
+            findings.push(Finding {
+                category: "STYLE".into(),
+                severity: Severity::Warn,
+                message: format!(
+                    "Low sentence burstiness (CV {cv:.2} < 0.30) -- vary sentence length."
+                ),
+                location: Some(path.to_owned()),
+            });
+        }
+    }
+
+    // 3c. Structural anaphora (≥3 consecutive paragraphs with the same opener).
+    let an = max_anaphora_run(text);
+    if an >= 3 {
+        findings.push(Finding {
+            category: "STRUCTURE".into(),
+            severity: Severity::Warn,
+            message: format!(
+                "Structural anaphora: {an} consecutive paragraphs share the same opening word."
+            ),
             location: Some(path.to_owned()),
         });
     }
@@ -358,6 +486,31 @@ mod tests {
     fn detects_em_dash_overuse() {
         let text = "A — b — c — d — e.";
         assert_eq!(em_dash_count(text), 4);
+    }
+
+    #[test]
+    fn detects_throat_clearing() {
+        let t = "It is worth noting that x. It should be noted that y. Notably, z happens.";
+        assert!(throat_clearing_count(t) >= 3);
+    }
+
+    #[test]
+    fn burstiness_uniform_flagged() {
+        // Ten ~5-word sentences ⇒ very low CV.
+        let uniform = "one two three four five. ".repeat(10);
+        let cv = sentence_burstiness(&uniform).unwrap();
+        assert!(cv < 0.30, "cv was {cv}");
+        // Varied lengths ⇒ higher CV.
+        let varied = "a. one two three four five six seven eight nine ten eleven. b c. d e f g.";
+        assert!(
+            sentence_burstiness(varied).is_none() || sentence_burstiness(varied).unwrap() >= 0.30
+        );
+    }
+
+    #[test]
+    fn anaphora_run_detected() {
+        let t = "The cat sat.\n\nThe dog ran.\n\nThe bird flew.\n\nA fish swam.";
+        assert!(max_anaphora_run(t) >= 3);
     }
 
     #[test]
