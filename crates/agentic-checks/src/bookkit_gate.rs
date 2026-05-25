@@ -1,0 +1,283 @@
+//! `agentic check bookkit` — deliverable bookkit-polishing audit.
+//!
+//! A REPORTING gate (WARN-level, never blocks): it surfaces two polishing
+//! rules so a corpus that currently violates them can still be measured.
+//!
+//! * RULE 1 — bold-emphasis limit (`BOLD_OVERUSE`): markdown bold (`**…**`) is
+//!   permitted ONLY as a short *leading label* — the bold span starts at the
+//!   very beginning of a paragraph/list item (after optional list/quote/heading
+//!   markers and whitespace) AND the bolded text is <= 8 words and <= 60 chars.
+//!   Any other bold (inline mid-prose, or an over-long leading label) is flagged.
+//! * RULE 2 — content English-only (`NON_ENGLISH`): clearly non-English tokens
+//!   in body prose are flagged via a conservative deny-list of common
+//!   German/French/Italian function words and a few telltales.
+//!
+//! Both rules are fence-aware (fenced code/figspec is skipped) and ignore
+//! figspec/JSON, URLs and APA reference lines to keep the heuristics quiet.
+
+use std::collections::BTreeSet;
+use std::sync::LazyLock;
+
+use anyhow::Result;
+use regex::Regex;
+use rusqlite::Connection;
+
+use agentic_core::worktree;
+
+use crate::{CheckReport, Finding, Severity};
+
+/// Cap on per-file `BOLD_OVERUSE` findings emitted (all are still counted).
+const MAX_BOLD_FINDINGS_PER_FILE: usize = 50;
+/// Leading-label limits.
+const MAX_LABEL_WORDS: usize = 8;
+const MAX_LABEL_CHARS: usize = 60;
+
+/// A markdown bold span `**…**` (non-greedy, no nested `**`).
+static BOLD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*\*(.+?)\*\*").unwrap());
+/// Optional leading markers permitted before a leading-label bold: list
+/// bullets (`-`/`+`, or a `*` bullet which is always followed by whitespace),
+/// block-quote (`>`), heading hashes (`#`), ordered-list numbers (`1.`), and
+/// surrounding whitespace. The `regex` crate has no look-around, so a `*`
+/// bullet is matched as `*` + whitespace — this never swallows a `**` opener
+/// (which is `**`, not `* `).
+static LEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[\s>#+-]|\d+\.|\*\s)*").unwrap());
+
+/// Conservative non-English deny-list: common DE/FR/IT function words and a few
+/// telltales. Whole-word, case-insensitive.
+static NON_EN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:\
+und|oder|nicht|mit|f[üu]r|[üu]ber|L[öo]sung|L[öo]sungen|Abbildung|Tabelle|Verzeichnis|\
+der|die|das|eine|sind|werden|sich|auch|sowie|zwischen|\
+et|ou|pour|avec|dans|les|des|une|[êe]tre|\
+della|degli|sono|anche|perch[ée])\b",
+    )
+    .unwrap()
+});
+/// A URL anywhere on the line → skip RULE 2 (URLs carry foreign-looking tokens).
+static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s)\]<>"']+"#).unwrap());
+/// An APA-style in-text/reference citation `(1999)` / `(2020a)` → skip RULE 2.
+static APA_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\d{4}[a-z]?\)").unwrap());
+
+/// Does this line *look like* a figspec/JSON body? Bold/foreign tokens inside
+/// machine data are not prose. A line whose trimmed form starts with `{`/`}`/`"`
+/// or contains a `"key":` pair is treated as data.
+fn looks_like_json(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('{') || t.starts_with('}') || t.starts_with('"') || JSON_KEY.is_match(line)
+}
+static JSON_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""[\w-]+"\s*:"#).unwrap());
+
+/// Is a reference / bibliography line (hanging APA entry or `(YEAR)` citation)?
+fn looks_like_reference(line: &str) -> bool {
+    APA_YEAR.is_match(line)
+}
+
+/// First `n` chars of `s` (char-safe), with an ellipsis if truncated.
+fn snippet(s: &str, n: usize) -> String {
+    let mut out: String = s.chars().take(n).collect();
+    if s.chars().count() > n {
+        out.push('…');
+    }
+    out
+}
+
+/// RULE 1 helper: bold-emphasis violations in `text`.
+///
+/// Returns `(line_number, snippet)` pairs — one per *violating* bold span.
+/// A bold span is allowed only when it is a leading label (starts the
+/// paragraph/list item after optional markers) and is <= 8 words / <= 60 chars.
+/// Fence-aware (fenced code/figspec is skipped) and JSON-ish lines are ignored.
+#[must_use]
+pub fn bold_violations(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (idx, ln) in text.lines().enumerate() {
+        let i = idx + 1;
+        if ln.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || looks_like_json(ln) {
+            continue;
+        }
+        // The end of the optional leading-marker run: a bold opening at exactly
+        // this offset is a candidate leading label.
+        let lead_end = LEAD.find(ln).map_or(0, |m| m.end());
+        for m in BOLD.captures_iter(ln) {
+            // Both groups are guaranteed by the `\*\*(.+?)\*\*` pattern.
+            let (Some(whole), Some(grp)) = (m.get(0), m.get(1)) else {
+                continue;
+            };
+            let inner = grp.as_str();
+            let is_leading = whole.start() == lead_end;
+            let words = inner.split_whitespace().count();
+            let chars = inner.chars().count();
+            let allowed = is_leading && words <= MAX_LABEL_WORDS && chars <= MAX_LABEL_CHARS;
+            if !allowed {
+                out.push((i, snippet(inner, 40)));
+            }
+        }
+    }
+    out
+}
+
+/// RULE 2 helper: clearly non-English tokens in body prose.
+///
+/// Returns `(line_number, token)` pairs. Fence-aware; JSON-ish, URL-bearing and
+/// APA-reference lines are skipped to keep the heuristic conservative.
+#[must_use]
+pub fn non_english_tokens(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (idx, ln) in text.lines().enumerate() {
+        let i = idx + 1;
+        if ln.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || looks_like_json(ln) || URL.is_match(ln) || looks_like_reference(ln) {
+            continue;
+        }
+        for m in NON_EN.find_iter(ln) {
+            out.push((i, m.as_str().to_string()));
+        }
+    }
+    out
+}
+
+/// Run the bookkit gate over a project's deliverable markdown (`prefix`).
+pub fn run(conn: &Connection, project: &str, prefix: &str) -> Result<CheckReport> {
+    let mut findings = Vec::new();
+    let mut total_bold = 0usize;
+    let mut total_non_en = 0usize;
+    let mut distinct_tokens: BTreeSet<String> = BTreeSet::new();
+
+    let entries = worktree::list(conn, project, prefix)?;
+    for (path, _sha) in entries.iter().filter(|(p, _)| {
+        std::path::Path::new(p)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+    }) {
+        let blob = worktree::read_at(conn, project, path)?;
+        let text = String::from_utf8_lossy(&blob.content);
+
+        // RULE 1 — bold-emphasis limit (count all, emit up to the per-file cap).
+        let bolds = bold_violations(&text);
+        total_bold += bolds.len();
+        for (line, snip) in bolds.iter().take(MAX_BOLD_FINDINGS_PER_FILE) {
+            findings.push(Finding {
+                category: "BOLD_OVERUSE".into(),
+                severity: Severity::Warn,
+                message: format!("bold not a short leading label: '{snip}'"),
+                location: Some(format!("{path}:{line}")),
+            });
+        }
+
+        // RULE 2 — content English-only.
+        for (line, tok) in non_english_tokens(&text) {
+            total_non_en += 1;
+            distinct_tokens.insert(tok.to_lowercase());
+            findings.push(Finding {
+                category: "NON_ENGLISH".into(),
+                severity: Severity::Warn,
+                message: format!("non-English token '{tok}'"),
+                location: Some(format!("{path}:{line}")),
+            });
+        }
+    }
+
+    // INFO summary findings (one per rule) carry the totals.
+    findings.push(Finding {
+        category: "BOLD_SUMMARY".into(),
+        severity: Severity::Info,
+        message: format!("bookkit RULE 1 (bold-emphasis): {total_bold} violation(s) total"),
+        location: Some("bookkit".into()),
+    });
+    findings.push(Finding {
+        category: "NON_ENGLISH_SUMMARY".into(),
+        severity: Severity::Info,
+        message: format!(
+            "bookkit RULE 2 (English-only): {total_non_en} token(s) total, {} distinct ({})",
+            distinct_tokens.len(),
+            distinct_tokens
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        location: Some("bookkit".into()),
+    });
+
+    Ok(CheckReport::new("bookkit", findings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bold_violations, non_english_tokens};
+
+    #[test]
+    fn leading_bold_label_ok() {
+        // A short leading `**Term.**` label (<= 8 words) is allowed.
+        assert_eq!(
+            bold_violations("**Term.** the rest is plain prose.\n").len(),
+            0
+        );
+    }
+
+    #[test]
+    fn leading_bold_label_list_item_ok() {
+        // Allowed at the start of a list item too (after the bullet marker).
+        assert_eq!(
+            bold_violations("- **Label:** explanation follows.\n").len(),
+            0
+        );
+    }
+
+    #[test]
+    fn inline_bold_flagged() {
+        // Bold in the middle of running prose → 1 violation.
+        let v = bold_violations("text with **bold** inside.\n");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].0, 1);
+    }
+
+    #[test]
+    fn long_leading_label_flagged() {
+        // A leading bold label of 12 words exceeds the 8-word limit → 1.
+        let v = bold_violations(
+            "**one two three four five six seven eight nine ten eleven twelve** rest.\n",
+        );
+        assert_eq!(v.len(), 1);
+    }
+
+    #[test]
+    fn bold_in_fence_ignored() {
+        // Bold inside a fenced code block → 0.
+        let md = "```\ntext with **bold** inside\n```\n";
+        assert_eq!(bold_violations(md).len(), 0);
+    }
+
+    #[test]
+    fn non_english_flagged() {
+        // "the Lösung is" flags the German token.
+        let v = non_english_tokens("the Lösung is good.\n");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].1, "Lösung");
+    }
+
+    #[test]
+    fn english_clean() {
+        // Pure English prose → 0.
+        assert_eq!(non_english_tokens("the solution is good.\n").len(), 0);
+    }
+
+    #[test]
+    fn fenced_and_url_lines_ignored() {
+        // Fenced and URL-bearing lines are skipped for RULE 2.
+        let fenced = "```\nund oder nicht\n```\n";
+        assert_eq!(non_english_tokens(fenced).len(), 0);
+        let url = "see https://example.com/und/oder for details\n";
+        assert_eq!(non_english_tokens(url).len(), 0);
+    }
+}

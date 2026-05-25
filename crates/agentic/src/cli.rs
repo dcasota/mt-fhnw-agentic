@@ -710,6 +710,17 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// Bookkit-polishing audit (REPORTING gate, WARN-level, never blocks):
+    /// bold is allowed only as a short leading label (RULE 1), and body prose
+    /// must be English (RULE 2, conservative deny-list). Reports violations
+    /// with `<path>:<line>` locations plus per-rule totals.
+    Bookkit {
+        #[arg(long)]
+        project: String,
+        /// Restrict the audit to a path prefix.
+        #[arg(long, default_value = "out/sources/")]
+        prefix: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

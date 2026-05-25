@@ -80,6 +80,10 @@ pub async fn run(db_path: &Path, action: CheckAction, lang: &str, json_out: bool
             };
             (agentic_checks::i18n_gate::run(target), Some(project))
         }
+        CheckAction::Bookkit { project, prefix } => (
+            agentic_checks::bookkit_gate::run(&conn, &project, &prefix)?,
+            Some(project),
+        ),
         CheckAction::Tree {
             project,
             root,
