@@ -12,6 +12,7 @@ pub mod content;
 pub mod db;
 pub mod embeddings;
 pub mod error;
+pub mod i18n;
 pub mod inbox;
 pub mod journal;
 pub mod orchestrate;

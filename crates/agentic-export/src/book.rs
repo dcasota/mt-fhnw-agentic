@@ -17,6 +17,8 @@ use docx_rs::{
     TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType, WidthType,
 };
 
+use agentic_core::i18n::t;
+
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
 
 const NAVY: &str = "1F497D";
@@ -111,6 +113,10 @@ pub struct BookMeta {
     pub disclaimer: Option<String>,
     /// Extra index terms beyond the built-in set (e.g. dimension-specific).
     pub index_terms: Vec<String>,
+    /// Chrome language tag (en|de|fr|it|rm|hi). Empty or unknown → English.
+    /// Localises only engine-generated chrome (labels, caption prefixes,
+    /// list/section headings); chapter content is untouched.
+    pub lang: String,
 }
 
 /// Per-book render state threaded through `render_block`: running figure / table
@@ -118,6 +124,8 @@ pub struct BookMeta {
 /// chapter's collected links (for the Sources & QR-codes box).
 struct Ctx<'a> {
     figdir: &'a Path,
+    /// Chrome language tag (en|de|fr|it|rm|hi); drives `i18n::t` lookups.
+    lang: &'a str,
     figno: u32,
     tblno: u32,
     chapno: u32,
@@ -329,7 +337,7 @@ fn disclaimer_page(mut doc: Docx, m: &BookMeta) -> Docx {
     doc = doc.add_paragraph(
         Paragraph::new().add_run(
             Run::new()
-                .add_text("Edition & Disclaimer")
+                .add_text(t(&m.lang, "edition_disclaimer"))
                 .bold()
                 .size(32)
                 .color(NAVY)
@@ -578,11 +586,13 @@ fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
 /// bookkit.py admonition: a colour-coded shaded box with a left accent border
 /// and a bold label, for note / tip / warning asides. Rendered as a single-cell
 /// table so the fill + left border survive in Word.
-fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path) -> Docx {
+fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &str) -> Docx {
+    // Label is localised chrome; the SEQ-free admonition has no field name to
+    // keep stable, so the visible word is translated directly.
     let (word, glyph, fill, edge) = match kind {
-        "tip" => ("Tip", "\u{2714}", "EAF6EC", "2E7D32"),
-        "warning" => ("Warning", "\u{26A0}", "FBF1E2", "C77F18"),
-        _ => ("Note", "\u{2139}", "EAF1FB", "1F3864"),
+        "tip" => (t(lang, "tip"), "\u{2714}", "EAF6EC", "2E7D32"),
+        "warning" => (t(lang, "warning"), "\u{26A0}", "FBF1E2", "C77F18"),
+        _ => (t(lang, "note"), "\u{2139}", "EAF1FB", "1F3864"),
     };
     let text: String = body
         .lines()
@@ -804,7 +814,26 @@ fn quote_block(mut doc: Docx, body: &str) -> Docx {
 
 /// bookkit "Conventions Used in This Book": a live demo of the typographic
 /// conventions (italic / monospace variants) plus the three admonition styles.
-fn conventions_block(mut doc: Docx, figdir: &Path) -> Docx {
+fn conventions_block(mut doc: Docx, figdir: &Path, lang: &str) -> Docx {
+    // Localised section title (engine chrome). Resolved before the local `mono`
+    // /`plain` closures shadow the imported `t`.
+    let conv_title = t(lang, "conventions_title");
+    doc = doc.add_paragraph(
+        Paragraph::new()
+            .line_spacing(
+                LineSpacing::new()
+                    .before(SPACE_BEFORE_HEAD)
+                    .after(SPACE_AFTER_HEAD),
+            )
+            .add_run(
+                Run::new()
+                    .add_text(conv_title)
+                    .bold()
+                    .size(26)
+                    .color(HEAD2)
+                    .fonts(head_fonts()),
+            ),
+    );
     let bullet = |doc: Docx, runs: Vec<Run>| -> Docx {
         let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
             Run::new()
@@ -863,18 +892,21 @@ fn conventions_block(mut doc: Docx, figdir: &Path) -> Docx {
         "tip",
         "A tip points out a useful shortcut or best practice.",
         figdir,
+        lang,
     );
     doc = admonition_box(
         doc,
         "note",
         "A note adds context worth keeping in mind.",
         figdir,
+        lang,
     );
     doc = admonition_box(
         doc,
         "warning",
         "A warning flags a pitfall or irreversible action.",
         figdir,
+        lang,
     );
     doc
 }
@@ -1044,7 +1076,7 @@ fn qr_png(url: &str) -> Option<Vec<u8>> {
 /// two-column table (numbered link | scannable QR) of every link registered in
 /// the chapter. Clears the registry. The heading is a plain bold run (not an
 /// outline Heading) so it stays out of the TOC.
-fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>) -> Docx {
+fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>, lang: &str) -> Docx {
     if links.is_empty() {
         return doc;
     }
@@ -1057,7 +1089,7 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>) -> Docx {
             )
             .add_run(
                 Run::new()
-                    .add_text("Sources & QR codes")
+                    .add_text(t(lang, "sources_box"))
                     .bold()
                     .size(26)
                     .color(HEAD2)
@@ -1189,7 +1221,7 @@ fn render_block(
             // chapter_extras.py port: the per-chapter "Review questions".
             "quiz" => quiz_block(doc, body),
             // bookkit.py port: note / tip / warning admonition callouts.
-            "note" | "tip" | "warning" => admonition_box(doc, lang, body, ctx.figdir),
+            "note" | "tip" | "warning" => admonition_box(doc, lang, body, ctx.figdir, ctx.lang),
             // bookkit.py port: a generic titled key-point callout box.
             "callout" => callout_box(doc, body),
             // bookkit.py port: pull-quote with optional "— attribution".
@@ -1207,7 +1239,7 @@ fn render_block(
                 )
             }
             // bookkit.py port: "Conventions Used in This Book" live demo.
-            "conventions" => conventions_block(doc, ctx.figdir),
+            "conventions" => conventions_block(doc, ctx.figdir, ctx.lang),
             _ => {
                 let mut p = Paragraph::new();
                 for (i, line) in body.split('\n').enumerate() {
@@ -1244,7 +1276,7 @@ fn render_block(
                 doc = doc.add_paragraph(
                     Paragraph::new()
                         .line_spacing(LineSpacing::new().before(SPACE_AROUND_TABLE).after(40))
-                        .add_run(cap_style("Table "))
+                        .add_run(cap_style(t(ctx.lang, "table_prefix")))
                         .add_run(field_run("SEQ Table \\* ARABIC", &format!("{}", ctx.tblno)))
                         .add_run(cap_style(&format!(". {cap}"))),
                 );
@@ -1304,7 +1336,7 @@ fn render_block(
                     Paragraph::new()
                         .align(AlignmentType::Center)
                         .line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG))
-                        .add_run(cap_style("Figure "))
+                        .add_run(cap_style(t(ctx.lang, "fig_prefix")))
                         .add_run(field_run(
                             "SEQ Figure \\* ARABIC",
                             &format!("{}", ctx.figno),
@@ -1434,6 +1466,7 @@ pub fn render_book(
     index_terms.extend(meta.index_terms.iter().cloned());
     let mut ctx = Ctx {
         figdir,
+        lang: &meta.lang,
         figno: 0,
         tblno: 0,
         chapno: 0,
@@ -1451,15 +1484,17 @@ pub fn render_book(
             first = false;
         }
         // End-of-chapter Sources & QR-codes box (bookkit flush_sources).
-        doc = flush_sources(doc, &mut ctx.links);
+        doc = flush_sources(doc, &mut ctx.links, &meta.lang);
     }
 
     // Appendix lists (filled from the caption SEQ fields on field update).
     doc = doc.add_paragraph(page_break());
-    for p in list_of("Figure", "List of Figures") {
+    // `seq` (SEQ field name) stays English/stable for numbering; only the
+    // visible heading is localised.
+    for p in list_of("Figure", t(&meta.lang, "list_of_figures")) {
         doc = doc.add_paragraph(p);
     }
-    for p in list_of("Table", "List of Tables") {
+    for p in list_of("Table", t(&meta.lang, "list_of_tables")) {
         doc = doc.add_paragraph(p);
     }
 
@@ -1682,6 +1717,67 @@ mod tests {
             xml.contains("1  Real Chapter"),
             "numbered chapter gets an N prefix"
         );
+    }
+
+    #[test]
+    fn german_chrome_localises_while_english_chrome_absent() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            lang: "de".into(),
+            ..Default::default()
+        };
+        // Figure + table + a warning admonition + a link (Sources box) exercise
+        // every localised chrome site.
+        let md = "# Kapitel\n\n```warning\nGefahr.\n```\n\nTable: Demo\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nSiehe [Quelle](https://example.com/x).\n"
+            .to_string();
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        // Localised chrome present.
+        assert!(xml.contains("Abbildungsverzeichnis"), "fig list heading de");
+        assert!(xml.contains("Tabellenverzeichnis"), "table list heading de");
+        assert!(xml.contains("Tabelle "), "table caption prefix de");
+        assert!(xml.contains("Warnung"), "warning admonition label de");
+        // '&' is XML-escaped: "Quellen & QR-Codes" → "Quellen &amp; QR-Codes".
+        assert!(xml.contains("Quellen &amp; QR-Codes"), "sources box de");
+        // English chrome must be gone.
+        assert!(
+            !xml.contains("Sources &amp; QR codes"),
+            "english sources chrome leaked"
+        );
+        assert!(
+            !xml.contains("Edition &amp; Disclaimer"),
+            "english disclaimer chrome leaked"
+        );
+        assert!(
+            !xml.contains("List of Figures") && !xml.contains("List of Tables"),
+            "english list headings leaked"
+        );
+        // SEQ field NAMES stay English/stable for numbering.
+        assert!(
+            xml.contains("SEQ Table"),
+            "SEQ Table field name stays english"
+        );
+    }
+
+    #[test]
+    fn english_chrome_unchanged_by_default() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            // lang left empty → English.
+            ..Default::default()
+        };
+        let md = "# Chapter\n\nTable: Demo\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nSee [src](https://example.com/x).\n"
+            .to_string();
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        assert!(xml.contains("List of Figures"), "english fig list heading");
+        assert!(xml.contains("List of Tables"), "english table list heading");
+        assert!(
+            xml.contains("Sources &amp; QR codes"),
+            "english sources box"
+        );
+        assert!(xml.contains("Table "), "english table caption prefix");
+        assert!(!xml.contains("Abbildungsverzeichnis"), "no german leak");
     }
 
     fn render_book_to_docx(meta: &BookMeta, header: &[String], row: &[String]) -> Vec<u8> {

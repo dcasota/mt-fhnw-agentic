@@ -40,6 +40,10 @@ struct BookSpec {
     disclaimer: Option<String>,
     #[serde(default)]
     index_terms: Vec<String>,
+    /// Optional per-book chrome language (en|de|fr|it|rm|hi). Overrides the
+    /// global `--lang`; absent → fall back to `--lang` then "en".
+    #[serde(default)]
+    lang: Option<String>,
     chapters: Vec<String>,
 }
 
@@ -49,7 +53,7 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-pub fn run(db_path: &Path, action: BookAction, json_out: bool) -> Result<()> {
+pub fn run(db_path: &Path, action: BookAction, lang: &str, json_out: bool) -> Result<()> {
     match action {
         BookAction::Build {
             project,
@@ -62,6 +66,7 @@ pub fn run(db_path: &Path, action: BookAction, json_out: bool) -> Result<()> {
             &manifest,
             &out,
             only.as_deref(),
+            lang,
             json_out,
         ),
         BookAction::Audit { current, previous } => audit(&current, previous.as_deref(), json_out),
@@ -74,6 +79,7 @@ fn build(
     manifest_path: &Path,
     out: &Path,
     only: Option<&str>,
+    lang: &str,
     json_out: bool,
 ) -> Result<()> {
     let conn = agentic_core::db::open(db_path)?;
@@ -101,7 +107,7 @@ fn build(
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work)?;
 
-        let result = build_one(&conn, project, spec, &work, out);
+        let result = build_one(&conn, project, spec, &work, out, lang);
         let _ = std::fs::remove_dir_all(&work); // always clean this step's scratch
         match result {
             Ok((figs, bytes)) => {
@@ -146,6 +152,7 @@ fn build_one(
     spec: &BookSpec,
     work: &Path,
     out: &Path,
+    lang: &str,
 ) -> Result<(usize, u64)> {
     // Pre-render the three admonition icons (gen_icons port) into the work dir
     // so the book renderer can embed icon_{tip,note,warning}.png in callouts.
@@ -188,6 +195,16 @@ fn build_one(
         epigraph_by: spec.epigraph_by.clone(),
         disclaimer: spec.disclaimer.clone(),
         index_terms: spec.index_terms.clone(),
+        // Chrome language: per-book `lang` wins; else the global `--lang`; else
+        // "en". The i18n layer normalises/falls back, but resolve a non-empty
+        // default here so an empty global value still renders English.
+        lang: spec.lang.clone().unwrap_or_else(|| {
+            if lang.is_empty() {
+                "en".to_string()
+            } else {
+                lang.to_string()
+            }
+        }),
     };
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));

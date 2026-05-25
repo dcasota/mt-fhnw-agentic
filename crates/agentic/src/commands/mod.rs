@@ -42,7 +42,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Normalize { project, prefix } => {
             normalize::run(&args.db, &project, &prefix, args.json)
         }
-        Command::Book { action } => book::run(&args.db, action, args.json),
+        Command::Book { action } => book::run(&args.db, action, &args.lang, args.json),
         Command::Gen { action } => generate::run(action, args.json),
         Command::Risk { action } => risk::run(action, args.json),
         Command::Orchestrate { action } => orchestrate::run(&args.db, action, args.json),
