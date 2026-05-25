@@ -651,6 +651,28 @@ pub enum FactsAction {
         #[arg(long)]
         evidence: String,
     },
+    /// Machine-verification (ADR-0028/0036): resolve a `needs_verification` fact
+    /// against a real, independently-confirmable public source (DOI/URL/standard
+    /// clause). Records the source verbatim with `verified_method: machine` —
+    /// NOT a human HITL sign-off — so the audit trail names what verified it.
+    Resolve {
+        #[arg(long)]
+        project: String,
+        /// The verified-fact id to resolve.
+        id: i64,
+        /// The confirmed source (DOI / URL / standard clause / CVE id).
+        #[arg(long)]
+        source: String,
+        /// What kind of source it is once resolved.
+        #[arg(long, default_value = "external_stat")]
+        kind: String,
+        /// Optional canonical value the source confirms.
+        #[arg(long)]
+        value: Option<String>,
+        /// How it was confirmed (e.g. "Crossref api.crossref.org/works/<doi>").
+        #[arg(long, default_value = "")]
+        method: String,
+    },
     /// Scan deliverables for `NEEDS-VERIFICATION:` markers and enqueue each as a
     /// `needs_verification` fact (the HITL queue) if not already present.
     Scan {
@@ -658,6 +680,17 @@ pub enum FactsAction {
         project: String,
         #[arg(long, default_value = "out/sources/")]
         prefix: String,
+    },
+    /// Collapse duplicate `needs_verification` placeholders that share the same
+    /// claim text (e.g. a marker present in both a per-dimension file and the
+    /// merged document). Keeps the lowest-id copy and supersedes the rest, so
+    /// the HITL queue reflects distinct claims, not text duplication.
+    Dedupe {
+        #[arg(long)]
+        project: String,
+        /// Report what would be collapsed without writing supersessions.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

@@ -27,6 +27,11 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
             needs += 1;
             continue;
         }
+        // A `duplicate` tombstone (from `facts dedupe`) is bookkeeping, not a
+        // sourced fact — it legitimately carries an empty source.
+        if kind == "duplicate" {
+            continue;
+        }
         // ADR-0036: a sourced fact must have a real, non-empty source.
         if source.trim().is_empty() {
             findings.push(Finding {
