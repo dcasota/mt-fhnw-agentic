@@ -41,7 +41,13 @@ const REQUIRED: &[(&str, &[&str])] = &[
 /// R&R-context tokens — a `Verified?` column alone is not enough (many fact
 /// tables carry one); the header must also name the review/response context.
 const RR_CONTEXT: &[&str] = &[
-    "reviewer", "review", "r&r", "resubmit", "rebuttal", "response to", "revision",
+    "reviewer",
+    "review",
+    "r&r",
+    "resubmit",
+    "rebuttal",
+    "response to",
+    "revision",
 ];
 
 /// Is `header` (a lower-cased markdown table header row) an R&R matrix header?
