@@ -74,6 +74,13 @@ pub enum Command {
         action: BibAction,
     },
 
+    /// Verified-facts backbone (ADR-0016/0042): anchor recurring claims to
+    /// provenance-bearing records so numbers resolve against a signed fact.
+    Facts {
+        #[command(subcommand)]
+        action: FactsAction,
+    },
+
     /// Diagnose the environment + binary configuration.
     Doctor,
 
@@ -578,6 +585,33 @@ pub enum CheckAction {
     /// AIBOM chronological-ledger integrity (Phase 2): every commit signed, the
     /// journal covers the commit span, and AI decisions are recorded.
     Aibom {
+        #[arg(long)]
+        project: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FactsAction {
+    /// Anchor a recurring claim to one provenance-bearing verified record
+    /// (ADR-0016/0042). A real `--source` is required (ADR-0036) unless the
+    /// kind is `needs_verification` (an unresolved HITL placeholder).
+    Add {
+        #[arg(long)]
+        project: String,
+        /// The claim text/pattern as it appears in prose (e.g. "over 1,000 packages").
+        claim: String,
+        /// measured | model_estimate | build_artifact | external_stat | needs_verification
+        #[arg(long, default_value = "measured")]
+        kind: String,
+        /// The provenance (DOI/URL/manifest SHA/RAMP run/HITL sign-off).
+        #[arg(long, default_value = "")]
+        source: String,
+        /// Optional canonical value.
+        #[arg(long)]
+        value: Option<String>,
+    },
+    /// List the project's verified facts.
+    List {
         #[arg(long)]
         project: String,
     },

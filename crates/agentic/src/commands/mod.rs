@@ -4,6 +4,7 @@ mod audit;
 mod bibliography;
 mod book;
 mod check;
+pub(crate) mod facts;
 mod config;
 mod content;
 mod doctor;
@@ -43,6 +44,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Risk { action } => risk::run(action, args.json),
         Command::Check { action } => check::run(&args.db, action, args.json).await,
         Command::Bibliography { action } => bibliography::run(&args.db, action, args.json),
+        Command::Facts { action } => facts::run(&args.db, action, args.json),
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,
         Command::Config { action } => config::run(action, args.json),

@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS passport_entries (
         'temporal_audit_results',
         'timeline',
         'reset_ledger',
-        'compliance_reports'
+        'compliance_reports',
+        'verified_facts'
     )),
     payload_json  TEXT NOT NULL,
     added_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),

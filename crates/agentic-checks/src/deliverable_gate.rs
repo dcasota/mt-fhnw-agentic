@@ -48,6 +48,13 @@ const GRAPHICAL: &[&str] = &[
 /// All gate findings for one markdown document. `label` prefixes locations.
 #[must_use]
 pub fn findings_for(label: &str, text: &str) -> Vec<Finding> {
+    findings_for_facts(label, text, &[])
+}
+
+/// As [`findings_for`], but a number on a line matching an anchored verified-fact
+/// claim (ADR-0016/0042) is treated as already-sourced (no NUMBER_UNSOURCED).
+#[must_use]
+pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut in_fence = false;
     for (idx, ln) in text.lines().enumerate() {
@@ -100,7 +107,10 @@ pub fn findings_for(label: &str, text: &str) -> Vec<Finding> {
                 here(),
             ));
         }
-        if NUM.is_match(ln) && !NUMSRC.is_match(ln) {
+        if NUM.is_match(ln)
+            && !NUMSRC.is_match(ln)
+            && !anchored.iter().any(|a| ln.contains(a.as_str()))
+        {
             out.push(Finding {
                 category: "NUMBER_UNSOURCED".into(),
                 severity: Severity::Warn,

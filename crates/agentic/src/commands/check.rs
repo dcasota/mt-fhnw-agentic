@@ -29,12 +29,18 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
             Some(project),
         ),
         CheckAction::Deliverable { project, prefix } => {
+            // Anchored verified facts (ADR-0016/0042): a number on a matching
+            // line is already sourced and is not flagged NUMBER_UNSOURCED.
+            let anchored = crate::commands::facts::anchored_claims(&conn, &project)
+                .unwrap_or_default();
             let entries = agentic_core::worktree::list(&conn, &project, &prefix)?;
             let mut findings = Vec::new();
             for (path, _sha) in entries.iter().filter(|(p, _)| p.ends_with(".md")) {
                 let blob = agentic_core::worktree::read_at(&conn, &project, path)?;
                 let text = String::from_utf8_lossy(&blob.content);
-                findings.extend(agentic_checks::deliverable_gate::findings_for(path, &text));
+                findings.extend(agentic_checks::deliverable_gate::findings_for_facts(
+                    path, &text, &anchored,
+                ));
             }
             (
                 agentic_checks::CheckReport::new("deliverable", findings),

@@ -19,6 +19,11 @@ pub enum Section {
     Timeline,
     ResetLedger,
     ComplianceReports,
+    /// Anchored, provenance-bearing facts (ADR-0016/0042): a recurring claim
+    /// (measured count, model estimate, build artefact, external stat) tied to
+    /// one verified source, so the deliverable gate resolves the number against
+    /// a record instead of a regex.
+    VerifiedFacts,
 }
 
 impl Section {
@@ -31,6 +36,7 @@ impl Section {
             Self::Timeline => "timeline",
             Self::ResetLedger => "reset_ledger",
             Self::ComplianceReports => "compliance_reports",
+            Self::VerifiedFacts => "verified_facts",
         }
     }
 }
@@ -46,6 +52,7 @@ impl std::str::FromStr for Section {
             "timeline" => Ok(Self::Timeline),
             "reset_ledger" => Ok(Self::ResetLedger),
             "compliance_reports" => Ok(Self::ComplianceReports),
+            "verified_facts" => Ok(Self::VerifiedFacts),
             other => Err(Error::InvalidInput(format!(
                 "unknown passport section: {other}"
             ))),
