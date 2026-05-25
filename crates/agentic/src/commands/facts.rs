@@ -64,27 +64,99 @@ pub fn run(db_path: &std::path::Path, action: FactsAction, json_out: bool) -> Re
                 println!("Anchored verified fact #{id} [{kind}]: \"{claim}\" (bound to HEAD)");
             }
         }
-        FactsAction::List { project } => {
+        FactsAction::List {
+            project,
+            needs_verification,
+        } => {
             let facts = passport::current(&conn, &project, Section::VerifiedFacts)?;
+            let rows: Vec<(i64, Value)> = facts
+                .iter()
+                .filter_map(|e| serde_json::from_str::<Value>(&e.payload_json).ok().map(|v| (e.id, v)))
+                .filter(|(_, v)| {
+                    !needs_verification
+                        || v.get("kind").and_then(Value::as_str) == Some("needs_verification")
+                })
+                .collect();
             if json_out {
-                let arr: Vec<Value> = facts
-                    .iter()
-                    .filter_map(|e| serde_json::from_str(&e.payload_json).ok())
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&arr)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows.iter().map(|(_, v)| v).collect::<Vec<_>>())?
+                );
                 return Ok(());
             }
-            println!("{} verified fact(s):", facts.len());
-            for e in &facts {
-                if let Ok(v) = serde_json::from_str::<Value>(&e.payload_json) {
-                    println!(
-                        "  [{}] {} — source: {}",
-                        v.get("kind").and_then(Value::as_str).unwrap_or("?"),
-                        v.get("claim").and_then(Value::as_str).unwrap_or("?"),
-                        v.get("source").and_then(Value::as_str).unwrap_or("(none)"),
-                    );
+            println!("{} verified fact(s):", rows.len());
+            for (id, v) in &rows {
+                println!(
+                    "  #{id} [{}] {} — source: {}",
+                    v.get("kind").and_then(Value::as_str).unwrap_or("?"),
+                    v.get("claim").and_then(Value::as_str).unwrap_or("?"),
+                    v.get("source").and_then(Value::as_str).unwrap_or("(none)"),
+                );
+            }
+        }
+        FactsAction::Verify {
+            project,
+            id,
+            by,
+            evidence,
+        } => {
+            let facts = passport::current(&conn, &project, Section::VerifiedFacts)?;
+            let target = facts
+                .iter()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow!("no current verified fact #{id}"))?;
+            let mut v: Value = serde_json::from_str(&target.payload_json)?;
+            let kind = v.get("kind").and_then(Value::as_str).unwrap_or("measured");
+            // Promote needs_verification → measured once a human confirms.
+            let new_kind = if kind == "needs_verification" {
+                "measured"
+            } else {
+                kind
+            };
+            v["kind"] = json!(new_kind);
+            v["source"] = json!(format!("HITL sign-off by {by}: {evidence}"));
+            v["verified_by"] = json!(by);
+            v["verified_at"] = json!(now_utc());
+            let head = worktree::head_commit(&conn, &project)?.map(|c| c.sha256);
+            let new_id = passport::append(
+                &conn,
+                &project,
+                Section::VerifiedFacts,
+                &v.to_string(),
+                head.as_deref(),
+                Some(id),
+            )?;
+            println!("Resolved fact #{id} → #{new_id} via HITL sign-off ({by}).");
+        }
+        FactsAction::Scan { project, prefix } => {
+            let existing: std::collections::HashSet<String> =
+                passport::current(&conn, &project, Section::VerifiedFacts)?
+                    .iter()
+                    .filter_map(|e| serde_json::from_str::<Value>(&e.payload_json).ok())
+                    .filter_map(|v| v.get("claim").and_then(Value::as_str).map(str::to_string))
+                    .collect();
+            let head = worktree::head_commit(&conn, &project)?.map(|c| c.sha256);
+            let mut enqueued = 0usize;
+            for (path, _sha) in worktree::list(&conn, &project, &prefix)? {
+                if !path.ends_with(".md") || path.contains("_resolved") {
+                    continue;
+                }
+                let blob = worktree::read_at(&conn, &project, &path)?;
+                let text = String::from_utf8_lossy(&blob.content);
+                for line in text.lines().filter(|l| l.contains("NEEDS-VERIFICATION")) {
+                    let claim = line.trim().trim_start_matches(['`', '#', '*', '>', '-', ' ']).chars().take(120).collect::<String>();
+                    if existing.contains(&claim) {
+                        continue;
+                    }
+                    let payload = json!({
+                        "claim": claim, "kind": "needs_verification", "value": "",
+                        "source": "", "source_path": path, "verified_at": now_utc(),
+                    });
+                    passport::append(&conn, &project, Section::VerifiedFacts, &payload.to_string(), head.as_deref(), None)?;
+                    enqueued += 1;
                 }
             }
+            println!("Enqueued {enqueued} NEEDS-VERIFICATION marker(s) into the HITL queue.");
         }
     }
     Ok(())
@@ -100,6 +172,10 @@ pub fn anchored_claims(
     Ok(facts
         .iter()
         .filter_map(|e| serde_json::from_str::<Value>(&e.payload_json).ok())
+        // A `needs_verification` placeholder is a HITL queue entry, NOT a source:
+        // it must not rescue the number it tracks (the marker stays flagged until
+        // resolved). Only sourced facts anchor.
+        .filter(|v| v.get("kind").and_then(Value::as_str) != Some("needs_verification"))
         .filter_map(|v| {
             v.get("claim")
                 .and_then(Value::as_str)

@@ -610,10 +610,35 @@ pub enum FactsAction {
         #[arg(long)]
         value: Option<String>,
     },
-    /// List the project's verified facts.
+    /// List the project's verified facts (optionally only unresolved ones).
     List {
         #[arg(long)]
         project: String,
+        /// Show only `needs_verification` placeholders (the HITL queue).
+        #[arg(long)]
+        needs_verification: bool,
+    },
+    /// HITL sign-off (ADR-0017): resolve a `needs_verification` fact into a
+    /// sourced verified fact, superseding the placeholder.
+    Verify {
+        #[arg(long)]
+        project: String,
+        /// The verified-fact id to resolve.
+        id: i64,
+        /// Human confirming the fact.
+        #[arg(long)]
+        by: String,
+        /// Evidence / how it was confirmed.
+        #[arg(long)]
+        evidence: String,
+    },
+    /// Scan deliverables for `NEEDS-VERIFICATION:` markers and enqueue each as a
+    /// `needs_verification` fact (the HITL queue) if not already present.
+    Scan {
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = "out/sources/")]
+        prefix: String,
     },
 }
 
