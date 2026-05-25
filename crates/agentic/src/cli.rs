@@ -255,6 +255,30 @@ pub enum Command {
         #[command(subcommand)]
         action: OrchestrateAction,
     },
+
+    /// Source-merge utilities (codifies manual assembly steps). Currently:
+    /// assemble the eleven dimension sources into one English compendium.
+    Merge {
+        #[command(subcommand)]
+        action: MergeAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MergeAction {
+    /// Concatenate the eleven `Dimension_NN_*.md` sources (numeric order) into a
+    /// single normalised-H1 compendium written to the content store at `--out`.
+    Dimensions {
+        /// Project ID (ULID).
+        #[arg(long)]
+        project: String,
+        /// Working-tree prefix the dimension sources live under.
+        #[arg(long, default_value = "out/sources/")]
+        prefix: String,
+        /// Destination path in the content store for the merged document.
+        #[arg(long, default_value = "out/sources/Dimensions_merged_EN.md")]
+        out: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

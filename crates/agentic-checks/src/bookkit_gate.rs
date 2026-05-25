@@ -54,6 +54,8 @@ della|degli|sono|anche|perch[ée])\b",
     )
     .unwrap()
 });
+/// A markdown heading deeper than H4 (`#####` or more, then whitespace).
+static DEEP_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#####+\s").unwrap());
 /// A URL anywhere on the line → skip RULE 2 (URLs carry foreign-looking tokens).
 static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s)\]<>"']+"#).unwrap());
 /// An APA-style in-text/reference citation `(1999)` / `(2020a)` → skip RULE 2.
@@ -146,11 +148,38 @@ pub fn non_english_tokens(text: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// RULE 3 helper: heading-depth violations in `text`.
+///
+/// Returns `(line_number, snippet)` pairs — one per heading deeper than `####`
+/// (H4). A book chapter is one H1 plus at most three sub-levels (H2/H3/H4), so
+/// any `#####`-or-deeper line violates the structure. Fence-aware (headings
+/// inside fenced code/figspec are ignored).
+#[must_use]
+pub fn heading_depth_violations(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (idx, ln) in text.lines().enumerate() {
+        let i = idx + 1;
+        if ln.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if DEEP_HEADING.is_match(ln) {
+            out.push((i, snippet(ln.trim_start(), 40)));
+        }
+    }
+    out
+}
+
 /// Run the bookkit gate over a project's deliverable markdown (`prefix`).
 pub fn run(conn: &Connection, project: &str, prefix: &str) -> Result<CheckReport> {
     let mut findings = Vec::new();
     let mut total_bold = 0usize;
     let mut total_non_en = 0usize;
+    let mut total_heading_depth = 0usize;
     let mut distinct_tokens: BTreeSet<String> = BTreeSet::new();
 
     let entries = worktree::list(conn, project, prefix)?;
@@ -185,6 +214,17 @@ pub fn run(conn: &Connection, project: &str, prefix: &str) -> Result<CheckReport
                 location: Some(format!("{path}:{line}")),
             });
         }
+
+        // RULE 3 — heading depth (one H1 chapter + at most 3 sub-levels).
+        for (line, snip) in heading_depth_violations(&text) {
+            total_heading_depth += 1;
+            findings.push(Finding {
+                category: "HEADING_DEPTH".into(),
+                severity: Severity::Warn,
+                message: format!("heading deeper than H4 (max H2/H3/H4): '{snip}'"),
+                location: Some(format!("{path}:{line}")),
+            });
+        }
     }
 
     // INFO summary findings (one per rule) carry the totals.
@@ -208,13 +248,21 @@ pub fn run(conn: &Connection, project: &str, prefix: &str) -> Result<CheckReport
         ),
         location: Some("bookkit".into()),
     });
+    findings.push(Finding {
+        category: "HEADING_DEPTH_SUMMARY".into(),
+        severity: Severity::Info,
+        message: format!(
+            "bookkit RULE 3 (heading-depth): {total_heading_depth} heading(s) deeper than H4"
+        ),
+        location: Some("bookkit".into()),
+    });
 
     Ok(CheckReport::new("bookkit", findings))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bold_violations, non_english_tokens};
+    use super::{bold_violations, heading_depth_violations, non_english_tokens};
 
     #[test]
     fn leading_bold_label_ok() {
@@ -270,6 +318,22 @@ mod tests {
     fn english_clean() {
         // Pure English prose → 0.
         assert_eq!(non_english_tokens("the solution is good.\n").len(), 0);
+    }
+
+    #[test]
+    fn deep_heading_flagged() {
+        // An H5 line is deeper than H4 → 1 violation; H2/H3/H4 are clean.
+        let md = "# H1\n## H2\n### H3\n#### H4\n##### H5 too deep\n";
+        let v = heading_depth_violations(md);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].0, 5);
+    }
+
+    #[test]
+    fn deep_heading_in_fence_ignored() {
+        // A `#####` line inside a fenced block is code, not a heading → 0.
+        let md = "```\n##### not a heading\n```\n#### H4 ok\n";
+        assert_eq!(heading_depth_violations(md).len(), 0);
     }
 
     #[test]

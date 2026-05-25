@@ -16,6 +16,7 @@ mod import;
 mod inbox;
 mod init;
 mod journal;
+mod merge;
 mod migrate;
 mod normalize;
 mod orchestrate;
@@ -46,6 +47,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Gen { action } => generate::run(action, args.json),
         Command::Risk { action } => risk::run(action, args.json),
         Command::Orchestrate { action } => orchestrate::run(&args.db, action, args.json),
+        Command::Merge { action } => merge::run(&args.db, action, args.json),
         Command::Check { action } => check::run(&args.db, action, &args.lang, args.json).await,
         Command::Bibliography { action } => bibliography::run(&args.db, action, args.json),
         Command::Facts { action } => facts::run(&args.db, action, args.json),

@@ -156,12 +156,17 @@ const UNNUMBERED_TITLES: &[&str] = &[
     "acknowledgements",
     "acknowledgments",
     "introduction",
+    "acronyms and abbreviations",
     "acronyms",
     "abbreviations",
     "bibliography",
     "references",
     "index",
     "contents",
+    "table of figures",
+    "list of figures",
+    "table of tables",
+    "list of tables",
     "about this book",
     "about the book",
     "glossary",
@@ -1545,6 +1550,21 @@ mod tests {
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 2000);
+    }
+
+    #[test]
+    fn front_matter_unnumbered_dimension_numbered() {
+        // Front/back-matter H1s render UNNUMBERED (exact or starts-with match,
+        // case-insensitive); a real dimension chapter stays numbered.
+        assert!(!chapter_is_numbered("# Foreword\n\nText.\n"));
+        assert!(!chapter_is_numbered(
+            "# Appendix: The Research Prompts\n\nText.\n"
+        ));
+        assert!(!chapter_is_numbered("# Acronyms and Abbreviations\n"));
+        assert!(!chapter_is_numbered("# List of Figures\n"));
+        assert!(chapter_is_numbered(
+            "# Dimension 06 — Quantum Computing\n\nText.\n"
+        ));
     }
 
     #[test]
