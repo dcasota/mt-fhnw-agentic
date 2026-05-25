@@ -112,9 +112,22 @@ pub fn run(conn: &Connection, project_id: &str) -> Result<CheckReport> {
         if !path.ends_with(".md") {
             continue;
         }
-        // Archived drafts (brownfield, frozen) are not active deliverables; their
-        // in-text citations are out of scope for the live citation gate.
-        if path.starts_with("archive/") {
+        // Imported source materials and prior-phase / archived documents are not
+        // authored deliverables; their internal citation lists are out of scope
+        // for the live citation gate (only the thesis's own deliverables —
+        // out/sources, thesis-draft-v5, etc. — are checked).
+        const SKIP_PREFIXES: &[&str] = &[
+            "archive/",
+            "proposal/",
+            "emailresearch/",
+            "inbox/",
+            "refs/",
+            // Governance/methodology docs use illustrative example citations
+            // (e.g. apa7-quickref.md, ADRs, protocols) — not the thesis's own
+            // reference list.
+            "specs/",
+        ];
+        if SKIP_PREFIXES.iter().any(|p| path.starts_with(p)) {
             continue;
         }
         let blob = agentic_core::content::blob::get_blob(conn, &blob_sha)?;
