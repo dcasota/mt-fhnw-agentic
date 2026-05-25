@@ -699,6 +699,17 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// Language-interoperability coverage: every engine chrome i18n key must
+    /// carry an EXPLICIT translation for the target language(s); a missing key
+    /// would silently leak English chrome. Regression guard, not a translator.
+    ///
+    /// The target language comes from the global `--lang` (default `en`):
+    /// `--lang de` checks German; with the default `en` (the fallback baseline)
+    /// every non-English supported language is checked.
+    I18n {
+        #[arg(long)]
+        project: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

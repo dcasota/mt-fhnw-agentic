@@ -6,12 +6,33 @@
 //! stays in whatever language the chapters are authored in.
 //!
 //! Lookup contract (never panics, never renders empty):
-//! - `lang` is matched case-insensitively;
-//! - an unknown `lang` falls back to `"en"`;
-//! - an unknown `key` falls back to the key itself.
+//! - `lang` is matched case-insensitively on its primary subtag;
+//! - [`t`] falls back through English to the key itself;
+//! - [`has`] reports only EXPLICIT entries (no fallback) so a regression gate
+//!   can catch keys that would silently leak English chrome.
 //!
 //! NOTE: the `rm` (Romansh) and `hi` (Hindi/Devanagari) translations are
 //! best-effort SEED VALUES pending native-speaker review.
+
+/// All engine chrome keys backed by the compile-time table.
+///
+/// A language-interoperability gate (`agentic check i18n`) iterates this list
+/// to assert that every key has an EXPLICIT translation in a target language.
+pub const KEYS: &[&str] = &[
+    "fig_prefix",
+    "table_prefix",
+    "list_of_figures",
+    "list_of_tables",
+    "sources_box",
+    "edition_disclaimer",
+    "conventions_title",
+    "note",
+    "tip",
+    "warning",
+];
+
+/// Supported language codes, English first.
+pub const LANGS: &[&str] = &["en", "de", "fr", "it", "rm", "hi"];
 
 /// Translate an engine chrome `key` for the given `lang`.
 ///
@@ -19,17 +40,28 @@
 /// key itself when the key is unknown.
 #[must_use]
 pub fn t(lang: &str, key: &str) -> &'static str {
-    let lang = normalise_lang(lang);
-    // `lookup` returns `None` only for an unknown key (every known key has a
-    // value for every supported lang, and unknown langs already collapsed to
-    // "en"). Fall back to the key itself so nothing renders empty.
-    lookup(lang, key).unwrap_or_else(|| {
-        // A `&'static str` cannot borrow the caller's `key`, so promote it to a
-        // leaked static. This path is unreachable for the engine's literal keys;
-        // it exists only to honour the "unknown key → key" contract for tests /
-        // misuse. Leaking a handful of short strings is acceptable for that.
-        Box::leak(key.to_string().into_boxed_str())
-    })
+    // Explicit entry → English fallback → the key itself (so nothing renders
+    // empty). `has()` distinguishes the explicit case from the fallback.
+    lookup(lang, key)
+        .or_else(|| lookup("en", key))
+        .unwrap_or_else(|| {
+            // A `&'static str` cannot borrow the caller's `key`, so promote it
+            // to a leaked static. This path is unreachable for the engine's
+            // literal keys; it exists only to honour the "unknown key → key"
+            // contract for tests / misuse. Leaking a handful of short strings
+            // is acceptable for that.
+            Box::leak(key.to_string().into_boxed_str())
+        })
+}
+
+/// Is there an EXPLICIT translation for `key` in `lang`?
+///
+/// Unlike [`t`], this does NOT fall back to English: it reports whether the
+/// table carries a real entry for the (normalised) language. The i18n gate
+/// uses it to catch keys that would silently leak English chrome.
+#[must_use]
+pub fn has(lang: &str, key: &str) -> bool {
+    lookup(lang, key).is_some()
 }
 
 /// Case-insensitively reduce a lang tag to one of the supported codes, or "en".
@@ -42,13 +74,18 @@ fn normalise_lang(lang: &str) -> &'static str {
         "it" => "it",
         "rm" => "rm",
         "hi" => "hi",
-        _ => "en",
+        "en" => "en",
+        _ => "",
     }
 }
 
-/// The compile-time table. `lang` is already normalised to a supported code.
-/// Returns `None` for an unknown key so the caller can fall back to the key.
+/// The compile-time table. Returns `None` for an unknown key OR an unsupported
+/// `lang` (so callers can distinguish an explicit entry from a fallback).
 fn lookup(lang: &str, key: &str) -> Option<&'static str> {
+    let lang = normalise_lang(lang);
+    if lang.is_empty() {
+        return None;
+    }
     // Each arm lists en/de/fr/it/rm/hi in that order.
     let row: [&'static str; 6] = match key {
         "fig_prefix" => [
@@ -132,11 +169,46 @@ fn lookup(lang: &str, key: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::t;
+    use super::{KEYS, LANGS, has, t};
 
     #[test]
     fn german_note() {
         assert_eq!(t("de", "note"), "Hinweis");
+    }
+
+    #[test]
+    fn has_true_for_explicit_de_entry() {
+        assert!(has("de", "note"));
+        // Case-insensitive on the primary subtag.
+        assert!(has("DE-CH", "fig_prefix"));
+    }
+
+    #[test]
+    fn has_true_even_when_translation_equals_english() {
+        // fr `fig_prefix` is literally "Figure " (same bytes as en) — but it is
+        // still an EXPLICIT seeded entry, so `has` must report true.
+        assert_eq!(t("fr", "fig_prefix"), "Figure ");
+        assert!(has("fr", "fig_prefix"));
+    }
+
+    #[test]
+    fn has_false_for_unknown_key() {
+        assert!(!has("de", "nonexistent_key"));
+    }
+
+    #[test]
+    fn has_false_for_unsupported_lang() {
+        assert!(!has("xx", "note"));
+    }
+
+    #[test]
+    fn keys_and_langs_constants_complete() {
+        assert_eq!(LANGS, &["en", "de", "fr", "it", "rm", "hi"]);
+        for lang in LANGS {
+            for key in KEYS {
+                assert!(has(lang, key), "missing explicit {lang}/{key}");
+            }
+        }
     }
 
     #[test]

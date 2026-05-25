@@ -46,7 +46,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Gen { action } => generate::run(action, args.json),
         Command::Risk { action } => risk::run(action, args.json),
         Command::Orchestrate { action } => orchestrate::run(&args.db, action, args.json),
-        Command::Check { action } => check::run(&args.db, action, args.json).await,
+        Command::Check { action } => check::run(&args.db, action, &args.lang, args.json).await,
         Command::Bibliography { action } => bibliography::run(&args.db, action, args.json),
         Command::Facts { action } => facts::run(&args.db, action, args.json),
         Command::Prisma { action } => prisma::run(&args.db, action, args.json),

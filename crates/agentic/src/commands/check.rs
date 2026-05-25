@@ -9,7 +9,7 @@ use agentic_checks::{CheckReport, Verdict};
 
 use crate::cli::CheckAction;
 
-pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<()> {
+pub async fn run(db_path: &Path, action: CheckAction, lang: &str, json_out: bool) -> Result<()> {
     let conn = agentic_core::db::open(db_path)?;
     // Each arm yields (report, project?) so EVERY check can record an
     // audit_verdict (ADR-0041: enhanced checks after the research-skill must
@@ -63,6 +63,23 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
             agentic_checks::facts_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::I18n { project } => {
+            // The chrome table is compile-time, so the gate needs no DB; the
+            // project is taken only to record the audit_verdict (checkpoint
+            // "i18n") consistently with the other gates.
+            //
+            // The target language is the global `--lang` (default "en"). The
+            // English baseline can never leak into itself, so the default "en"
+            // means "no specific target" → check every non-English language;
+            // any explicit language (incl. an unsupported one) is checked
+            // directly.
+            let target = if lang.eq_ignore_ascii_case("en") {
+                None
+            } else {
+                Some(lang)
+            };
+            (agentic_checks::i18n_gate::run(target), Some(project))
+        }
         CheckAction::Tree {
             project,
             root,
