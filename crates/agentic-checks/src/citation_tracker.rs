@@ -54,11 +54,23 @@ pub fn run(conn: &Connection, project_id: &str) -> Result<CheckReport> {
     let corpus = passport::current(conn, project_id, passport::Section::LiteratureCorpus)?;
     let mut corpus_keys: HashSet<String> = HashSet::new();
     let mut online_only_count = 0usize;
+    let mut academic_total = 0usize;
     for entry in &corpus {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&entry.payload_json) {
             if let Some(key) = value.get("citation_key").and_then(|v| v.as_str()) {
                 corpus_keys.insert(key.to_lowercase());
             }
+            // Provenance traces (ADR-0041 Phase 1: web/email/user-input traces
+            // captured for non-repudiation) are NOT academic references and are
+            // excluded from the FHNW online-source quota.
+            let is_trace = value
+                .get("trace_origin")
+                .and_then(serde_json::Value::as_str)
+                .map_or(false, |s| !s.is_empty());
+            if is_trace {
+                continue;
+            }
+            academic_total += 1;
             // "Online-only" = no DOI, no ISBN, no publisher.
             let has_doi = value
                 .get("doi")
@@ -78,8 +90,8 @@ pub fn run(conn: &Connection, project_id: &str) -> Result<CheckReport> {
         }
     }
 
-    // 2. Online quota.
-    let total_refs = corpus.len();
+    // 2. Online quota (over academic references only, excluding provenance traces).
+    let total_refs = academic_total;
     if total_refs > 0 {
         let pct = (online_only_count as f64 / total_refs as f64) * 100.0;
         if pct > ONLINE_QUOTA_PCT {
@@ -98,6 +110,11 @@ pub fn run(conn: &Connection, project_id: &str) -> Result<CheckReport> {
     let mut missing: Vec<(String, String)> = Vec::new();
     for (path, blob_sha) in worktree::list(conn, project_id, "")? {
         if !path.ends_with(".md") {
+            continue;
+        }
+        // Archived drafts (brownfield, frozen) are not active deliverables; their
+        // in-text citations are out of scope for the live citation gate.
+        if path.starts_with("archive/") {
             continue;
         }
         let blob = agentic_core::content::blob::get_blob(conn, &blob_sha)?;
