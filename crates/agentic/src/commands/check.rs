@@ -84,6 +84,46 @@ pub async fn run(db_path: &Path, action: CheckAction, lang: &str, json_out: bool
             agentic_checks::bookkit_gate::run(&conn, &project, &prefix)?,
             Some(project),
         ),
+        CheckAction::Prisma { project, prefix } => (
+            agentic_checks::prisma_gate::run(&conn, &project, &prefix)?,
+            Some(project),
+        ),
+        CheckAction::CrossModel { project } => (
+            agentic_checks::cross_model_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Temporal { project, max_year } => (
+            agentic_checks::temporal_gate::run(&conn, &project, max_year)?,
+            Some(project),
+        ),
+        CheckAction::GroundTruth { project } => (
+            agentic_checks::ground_truth_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Compliance { project } => (
+            agentic_checks::compliance_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Sprint { project } => (
+            agentic_checks::sprint_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Predatory { project } => (
+            agentic_checks::predatory_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::Reproducibility { project } => (
+            agentic_checks::reproducibility_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::PageBoundary {
+            project,
+            prefix,
+            max_pages,
+        } => (
+            agentic_checks::page_boundary_gate::run(&conn, &project, &prefix, max_pages)?,
+            Some(project),
+        ),
         CheckAction::Tree {
             project,
             root,

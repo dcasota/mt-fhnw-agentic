@@ -745,6 +745,74 @@ pub enum CheckAction {
         #[arg(long, default_value = "out/sources/")]
         prefix: String,
     },
+    /// PRISMA claim→source coverage (ADR-0020/0026): every in-text citation key
+    /// must map to a literature_corpus reference. Unmapped keys WARN; an INFO
+    /// summary reports <mapped>/<total> claims mapped.
+    Prisma {
+        #[arg(long)]
+        project: String,
+        /// Restrict the scan to a path prefix.
+        #[arg(long, default_value = "out/sources/")]
+        prefix: String,
+    },
+    /// Cross-model attestation coverage (ADR-0028): external_stat / measured
+    /// facts lacking a `cross_model` attestation WARN (advisory — providers may
+    /// be unconfigured).
+    CrossModel {
+        #[arg(long)]
+        project: String,
+    },
+    /// Future-year temporal-contamination gate: any standalone 20xx year greater
+    /// than --max-year in deliverable markdown or corpus years WARNs.
+    Temporal {
+        #[arg(long)]
+        project: String,
+        /// Years strictly greater than this are flagged.
+        #[arg(long, default_value_t = 2026)]
+        max_year: u32,
+    },
+    /// Concrete ground-truth anchor gate: measured / build_artifact facts whose
+    /// source has no path/commit/URL/RAMP/index anchor WARN.
+    GroundTruth {
+        #[arg(long)]
+        project: String,
+    },
+    /// Contamination-report consolidation: reads the newest contamination_status
+    /// report; fabricated>0 ERRORs, suspect>0 WARNs, missing report WARNs.
+    Compliance {
+        #[arg(long)]
+        project: String,
+    },
+    /// Sprint-contract status gate: counts the project's sprint_contracts; a
+    /// 'dissent' phase WARNs; no contracts is an INFO PASS.
+    Sprint {
+        #[arg(long)]
+        project: String,
+    },
+    /// Predatory-venue heuristic: literature_corpus venues/publishers matching a
+    /// small conservative deny-list WARN (review prompt, never a block).
+    Predatory {
+        #[arg(long)]
+        project: String,
+    },
+    /// Reproducibility pinning (ADR-0039): passport corpus/fact entries not bound
+    /// to a signed commit WARN; PASS when all are pinned + signed.
+    Reproducibility {
+        #[arg(long)]
+        project: String,
+    },
+    /// Three-tier body-length gate (ADR-0035): estimates pages from word count
+    /// (~500 words/page) under --prefix; over --max-pages WARNs, else INFO.
+    PageBoundary {
+        #[arg(long)]
+        project: String,
+        /// Restrict the word-count to a path prefix.
+        #[arg(long, default_value = "thesis-draft-v5/")]
+        prefix: String,
+        /// Maximum allowed estimated pages.
+        #[arg(long, default_value_t = 60)]
+        max_pages: usize,
+    },
 }
 
 #[derive(Debug, Subcommand)]
