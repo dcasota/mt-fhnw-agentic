@@ -412,10 +412,19 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
             dry_run,
             root,
         } => {
+            // Snapshot-by-default (ADR-0035): when --out is omitted, render into
+            // an immutable timestamped snapshot dir rather than the live out/.
+            let out = out.map_or_else(
+                || {
+                    let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                    format!("snapshots/{ts}-books-cascade")
+                },
+                |p| p.to_string_lossy().to_string(),
+            );
             let opts = CascadeOpts {
                 project,
                 manifest: manifest.to_string_lossy().to_string(),
-                out: out.to_string_lossy().to_string(),
+                out,
                 regenerate: !no_regenerate,
                 per_dimension,
                 merged_key,

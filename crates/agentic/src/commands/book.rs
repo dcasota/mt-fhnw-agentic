@@ -38,6 +38,9 @@ struct BookSpec {
     epigraph_by: Option<String>,
     #[serde(default)]
     disclaimer: Option<String>,
+    /// Imprint lines on the title page (version, place + date); one per line.
+    #[serde(default)]
+    imprint: Option<String>,
     #[serde(default)]
     index_terms: Vec<String>,
     /// Optional per-book chrome language (en|de|fr|it|rm|hi). Overrides the
@@ -194,6 +197,7 @@ fn build_one(
         epigraph: spec.epigraph.clone(),
         epigraph_by: spec.epigraph_by.clone(),
         disclaimer: spec.disclaimer.clone(),
+        imprint: spec.imprint.clone(),
         index_terms: spec.index_terms.clone(),
         // Chrome language: per-book `lang` wins; else the global `--lang`; else
         // "en". The i18n layer normalises/falls back, but resolve a non-empty

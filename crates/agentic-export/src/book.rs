@@ -111,6 +111,9 @@ pub struct BookMeta {
     pub epigraph_by: Option<String>,
     /// Edition & disclaimer paragraphs (one per line). Optional.
     pub disclaimer: Option<String>,
+    /// Imprint lines on the title page under the affiliation (e.g. "Version 1.0",
+    /// place + date). One centred line per text line. Optional.
+    pub imprint: Option<String>,
     /// Extra index terms beyond the built-in set (e.g. dimension-specific).
     pub index_terms: Vec<String>,
     /// Chrome language tag (en|de|fr|it|rm|hi). Empty or unknown → English.
@@ -278,6 +281,21 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
                 .fonts(head_fonts()),
         ),
     );
+    // Imprint lines (version, place + date) — one centred line each.
+    if let Some(imp) = &m.imprint {
+        doc = doc.add_paragraph(Paragraph::new());
+        for line in imp.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            doc = doc.add_paragraph(
+                Paragraph::new().align(AlignmentType::Center).add_run(
+                    Run::new()
+                        .add_text(line)
+                        .size(20)
+                        .color(GREY)
+                        .fonts(head_fonts()),
+                ),
+            );
+        }
+    }
     doc.add_paragraph(page_break())
 }
 

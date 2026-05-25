@@ -283,9 +283,11 @@ pub enum CascadeAction {
         /// Book manifest consumed by the build step.
         #[arg(long, default_value = "out/book_manifest.json")]
         manifest: PathBuf,
-        /// Output directory for the rendered .docx books.
-        #[arg(long, default_value = "out/books")]
-        out: PathBuf,
+        /// Output directory for the rendered .docx books. If omitted, the
+        /// cascade renders into an immutable timestamped snapshot
+        /// `snapshots/<ts>-books-cascade/` (ADR-0035 snapshot convention).
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// Skip regenerating the dimension sources before merging. Regeneration
         /// (bounded `claude` sub-sessions, one per dimension) is ON by default;
         /// pass `--no-regenerate` to skip it.
@@ -296,7 +298,7 @@ pub enum CascadeAction {
         #[arg(long)]
         per_dimension: bool,
         /// Manifest key of the merged book to build.
-        #[arg(long, default_value = "master_thesis")]
+        #[arg(long, default_value = "governing_the_agentic_machine")]
         merged_key: String,
         /// Print the ordered plan and run only the cheap read-only gates; skip LLM
         /// regeneration, book render and signing.
