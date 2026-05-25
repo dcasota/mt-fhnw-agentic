@@ -43,7 +43,35 @@ pub struct Signals {
     pub semantic_scholar_unmatched: bool,
     pub openalex_unmatched: bool,
     pub crossref_unmatched: bool,
+    /// #7: the reference is an arXiv/preprint-DOI work. Crossref does not index
+    /// arXiv DOIs (`10.48550/arXiv.*`), so a Crossref miss is EXPECTED and must
+    /// not count as a fabrication signal — OpenAlex/S2 (which do index arXiv)
+    /// are authoritative here.
+    pub is_arxiv: bool,
+    /// #1 (ADR-0036): a DOI was supplied and resolved, but the resolved work's
+    /// title/year does NOT match the reference — i.e. the DOI points at a
+    /// different paper (a wrong or fabricated DOI). This is the strongest signal.
+    pub doi_metadata_mismatch: bool,
+    /// The title the supplied DOI actually resolves to (mismatch evidence).
+    pub doi_resolved_title: Option<String>,
     pub checked_at: String,
+}
+
+/// #4 (ADR-0026): PRISMA-style disposition of one reference, separating a
+/// legitimately-not-indexed item from a genuinely suspect one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefClass {
+    /// Matched in at least one index (or DOI resolved with consistent metadata).
+    Matched,
+    /// Not in any index but plausibly so (grey literature, brand-new arXiv) —
+    /// advisory, not a contamination signal.
+    NotIndexed,
+    /// Borderline: partial/ambiguous evidence — route to cross-model (#5) or
+    /// HITL/consensus (#6) before judging.
+    Suspect,
+    /// DOI-metadata mismatch or academic-no-DOI-unmatched-everywhere — blocks.
+    Fabricated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +93,92 @@ fn is_preprint_post_2024(year: Option<u16>, venue: Option<&str>) -> bool {
     let Some(venue) = venue else { return false };
     let v = venue.to_lowercase();
     PREPRINT_HOSTS.iter().any(|h| v.contains(h))
+}
+
+/// #7: is this an arXiv (or arXiv-DOI) reference? Crossref does not index
+/// arXiv DOIs, so a Crossref miss for these is expected, not suspicious.
+#[must_use]
+fn is_arxiv_ref(reference: &Reference) -> bool {
+    let doi_arxiv = reference
+        .doi
+        .as_deref()
+        .is_some_and(|d| d.to_lowercase().contains("arxiv"));
+    let venue_arxiv = reference
+        .venue
+        .as_deref()
+        .is_some_and(|v| v.to_lowercase().contains("arxiv"));
+    doi_arxiv || venue_arxiv
+}
+
+/// Significant (>2-char) lowercased word tokens of a title.
+fn title_tokens(s: &str) -> HashSet<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// #1: do two titles plausibly denote the same work? Token-overlap over the
+/// smaller token set. Empty/whitespace titles are treated as "can't compare"
+/// (returns true) so we never flag a mismatch we cannot actually establish.
+#[must_use]
+fn titles_consistent(a: &str, b: &str) -> bool {
+    let ta = title_tokens(a);
+    let tb = title_tokens(b);
+    if ta.is_empty() || tb.is_empty() {
+        return true;
+    }
+    let inter = ta.intersection(&tb).count();
+    let denom = ta.len().min(tb.len());
+    (inter as f64 / denom as f64) >= 0.6
+}
+
+/// #1: fetch the title/year a DOI actually resolves to (via Crossref), so a
+/// supplied DOI can be checked against the reference it claims to support.
+async fn crossref_doi_metadata(
+    client: &Client,
+    conn: &Connection,
+    doi: &str,
+) -> Option<(String, Option<u16>)> {
+    let url = format!(
+        "https://api.crossref.org/works/{}",
+        urlencoding::encode(doi)
+    );
+    let key = cache_key("crossref", &url);
+    let body = if let Some(b) = cached_response(conn, &key) {
+        b
+    } else {
+        let mailto = std::env::var("AGENTIC_API_MAILTO").unwrap_or_default();
+        let agent = format!("agentic-mt-fhnw (mailto:{mailto})");
+        match client.get(&url).header("User-Agent", agent).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let b = resp.text().await.unwrap_or_default();
+                store_cache(conn, &key, "crossref", &url, &b);
+                b
+            }
+            _ => return None,
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let msg = v.get("message")?;
+    let title = msg
+        .get("title")
+        .and_then(|t| t.as_array())
+        .and_then(|a| a.first())
+        .and_then(|s| s.as_str())
+        .map(str::to_owned)?;
+    let year = msg
+        .get("issued")
+        .or_else(|| msg.get("published"))
+        .and_then(|p| p.get("date-parts"))
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.first())
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u16::try_from(n).ok());
+    Some((title, year))
 }
 
 fn cache_key(service: &str, key: &str) -> String {
@@ -273,6 +387,7 @@ pub async fn signals_for(
             reference.year,
             reference.venue.as_deref(),
         ),
+        is_arxiv: is_arxiv_ref(reference),
         checked_at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         ..Default::default()
     };
@@ -303,7 +418,85 @@ pub async fn signals_for(
         reference.title.as_deref(),
     )
     .await;
+    // #1 (ADR-0036): if a non-arXiv DOI is supplied, resolve it and confirm it
+    // points at THIS reference (title/year). A resolved-but-mismatched DOI is a
+    // wrong/fabricated identifier — far stronger than a mere index miss.
+    if let (Some(doi), Some(title)) = (reference.doi.as_deref(), reference.title.as_deref()) {
+        if !s.is_arxiv {
+            if let Some((resolved_title, resolved_year)) =
+                crossref_doi_metadata(client, conn, doi).await
+            {
+                let title_ok = titles_consistent(title, &resolved_title);
+                let year_ok = match (reference.year, resolved_year) {
+                    (Some(a), Some(b)) => a.abs_diff(b) <= 1,
+                    _ => true,
+                };
+                if !title_ok || !year_ok {
+                    s.doi_metadata_mismatch = true;
+                    s.doi_resolved_title = Some(resolved_title);
+                }
+            }
+        }
+    }
     s
+}
+
+/// Number of indices the reference matched in (Crossref / OpenAlex / S2).
+#[must_use]
+fn match_count(s: &Signals) -> u8 {
+    u8::from(!s.crossref_unmatched)
+        + u8::from(!s.openalex_unmatched)
+        + u8::from(!s.semantic_scholar_unmatched)
+}
+
+/// Whether the reference is academic-typed (vs. grey literature).
+#[must_use]
+fn is_academic(ref_type: Option<&str>) -> bool {
+    matches!(
+        ref_type,
+        Some(
+            "article"
+                | "inproceedings"
+                | "conference"
+                | "journal"
+                | "book"
+                | "incollection"
+                | "phdthesis"
+                | "proceedings"
+                | "techreport"
+        )
+    )
+}
+
+/// #2/#4: classify a reference from its signals (offline runs stay advisory).
+#[must_use]
+pub fn classify(reference: &Reference, s: &Signals, use_network: bool) -> RefClass {
+    if !use_network {
+        return RefClass::NotIndexed;
+    }
+    // #1: a resolved-but-wrong DOI is fabrication regardless of type.
+    if s.doi_metadata_mismatch {
+        return RefClass::Fabricated;
+    }
+    // For an arXiv work, Crossref is expected to miss; OpenAlex/S2 are decisive.
+    let matched = if s.is_arxiv {
+        !s.openalex_unmatched || !s.semantic_scholar_unmatched
+    } else {
+        match_count(s) >= 1
+    };
+    if matched {
+        return RefClass::Matched;
+    }
+    // Unmatched everywhere. An academic-typed reference with no DOI that no index
+    // knows is treated as fabricated (ADR-0036); grey literature / arXiv-with-DOI
+    // is merely not-indexed; anything else is borderline-suspect.
+    if is_academic(reference.ref_type.as_deref()) && reference.doi.is_none() {
+        RefClass::Fabricated
+    } else if !is_academic(reference.ref_type.as_deref()) || s.is_arxiv {
+        RefClass::NotIndexed
+    } else {
+        RefClass::Suspect
+    }
 }
 
 /// Parse references from passport `literature_corpus` entries.
@@ -358,74 +551,129 @@ pub async fn run(conn: &Connection, project_id: &str, use_network: bool) -> Resu
         .build()
         .unwrap_or_else(|_| Client::new());
     let mut findings = Vec::new();
+    // #4 (ADR-0026): PRISMA buckets.
+    let (mut n_matched, mut n_not_indexed, mut n_suspect, mut n_fabricated) = (0u32, 0, 0, 0);
+    // #3 (ADR-0016): per-reference disposition recorded to the passport.
+    let mut statuses: Vec<serde_json::Value> = Vec::new();
     for r in &refs {
         let s = signals_for(&client, conn, r, use_network).await;
-        let mut flags = Vec::new();
-        if s.preprint_post_llm_inflection {
-            flags.push("preprint_post_2024");
+        let class = classify(r, &s, use_network);
+        statuses.push(serde_json::json!({
+            "citation_key": r.citation_key,
+            "class": class,
+            "is_arxiv": s.is_arxiv,
+            "doi_metadata_mismatch": s.doi_metadata_mismatch,
+            "doi_resolved_title": s.doi_resolved_title,
+            "match_count": match_count(&s),
+            "preprint_post_2024": s.preprint_post_llm_inflection,
+            "checked_at": s.checked_at,
+        }));
+        match class {
+            RefClass::Matched => n_matched += 1,
+            RefClass::NotIndexed => n_not_indexed += 1,
+            RefClass::Suspect => n_suspect += 1,
+            RefClass::Fabricated => n_fabricated += 1,
         }
-        if s.semantic_scholar_unmatched {
-            flags.push("s2_unmatched");
-        }
-        if s.openalex_unmatched {
-            flags.push("openalex_unmatched");
-        }
-        if s.crossref_unmatched {
-            flags.push("crossref_unmatched");
-        }
-        // ADR-0036 references gate: an academic-typed reference with no DOI that
-        // is unmatched in ALL THREE indices (while online) is treated as likely
-        // fabricated and BLOCKS. Grey literature (website/report/standard/misc)
-        // and offline runs stay advisory.
-        let academic = matches!(
-            r.ref_type.as_deref(),
-            Some(
-                "article"
-                    | "inproceedings"
-                    | "conference"
-                    | "journal"
-                    | "book"
-                    | "incollection"
-                    | "phdthesis"
-                    | "proceedings"
-                    | "techreport"
-            )
-        );
-        let fabricated = use_network
-            && academic
-            && r.doi.is_none()
-            && s.semantic_scholar_unmatched
-            && s.openalex_unmatched
-            && s.crossref_unmatched;
-        if fabricated {
-            findings.push(Finding {
-                category: "REFERENCE_UNVERIFIED".into(),
-                severity: Severity::Error,
-                message: format!(
-                    "{}: LIKELY FABRICATED -- academic reference with no DOI, unmatched in \
-                     Crossref/OpenAlex/Semantic Scholar (ADR-0036). Verify against a primary \
-                     source or remove.",
-                    r.citation_key
-                ),
-                location: None,
-            });
-        } else if !flags.is_empty() {
-            let severity = if flags.len() >= 3 {
-                Severity::Warn
-            } else {
-                Severity::Info
-            };
-            findings.push(Finding {
-                category: "CONTAMINATION".into(),
-                severity,
-                message: format!("{}: signals = [{}]", r.citation_key, flags.join(", ")),
-                location: None,
-            });
+        // #2: class-aware severity.
+        match class {
+            RefClass::Fabricated => {
+                let msg = if s.doi_metadata_mismatch {
+                    format!(
+                        "{}: WRONG/FABRICATED DOI -- the supplied DOI resolves to \"{}\", which \
+                         does not match this reference (ADR-0036). Correct the DOI or remove.",
+                        r.citation_key,
+                        s.doi_resolved_title
+                            .as_deref()
+                            .unwrap_or("a different work")
+                    )
+                } else {
+                    format!(
+                        "{}: LIKELY FABRICATED -- academic reference with no DOI, unmatched in \
+                         Crossref/OpenAlex/Semantic Scholar (ADR-0036). Verify or remove.",
+                        r.citation_key
+                    )
+                };
+                findings.push(Finding {
+                    category: "REFERENCE_UNVERIFIED".into(),
+                    severity: Severity::Error,
+                    message: msg,
+                    location: None,
+                });
+            }
+            // #5/#6: borderline → advise cross-model (ADR-0028) / HITL consensus
+            // (ADR-0009) rather than blocking on ambiguous evidence.
+            RefClass::Suspect => {
+                findings.push(Finding {
+                    category: "REFERENCE_SUSPECT".into(),
+                    severity: Severity::Warn,
+                    message: format!(
+                        "{}: borderline -- unmatched but not conclusively fabricated. Route to \
+                         cross-model (`agentic verify cross-model`) or HITL/consensus before \
+                         judging.",
+                        r.citation_key
+                    ),
+                    location: None,
+                });
+            }
+            // #7: an arXiv/grey-lit miss is advisory, not a contamination signal.
+            RefClass::NotIndexed if use_network => {
+                findings.push(Finding {
+                    category: "CONTAMINATION".into(),
+                    severity: Severity::Info,
+                    message: format!(
+                        "{}: not indexed{} -- advisory (grey literature or new preprint).",
+                        r.citation_key,
+                        if s.is_arxiv {
+                            " (arXiv; Crossref miss expected)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    location: None,
+                });
+            }
+            RefClass::Matched | RefClass::NotIndexed => {}
         }
     }
+    // #3: write the per-reference disposition to the passport (HEAD-bound).
+    if use_network {
+        let head = agentic_core::worktree::head_commit(conn, project_id)
+            .ok()
+            .flatten()
+            .map(|c| c.sha256);
+        let payload = serde_json::json!({
+            "report": "contamination_status",
+            "prisma": { "matched": n_matched, "not_indexed": n_not_indexed,
+                        "suspect": n_suspect, "fabricated": n_fabricated },
+            "references": statuses,
+            "checked_at": Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        });
+        let _ = passport::append(
+            conn,
+            project_id,
+            passport::Section::ComplianceReports,
+            &payload.to_string(),
+            head.as_deref(),
+            None,
+        );
+    }
+    // #4: PRISMA summary line (separates not-in-DB from suspect/fabricated).
+    findings.push(Finding {
+        category: "PRISMA_SUMMARY".into(),
+        severity: Severity::Info,
+        message: format!(
+            "PRISMA: {n_matched} matched, {n_not_indexed} not-indexed (advisory), \
+             {n_suspect} suspect, {n_fabricated} fabricated, of {} references.",
+            refs.len()
+        ),
+        location: None,
+    });
     warn!(
         refs = refs.len(),
-        findings = findings.len(),
+        matched = n_matched,
+        not_indexed = n_not_indexed,
+        suspect = n_suspect,
+        fabricated = n_fabricated,
         "contamination scan complete"
     );
     Ok(CheckReport::new("contamination", findings))
@@ -479,12 +727,132 @@ mod tests {
         )
         .unwrap();
         let report = run(&conn, &pid, false).await.unwrap();
-        // The reference has no DOI + arXiv 2024 → all four flags fire offline.
+        // Offline is advisory: per-reference signals are not emitted (they need
+        // the network), but the PRISMA summary always reports the disposition —
+        // the single arXiv-2024 reference lands in the not-indexed bucket.
         assert!(
             report
                 .findings
                 .iter()
-                .any(|f| f.message.contains("preprint_post_2024"))
+                .any(|f| f.category == "PRISMA_SUMMARY" && f.message.contains("1 not-indexed"))
+        );
+    }
+
+    fn rf(key: &str, doi: Option<&str>, venue: Option<&str>, ty: Option<&str>) -> Reference {
+        Reference {
+            citation_key: key.into(),
+            title: Some("A Study of Things".into()),
+            year: Some(2025),
+            doi: doi.map(str::to_owned),
+            venue: venue.map(str::to_owned),
+            ref_type: ty.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn arxiv_detection_by_doi_or_venue() {
+        assert!(is_arxiv_ref(&rf(
+            "a",
+            Some("10.48550/arXiv.2510.02251"),
+            None,
+            None
+        )));
+        assert!(is_arxiv_ref(&rf("a", None, Some("arXiv"), None)));
+        assert!(!is_arxiv_ref(&rf(
+            "a",
+            Some("10.1109/MS.2021.3073045"),
+            Some("IEEE"),
+            None
+        )));
+    }
+
+    #[test]
+    fn title_similarity_threshold() {
+        assert!(titles_consistent(
+            "Reproducible Builds for Quantum Computing",
+            "Reproducible builds for quantum computing"
+        ));
+        assert!(!titles_consistent(
+            "Reproducible Builds for Quantum Computing",
+            "A Taxonomy of Phishing Attacks in Banking"
+        ));
+        // Empty side cannot be compared → not a mismatch.
+        assert!(titles_consistent("", "anything at all here"));
+    }
+
+    #[test]
+    fn classify_metadata_mismatch_is_fabricated() {
+        let mut s = Signals::default();
+        s.doi_metadata_mismatch = true;
+        assert_eq!(
+            classify(
+                &rf("x", Some("10.1/wrong"), None, Some("article")),
+                &s,
+                true
+            ),
+            RefClass::Fabricated
+        );
+    }
+
+    #[test]
+    fn classify_arxiv_matched_via_openalex_not_fabricated() {
+        // arXiv ref: Crossref miss is expected; OpenAlex match makes it Matched.
+        let mut s = Signals {
+            is_arxiv: true,
+            ..Default::default()
+        };
+        s.crossref_unmatched = true; // expected for arXiv
+        s.openalex_unmatched = false; // found
+        s.semantic_scholar_unmatched = true;
+        assert_eq!(
+            classify(
+                &rf(
+                    "a",
+                    Some("10.48550/arXiv.1"),
+                    Some("arXiv"),
+                    Some("article")
+                ),
+                &s,
+                true
+            ),
+            RefClass::Matched
+        );
+    }
+
+    #[test]
+    fn classify_academic_no_doi_unmatched_is_fabricated() {
+        let s = Signals {
+            crossref_unmatched: true,
+            openalex_unmatched: true,
+            semantic_scholar_unmatched: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify(&rf("g", None, None, Some("article")), &s, true),
+            RefClass::Fabricated
+        );
+    }
+
+    #[test]
+    fn classify_grey_lit_unmatched_is_not_indexed() {
+        let s = Signals {
+            crossref_unmatched: true,
+            openalex_unmatched: true,
+            semantic_scholar_unmatched: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify(&rf("w", None, None, Some("misc")), &s, true),
+            RefClass::NotIndexed
+        );
+    }
+
+    #[test]
+    fn classify_offline_is_advisory() {
+        let s = Signals::default();
+        assert_eq!(
+            classify(&rf("x", None, None, Some("article")), &s, false),
+            RefClass::NotIndexed
         );
     }
 
