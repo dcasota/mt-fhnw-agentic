@@ -14,6 +14,7 @@ pub mod embeddings;
 pub mod error;
 pub mod inbox;
 pub mod journal;
+pub mod orchestrate;
 pub mod passport;
 pub mod project;
 pub mod signing;

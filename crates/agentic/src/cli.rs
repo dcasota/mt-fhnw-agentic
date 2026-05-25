@@ -247,6 +247,66 @@ pub enum Command {
         #[command(subcommand)]
         action: RiskAction,
     },
+
+    /// Bounded autonomous sub-session orchestration (in-tool replacement for the
+    /// external PowerShell launcher). Manages `claude`-CLI sub-sessions with a
+    /// fixed budget + guard prompt; state lives in the DB, transcripts on disk.
+    Orchestrate {
+        #[command(subcommand)]
+        action: OrchestrateAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OrchestrateAction {
+    /// Register a new pending sub-session. Prints the stored (timestamp-prefixed) id.
+    Add {
+        #[arg(long)]
+        project: String,
+        /// Short id (e.g. "dim01"); stored as "<yyyyMMdd-HHmmss>-<id>".
+        #[arg(long)]
+        id: String,
+        /// The task text piped to the sub-session's stdin.
+        #[arg(long)]
+        task: String,
+        /// Per-session budget in USD.
+        #[arg(long, default_value_t = 3.0)]
+        budget: f64,
+        /// Optional model override (e.g. claude-opus-4-7).
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// List every sub-session for a project (supports the global --json).
+    List {
+        #[arg(long)]
+        project: String,
+    },
+    /// Execute pending sub-sessions by spawning the `claude` CLI.
+    Run {
+        #[arg(long)]
+        project: String,
+        /// Run a single session by its stored id (otherwise all pending).
+        #[arg(long)]
+        id: Option<String>,
+        /// Cap how many sessions are processed this invocation.
+        #[arg(long)]
+        max: Option<usize>,
+        /// Wave mode: keep going through all pending, sleeping + retrying on
+        /// rate-limit, until none remain or --max is reached.
+        #[arg(long)]
+        wave: bool,
+        /// Root directory the sub-session may edit (`--add-dir`).
+        #[arg(long, default_value = ".")]
+        root: String,
+    },
+    /// Cycle-close: run the in-tool gates + audit in sequence and print a verdict table.
+    Close {
+        #[arg(long)]
+        project: String,
+        /// Root directory for the docs gate.
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]

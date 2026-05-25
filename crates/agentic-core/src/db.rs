@@ -13,7 +13,29 @@ use tracing::{debug, info};
 use crate::{Error, Result};
 
 /// Newest schema version known to this build.
-pub const NEWEST_SCHEMA_VERSION: u32 = 5;
+pub const NEWEST_SCHEMA_VERSION: u32 = 6;
+
+/// `CREATE TABLE IF NOT EXISTS` for tables that must exist even when a live DB
+/// predates the migration that introduces them. The migration runner only
+/// applies migrations whose version exceeds the recorded max, so a DB that was
+/// already at the newest version when a new table was added would otherwise
+/// never gain it. This runs unconditionally on every [`open`].
+const ENSURE_TABLES: &str = "\
+CREATE TABLE IF NOT EXISTS orchestration_sessions (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    task            TEXT NOT NULL,
+    budget_usd      REAL NOT NULL DEFAULT 3.0,
+    model           TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','failed','ratelimited')),
+    transcript_path TEXT,
+    exit_summary    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    closed_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orchestration_project ON orchestration_sessions(project_id, status);
+";
 
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (
@@ -41,6 +63,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         "0005_inbox_items",
         include_str!("../migrations/0005_inbox_items.sql"),
     ),
+    (
+        6,
+        "0006_orchestration_sessions",
+        include_str!("../migrations/0006_orchestration_sessions.sql"),
+    ),
 ];
 
 /// Open `path`, creating it if missing, and apply pending migrations.
@@ -59,6 +86,9 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     )?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
     migrate(&conn)?;
+    // Safety net for live DBs already at the newest version when a table was
+    // added (the monotonic runner would otherwise skip the migration).
+    conn.execute_batch(ENSURE_TABLES)?;
     Ok(conn)
 }
 
