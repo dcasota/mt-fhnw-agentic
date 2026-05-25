@@ -25,8 +25,17 @@ static NUM: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-static NUMSRC: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\(|http|doi|github|source|CAR-|§|cite|measured").unwrap());
+static NUMSRC: LazyLock<Regex> = LazyLock::new(|| {
+    // An inline source/justification marker near a number rescues it from
+    // NUMBER_UNSOURCED. Includes the project's own model-estimate context
+    // (RAMP effort/cost per ADR-0040: engineer-weeks/-months, person-hours,
+    // "loaded" cost, "estimate") — those are sourced to the prediction model,
+    // not external facts.
+    Regex::new(
+        r"(?i)\(|http|doi|github|source|CAR-|§|cite|measured|estimat|engineer-(?:week|month|day)|person-(?:month|hour)|loaded|RAMP|ADR-|REQ-|SLO|\bpackages?\b|roughly|approximately|~",
+    )
+    .unwrap()
+});
 static FIGSPEC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```figspec\s*\n(.*?)\n```").unwrap());
 
@@ -40,8 +49,20 @@ const GRAPHICAL: &[&str] = &[
 #[must_use]
 pub fn findings_for(label: &str, text: &str) -> Vec<Finding> {
     let mut out = Vec::new();
+    let mut in_fence = false;
     for (idx, ln) in text.lines().enumerate() {
         let i = idx + 1;
+        // Fenced code/figspec blocks are literal, not prose: a ``` toggles the
+        // fence and the per-line prose checks (incl. NUMBER_UNSOURCED on figure
+        // data) are skipped inside it. Figspec captions are still validated by
+        // the separate FIGSPEC pass below.
+        if ln.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
         let here = || Some(format!("{label}:{i}"));
         // ADR-0037 English-only (skip terms glossed in *…* or (…) just before).
         if let Some(m) = DE.find(ln) {
