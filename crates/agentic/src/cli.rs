@@ -272,6 +272,38 @@ pub enum RiskAction {
         #[arg(long)]
         input: String,
     },
+    /// Parameterised AI-vs-human investment / replacement estimator with an
+    /// auditable low/base/high sensitivity band (ADR-0040). Runs with no args
+    /// against a built-in demo set of challenges.
+    Invest {
+        /// Challenges JSON (`{"challenges":[{name,human_hours,risk}]}` or a
+        /// bare array). Risk is one of low|med|high|crit. Omit to use the
+        /// built-in demo set.
+        #[arg(long)]
+        challenges: Option<PathBuf>,
+        /// Region key for the fully-loaded human rate (case-insensitive):
+        /// CH|US|IL|UK|AU|EU|CA|SG|JP|AE|KR|SA|CN|BR|IN.
+        #[arg(long, default_value = "CH")]
+        region: String,
+        /// Token price, USD per million tokens (overridden by --scenario).
+        #[arg(long, default_value_t = 1.67)]
+        token_price: f64,
+        /// Token-price preset: baseline-2025 (1.67) | asic-2027 (0.20).
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Compute per agent-month, in millions of tokens.
+        #[arg(long, default_value_t = 600.0)]
+        tokens_per_month: f64,
+        /// AI:human productivity factor, 0 < p <= 1.
+        #[arg(long, default_value_t = 1.0)]
+        parity: f64,
+        /// Human-rate premium for the escalation-mode share of work.
+        #[arg(long, default_value_t = 1.5)]
+        escalation_premium: f64,
+        /// Human-rate premium for the disaster-mode share of work.
+        #[arg(long, default_value_t = 2.0)]
+        disaster_premium: f64,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -13,6 +13,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub mod invest;
+
 // Published COCOMO II nominal coefficients (Boehm et al., 2000).
 const COCOMO_A: f64 = 2.94;
 const COCOMO_E: f64 = 1.0997;
