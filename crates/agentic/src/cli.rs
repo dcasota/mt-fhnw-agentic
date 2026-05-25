@@ -81,6 +81,19 @@ pub enum Command {
         action: FactsAction,
     },
 
+    /// PRISMA claim→source map (ADR-0020/0026): coverage of in-text citations
+    /// against the reference universe.
+    Prisma {
+        #[command(subcommand)]
+        action: PrismaAction,
+    },
+
+    /// Independent verification (ADR-0028): cross-model attestation of a fact.
+    Verify {
+        #[command(subcommand)]
+        action: VerifyAction,
+    },
+
     /// Diagnose the environment + binary configuration.
     Doctor,
 
@@ -639,6 +652,35 @@ pub enum FactsAction {
         project: String,
         #[arg(long, default_value = "out/sources/")]
         prefix: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PrismaAction {
+    /// Build the claim→source coverage map over the deliverables.
+    Build {
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = "out/sources/")]
+        prefix: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VerifyAction {
+    /// Cross-model attestation of a verified fact by a second provider.
+    CrossModel {
+        #[arg(long)]
+        project: String,
+        /// The verified-fact id to attest.
+        #[arg(long)]
+        fact: i64,
+        /// Provider to use (default: first configured cloud provider).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model id for the chosen provider.
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 

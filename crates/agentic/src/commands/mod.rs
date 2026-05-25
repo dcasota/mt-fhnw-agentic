@@ -5,6 +5,8 @@ mod bibliography;
 mod book;
 mod check;
 pub(crate) mod facts;
+mod prisma;
+mod verify;
 mod config;
 mod content;
 mod doctor;
@@ -45,6 +47,8 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Check { action } => check::run(&args.db, action, args.json).await,
         Command::Bibliography { action } => bibliography::run(&args.db, action, args.json),
         Command::Facts { action } => facts::run(&args.db, action, args.json),
+        Command::Prisma { action } => prisma::run(&args.db, action, args.json),
+        Command::Verify { action } => verify::run(&args.db, action, args.json).await,
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,
         Command::Config { action } => config::run(action, args.json),
