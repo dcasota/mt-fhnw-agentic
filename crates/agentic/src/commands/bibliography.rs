@@ -19,8 +19,7 @@ use crate::cli::BibAction;
 
 static MDLINK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\((https?://[^)\s]+)\)").unwrap());
-static URL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"https?://[^\s)\]<>"']+"#).unwrap());
+static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s)\]<>"']+"#).unwrap());
 static DIMPATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Dimension_(\d{2})_").unwrap());
 
 pub fn run(db_path: &Path, action: BibAction, json_out: bool) -> Result<()> {
@@ -172,7 +171,10 @@ fn harvest(conn: &rusqlite::Connection, project: &str, prefix: &str, json_out: b
     }
 
     if json_out {
-        println!("{}", json!({ "web_traces": appended, "user_traces": user_added }));
+        println!(
+            "{}",
+            json!({ "web_traces": appended, "user_traces": user_added })
+        );
     } else {
         println!(
             "Harvested {appended} web/email trace(s) + {user_added} user-input trace(s) into literature_corpus (bound to HEAD)."
@@ -230,7 +232,10 @@ fn emit(
         };
         let mut lines: Vec<String> = refs.iter().map(|(l, _)| l.clone()).collect();
         lines.sort_by_key(|l| l.to_lowercase());
-        println!("\n## Dimension {d} — References ({} entries)\n", lines.len());
+        println!(
+            "\n## Dimension {d} — References ({} entries)\n",
+            lines.len()
+        );
         for l in lines {
             println!("- {l}");
         }

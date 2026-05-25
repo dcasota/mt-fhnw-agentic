@@ -575,8 +575,16 @@ Sealed by this report's signature.\n\n",
     for c in &rep.changes {
         events.push((
             c.timestamp.clone(),
-            if c.signed { "commit (signed)" } else { "commit (UNSIGNED)" },
-            format!("{} {}", &c.sha256[..c.sha256.len().min(12)], trunc(&c.message, 72)),
+            if c.signed {
+                "commit (signed)"
+            } else {
+                "commit (UNSIGNED)"
+            },
+            format!(
+                "{} {}",
+                &c.sha256[..c.sha256.len().min(12)],
+                trunc(&c.message, 72)
+            ),
         ));
     }
     for d in &rep.llm_decisions {

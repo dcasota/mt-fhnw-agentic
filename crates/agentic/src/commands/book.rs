@@ -150,8 +150,9 @@ fn build_one(
     // Pre-render the three admonition icons (gen_icons port) into the work dir
     // so the book renderer can embed icon_{tip,note,warning}.png in callouts.
     for kind in ["tip", "note", "warning"] {
-        let json =
-            format!("{{\"id\":\"icon_{kind}\",\"type\":\"icon\",\"data\":{{\"variant\":\"{kind}\"}}}}");
+        let json = format!(
+            "{{\"id\":\"icon_{kind}\",\"type\":\"icon\",\"data\":{{\"variant\":\"{kind}\"}}}}"
+        );
         let _ = agentic_figures::render_figspec(&json, &work.join(format!("icon_{kind}.png")));
     }
     let mut chapters: Vec<(String, String)> = Vec::new();

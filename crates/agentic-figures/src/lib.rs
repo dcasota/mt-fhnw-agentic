@@ -216,8 +216,7 @@ pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(Stri
         let png = figdir.join(format!("{}.png", spec.id));
         // Surface a render failure instead of silently dropping the figure: a
         // deliverable must never lose a figspec without a trace (non-repudiation).
-        render_figspec(json, &png)
-            .map_err(|e| anyhow!("rendering figspec '{}': {e}", spec.id))?;
+        render_figspec(json, &png).map_err(|e| anyhow!("rendering figspec '{}': {e}", spec.id))?;
         out.push_str(&format!(
             "![{}](figures/{}/{}.png)",
             spec.caption.replace(['[', ']'], ""),

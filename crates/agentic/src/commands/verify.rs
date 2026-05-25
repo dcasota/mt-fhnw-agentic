@@ -61,20 +61,37 @@ pub async fn run(db_path: &std::path::Path, action: VerifyAction, _json_out: boo
         None => match CLOUD.iter().copied().find(|k| registry::has_key(*k)) {
             Some(k) => k,
             None => {
-                record_deferral(&conn, &project, fact, &v, "no second provider configured (set AGENTIC_<P>_KEY)")?;
-                println!("cross-model attestation DEFERRED for fact #{fact}: no second provider configured.");
+                record_deferral(
+                    &conn,
+                    &project,
+                    fact,
+                    &v,
+                    "no second provider configured (set AGENTIC_<P>_KEY)",
+                )?;
+                println!(
+                    "cross-model attestation DEFERRED for fact #{fact}: no second provider configured."
+                );
                 return Ok(());
             }
         },
     };
     let Some(model) = model else {
-        return Err(anyhow!("--model is required for provider {}", kind.as_str()));
+        return Err(anyhow!(
+            "--model is required for provider {}",
+            kind.as_str()
+        ));
     };
 
     let prov = match registry::build(kind) {
         Ok(p) => p,
         Err(e) => {
-            record_deferral(&conn, &project, fact, &v, &format!("provider build failed: {e}"))?;
+            record_deferral(
+                &conn,
+                &project,
+                fact,
+                &v,
+                &format!("provider build failed: {e}"),
+            )?;
             println!("cross-model attestation DEFERRED for fact #{fact}: {e}");
             return Ok(());
         }
@@ -108,8 +125,18 @@ pub async fn run(db_path: &std::path::Path, action: VerifyAction, _json_out: boo
                 "response": resp.content.chars().take(240).collect::<String>(),
             });
             let head = worktree::head_commit(&conn, &project)?.map(|c| c.sha256);
-            let id = passport::append(&conn, &project, Section::VerifiedFacts, &nv.to_string(), head.as_deref(), Some(fact))?;
-            println!("Cross-model ({}) verdict on fact #{fact}: {verdict} → #{id}", kind.as_str());
+            let id = passport::append(
+                &conn,
+                &project,
+                Section::VerifiedFacts,
+                &nv.to_string(),
+                head.as_deref(),
+                Some(fact),
+            )?;
+            println!(
+                "Cross-model ({}) verdict on fact #{fact}: {verdict} → #{id}",
+                kind.as_str()
+            );
         }
         Err(e) => {
             record_deferral(&conn, &project, fact, &v, &format!("provider error: {e}"))?;
@@ -129,6 +156,13 @@ fn record_deferral(
     let mut nv = v.clone();
     nv["cross_model"] = json!({ "verdict": "deferred", "reason": why });
     let head = worktree::head_commit(conn, project)?.map(|c| c.sha256);
-    passport::append(conn, project, Section::VerifiedFacts, &nv.to_string(), head.as_deref(), Some(fact))?;
+    passport::append(
+        conn,
+        project,
+        Section::VerifiedFacts,
+        &nv.to_string(),
+        head.as_deref(),
+        Some(fact),
+    )?;
     Ok(())
 }

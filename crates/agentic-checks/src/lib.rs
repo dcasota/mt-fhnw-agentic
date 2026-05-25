@@ -11,11 +11,11 @@
 
 pub mod aibom_gate;
 pub mod bibliography_gate;
-pub mod facts_gate;
 pub mod citation_tracker;
 pub mod contamination;
 pub mod deliverable_gate;
 pub mod docs_gate;
+pub mod facts_gate;
 pub mod normalize;
 pub mod self_check;
 pub mod tree_integrity;

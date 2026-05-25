@@ -177,7 +177,9 @@ fn chapter_is_numbered(md: &str) -> bool {
     match first_h1(md) {
         Some(t) => {
             let tl = t.trim().to_lowercase();
-            !UNNUMBERED_TITLES.iter().any(|u| tl == *u || tl.starts_with(u))
+            !UNNUMBERED_TITLES
+                .iter()
+                .any(|u| tl == *u || tl.starts_with(u))
         }
         None => false,
     }
@@ -225,7 +227,11 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
             Paragraph::new()
                 .align(AlignmentType::Center)
                 .line_spacing(LineSpacing::new().before(160).after(120))
-                .add_run(Run::new().add_text("\u{2014}\u{2014}\u{2014}").color(ACCENT)),
+                .add_run(
+                    Run::new()
+                        .add_text("\u{2014}\u{2014}\u{2014}")
+                        .color(ACCENT),
+                ),
         );
         doc = doc.add_paragraph(
             Paragraph::new().align(AlignmentType::Center).add_run(
@@ -739,10 +745,17 @@ fn quiz_block(mut doc: Docx, body: &str) -> Docx {
 /// bookkit quote block: an indented italic block with a left blue border and an
 /// optional "— attribution" line (a body line starting with `—` or `by:`).
 fn quote_block(mut doc: Docx, body: &str) -> Docx {
-    let mut lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let mut by: Option<String> = None;
     if let Some(last) = lines.last() {
-        if let Some(rest) = last.strip_prefix('\u{2014}').or_else(|| last.strip_prefix("by:")) {
+        if let Some(rest) = last
+            .strip_prefix('\u{2014}')
+            .or_else(|| last.strip_prefix("by:"))
+        {
             by = Some(rest.trim().to_string());
             lines.pop();
         }
@@ -806,25 +819,71 @@ fn conventions_block(mut doc: Docx, figdir: &Path) -> Docx {
         }
         doc.add_paragraph(p)
     };
-    let mono = |t: &str| Run::new().add_text(t).size(21).fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO));
+    let mono = |t: &str| {
+        Run::new()
+            .add_text(t)
+            .size(21)
+            .fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO))
+    };
     let plain = |t: &str| Run::new().add_text(t).size(22).fonts(body_fonts());
-    doc = bullet(doc, vec![plain("Italic"), Run::new().add_text(" \u{2014} emphasis, terms, and titles.").italic().size(22).fonts(body_fonts())]);
-    doc = bullet(doc, vec![mono("Constant width"), plain(" \u{2014} commands, code, file names and identifiers.")]);
-    doc = bullet(doc, vec![mono("Constant width bold").bold(), plain(" \u{2014} literal user input.")]);
-    doc = bullet(doc, vec![mono("Constant width italic").italic(), plain(" \u{2014} values you supply.")]);
-    doc = admonition_box(doc, "tip", "A tip points out a useful shortcut or best practice.", figdir);
-    doc = admonition_box(doc, "note", "A note adds context worth keeping in mind.", figdir);
-    doc = admonition_box(doc, "warning", "A warning flags a pitfall or irreversible action.", figdir);
+    doc = bullet(
+        doc,
+        vec![
+            plain("Italic"),
+            Run::new()
+                .add_text(" \u{2014} emphasis, terms, and titles.")
+                .italic()
+                .size(22)
+                .fonts(body_fonts()),
+        ],
+    );
+    doc = bullet(
+        doc,
+        vec![
+            mono("Constant width"),
+            plain(" \u{2014} commands, code, file names and identifiers."),
+        ],
+    );
+    doc = bullet(
+        doc,
+        vec![
+            mono("Constant width bold").bold(),
+            plain(" \u{2014} literal user input."),
+        ],
+    );
+    doc = bullet(
+        doc,
+        vec![
+            mono("Constant width italic").italic(),
+            plain(" \u{2014} values you supply."),
+        ],
+    );
+    doc = admonition_box(
+        doc,
+        "tip",
+        "A tip points out a useful shortcut or best practice.",
+        figdir,
+    );
+    doc = admonition_box(
+        doc,
+        "note",
+        "A note adds context worth keeping in mind.",
+        figdir,
+    );
+    doc = admonition_box(
+        doc,
+        "warning",
+        "A warning flags a pitfall or irreversible action.",
+        figdir,
+    );
     doc
 }
 
 /// A real horizontal rule: an empty paragraph carrying a bottom border.
 fn rule_para() -> Paragraph {
-    Paragraph::new().line_spacing(LineSpacing::new().before(60).after(120)).add_run(
-        Run::new().add_text(
-            "\u{2500}".repeat(60),
-        ).color(RULE),
-    )
+    Paragraph::new()
+        .line_spacing(LineSpacing::new().before(60).after(120))
+        .add_run(Run::new().add_text("\u{2500}".repeat(60)).color(RULE))
 }
 
 /// A Word field `{ instr }` with a cached display value — lets us emit arbitrary
@@ -911,7 +970,11 @@ const INDEX_TERMS: &[&str] = &[
 ];
 
 /// XE index-entry field runs for any curated term first seen in `text`.
-fn index_marks(text: &str, terms: &[String], seen: &mut std::collections::HashSet<String>) -> Vec<Run> {
+fn index_marks(
+    text: &str,
+    terms: &[String],
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<Run> {
     let lower = text.to_lowercase();
     let mut out = Vec::new();
     for term in terms {
@@ -1002,14 +1065,16 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>) -> Docx {
             ),
     );
     doc = doc.add_paragraph(
-        Paragraph::new().line_spacing(LineSpacing::new().after(80)).add_run(
-            Run::new()
-                .add_text("Scan a code, or follow the link, to reach the cited source.")
-                .italic()
-                .size(18)
-                .color(GREY)
-                .fonts(body_fonts()),
-        ),
+        Paragraph::new()
+            .line_spacing(LineSpacing::new().after(80))
+            .add_run(
+                Run::new()
+                    .add_text("Scan a code, or follow the link, to reach the cited source.")
+                    .italic()
+                    .size(18)
+                    .color(GREY)
+                    .fonts(body_fonts()),
+            ),
     );
     const QR_COL: usize = 1700; // ≈3.0 cm
     let text_col = CONTENT_TWIPS - QR_COL;
@@ -1031,16 +1096,18 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>) -> Docx {
                             .fonts(body_fonts()),
                     ),
             )
-            .add_paragraph(Paragraph::new().add_hyperlink(
-                Hyperlink::new(url, HyperlinkType::External).add_run(
-                    Run::new()
-                        .add_text(url)
-                        .size(16)
-                        .color(ACCENT)
-                        .underline("single")
-                        .fonts(body_fonts()),
+            .add_paragraph(
+                Paragraph::new().add_hyperlink(
+                    Hyperlink::new(url, HyperlinkType::External).add_run(
+                        Run::new()
+                            .add_text(url)
+                            .size(16)
+                            .color(ACCENT)
+                            .underline("single")
+                            .fonts(body_fonts()),
+                    ),
                 ),
-            ));
+            );
         let qr_para = match qr_png(url) {
             Some(png) => Paragraph::new()
                 .align(AlignmentType::Center)
@@ -1066,7 +1133,13 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>) -> Docx {
     doc.add_paragraph(Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE)))
 }
 
-fn render_block(mut doc: Docx, b: &DocxBlock, ctx: &mut Ctx, chapter_start: bool, numbered: bool) -> Docx {
+fn render_block(
+    mut doc: Docx,
+    b: &DocxBlock,
+    ctx: &mut Ctx,
+    chapter_start: bool,
+    numbered: bool,
+) -> Docx {
     match b {
         DocxBlock::Heading { level, text } => {
             // Chapter number prefix on the first H1 of a numbered chapter.
@@ -1126,7 +1199,10 @@ fn render_block(mut doc: Docx, b: &DocxBlock, ctx: &mut Ctx, chapter_start: bool
                 let text: String = body.lines().map(str::trim).collect::<Vec<_>>().join(" ");
                 doc.add_paragraph(
                     Paragraph::new().line_spacing(body_spacing()).add_run(
-                        Run::new().add_text(text.trim()).size(23).fonts(body_fonts()),
+                        Run::new()
+                            .add_text(text.trim())
+                            .size(23)
+                            .fonts(body_fonts()),
                     ),
                 )
             }
@@ -1192,7 +1268,9 @@ fn render_block(mut doc: Docx, b: &DocxBlock, ctx: &mut Ctx, chapter_start: bool
             }
         }
         DocxBlock::Image { path, caption } => {
-            let full = ctx.figdir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let full = ctx
+                .figdir
+                .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
             if let Ok(bytes) = std::fs::read(&full) {
                 ctx.figno += 1;
                 let target_w: u32 = 5_400_000; // 15 cm in EMU
@@ -1227,7 +1305,10 @@ fn render_block(mut doc: Docx, b: &DocxBlock, ctx: &mut Ctx, chapter_start: bool
                         .align(AlignmentType::Center)
                         .line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG))
                         .add_run(cap_style("Figure "))
-                        .add_run(field_run("SEQ Figure \\* ARABIC", &format!("{}", ctx.figno)))
+                        .add_run(field_run(
+                            "SEQ Figure \\* ARABIC",
+                            &format!("{}", ctx.figno),
+                        ))
                         .add_run(cap_style(&format!(". {caption}"))),
                 )
             } else {
@@ -1541,7 +1622,10 @@ mod tests {
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         let xml = doc_xml(bytes.clone());
         // real running numerals, not a static en-dash
-        assert!(xml.contains("2.  "), "ordered list should show real numerals");
+        assert!(
+            xml.contains("2.  "),
+            "ordered list should show real numerals"
+        );
         assert!(xml.contains("3.  "));
         // per-chapter Sources & QR box (note: '&' is XML-escaped)
         assert!(
@@ -1563,10 +1647,14 @@ mod tests {
             author: "A".into(),
             ..Default::default()
         };
-        let md = "# Chapter\n\nTable: Demo caption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n".to_string();
+        let md =
+            "# Chapter\n\nTable: Demo caption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n".to_string();
         let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
         assert!(xml.contains("Demo caption"), "table caption text present");
-        assert!(xml.contains("SEQ Table"), "table caption carries a SEQ Table field");
+        assert!(
+            xml.contains("SEQ Table"),
+            "table caption carries a SEQ Table field"
+        );
     }
 
     #[test]
@@ -1581,12 +1669,19 @@ mod tests {
         let body = "# Real Chapter\n\n```quote\nThe machine must be governed.\n— Kranzberg\n```\n"
             .to_string();
         let xml = doc_xml(
-            render_book(&meta, &[("c0".into(), intro), ("c1".into(), body)], Path::new("."))
-                .unwrap(),
+            render_book(
+                &meta,
+                &[("c0".into(), intro), ("c1".into(), body)],
+                Path::new("."),
+            )
+            .unwrap(),
         );
         assert!(xml.contains("The machine must be governed."));
         assert!(xml.contains("Kranzberg"));
-        assert!(xml.contains("1  Real Chapter"), "numbered chapter gets an N prefix");
+        assert!(
+            xml.contains("1  Real Chapter"),
+            "numbered chapter gets an N prefix"
+        );
     }
 
     fn render_book_to_docx(meta: &BookMeta, header: &[String], row: &[String]) -> Vec<u8> {

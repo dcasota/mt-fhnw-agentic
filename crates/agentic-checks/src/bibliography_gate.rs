@@ -17,8 +17,7 @@ use agentic_core::worktree;
 
 use crate::{CheckReport, Finding, Severity};
 
-static URL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"https?://[^\s)\]<>"']+"#).unwrap());
+static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s)\]<>"']+"#).unwrap());
 static DIMPATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Dimension_(\d{2})_").unwrap());
 
 /// The dimensions that must each carry a bibliography (1..=11).

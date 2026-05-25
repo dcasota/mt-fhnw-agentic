@@ -79,7 +79,8 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
         findings.push(finding(
             "AIBOM_NO_DECISIONS",
             Severity::Warn,
-            "no AI/LLM decisions recorded (`audit record`) — the decision index is empty".to_string(),
+            "no AI/LLM decisions recorded (`audit record`) — the decision index is empty"
+                .to_string(),
         ));
     }
 

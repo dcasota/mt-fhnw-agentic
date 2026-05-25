@@ -47,7 +47,10 @@ pub fn run(db_path: &std::path::Path, action: PrismaAction, json_out: bool) -> R
     let mut docs = 0usize;
 
     for (path, _sha) in worktree::list(&conn, &project, &prefix)? {
-        if !path.ends_with(".md") || path.contains("_resolved") || SKIP.iter().any(|p| path.starts_with(p)) {
+        if !path.ends_with(".md")
+            || path.contains("_resolved")
+            || SKIP.iter().any(|p| path.starts_with(p))
+        {
             continue;
         }
         docs += 1;
@@ -86,7 +89,10 @@ pub fn run(db_path: &std::path::Path, action: PrismaAction, json_out: bool) -> R
     println!("- Reference universe (literature_corpus): {}", corpus.len());
     println!("- In-text citation occurrences: {total_keys}");
     println!("- Mapped to a reference: {mapped} ({coverage:.1}%)");
-    println!("- Unmapped (would fail `check citations`): {}", unmapped.len());
+    println!(
+        "- Unmapped (would fail `check citations`): {}",
+        unmapped.len()
+    );
     if !unmapped.is_empty() {
         println!("\n| in-text key | first seen in |\n|---|---|");
         for (k, f) in unmapped.iter().take(40) {

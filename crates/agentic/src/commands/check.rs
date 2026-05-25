@@ -31,8 +31,8 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
         CheckAction::Deliverable { project, prefix } => {
             // Anchored verified facts (ADR-0016/0042): a number on a matching
             // line is already sourced and is not flagged NUMBER_UNSOURCED.
-            let anchored = crate::commands::facts::anchored_claims(&conn, &project)
-                .unwrap_or_default();
+            let anchored =
+                crate::commands::facts::anchored_claims(&conn, &project).unwrap_or_default();
             let entries = agentic_core::worktree::list(&conn, &project, &prefix)?;
             let mut findings = Vec::new();
             for (path, _sha) in entries.iter().filter(|(p, _)| p.ends_with(".md")) {
@@ -55,12 +55,14 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
             agentic_checks::bibliography_gate::run(&conn, &project, &prefix)?,
             Some(project),
         ),
-        CheckAction::Aibom { project } => {
-            (agentic_checks::aibom_gate::run(&conn, &project)?, Some(project))
-        }
-        CheckAction::FactsIntegrity { project } => {
-            (agentic_checks::facts_gate::run(&conn, &project)?, Some(project))
-        }
+        CheckAction::Aibom { project } => (
+            agentic_checks::aibom_gate::run(&conn, &project)?,
+            Some(project),
+        ),
+        CheckAction::FactsIntegrity { project } => (
+            agentic_checks::facts_gate::run(&conn, &project)?,
+            Some(project),
+        ),
         CheckAction::Tree {
             project,
             root,

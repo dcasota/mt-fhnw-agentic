@@ -4,14 +4,12 @@ mod audit;
 mod bibliography;
 mod book;
 mod check;
-pub(crate) mod facts;
-mod prisma;
-mod verify;
 mod config;
 mod content;
 mod doctor;
 mod embed;
 mod export;
+pub(crate) mod facts;
 #[path = "gen.rs"]
 mod generate;
 mod import;
@@ -21,9 +19,11 @@ mod journal;
 mod migrate;
 mod normalize;
 mod passport;
+mod prisma;
 mod project;
 mod provider;
 mod risk;
+mod verify;
 
 use anyhow::Result;
 

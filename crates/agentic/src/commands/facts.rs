@@ -71,7 +71,11 @@ pub fn run(db_path: &std::path::Path, action: FactsAction, json_out: bool) -> Re
             let facts = passport::current(&conn, &project, Section::VerifiedFacts)?;
             let rows: Vec<(i64, Value)> = facts
                 .iter()
-                .filter_map(|e| serde_json::from_str::<Value>(&e.payload_json).ok().map(|v| (e.id, v)))
+                .filter_map(|e| {
+                    serde_json::from_str::<Value>(&e.payload_json)
+                        .ok()
+                        .map(|v| (e.id, v))
+                })
                 .filter(|(_, v)| {
                     !needs_verification
                         || v.get("kind").and_then(Value::as_str) == Some("needs_verification")
@@ -144,7 +148,12 @@ pub fn run(db_path: &std::path::Path, action: FactsAction, json_out: bool) -> Re
                 let blob = worktree::read_at(&conn, &project, &path)?;
                 let text = String::from_utf8_lossy(&blob.content);
                 for line in text.lines().filter(|l| l.contains("NEEDS-VERIFICATION")) {
-                    let claim = line.trim().trim_start_matches(['`', '#', '*', '>', '-', ' ']).chars().take(120).collect::<String>();
+                    let claim = line
+                        .trim()
+                        .trim_start_matches(['`', '#', '*', '>', '-', ' '])
+                        .chars()
+                        .take(120)
+                        .collect::<String>();
                     if existing.contains(&claim) {
                         continue;
                     }
@@ -152,7 +161,14 @@ pub fn run(db_path: &std::path::Path, action: FactsAction, json_out: bool) -> Re
                         "claim": claim, "kind": "needs_verification", "value": "",
                         "source": "", "source_path": path, "verified_at": now_utc(),
                     });
-                    passport::append(&conn, &project, Section::VerifiedFacts, &payload.to_string(), head.as_deref(), None)?;
+                    passport::append(
+                        &conn,
+                        &project,
+                        Section::VerifiedFacts,
+                        &payload.to_string(),
+                        head.as_deref(),
+                        None,
+                    )?;
                     enqueued += 1;
                 }
             }
@@ -164,10 +180,7 @@ pub fn run(db_path: &std::path::Path, action: FactsAction, json_out: bool) -> Re
 
 /// Claim strings of all current verified facts (used by the deliverable gate to
 /// treat a matching numeric line as already-sourced).
-pub fn anchored_claims(
-    conn: &rusqlite::Connection,
-    project: &str,
-) -> Result<Vec<String>> {
+pub fn anchored_claims(conn: &rusqlite::Connection, project: &str) -> Result<Vec<String>> {
     let facts = passport::current(conn, project, Section::VerifiedFacts)?;
     Ok(facts
         .iter()
