@@ -58,6 +58,9 @@ pub async fn run(db_path: &Path, action: CheckAction, json_out: bool) -> Result<
         CheckAction::Aibom { project } => {
             (agentic_checks::aibom_gate::run(&conn, &project)?, Some(project))
         }
+        CheckAction::FactsIntegrity { project } => {
+            (agentic_checks::facts_gate::run(&conn, &project)?, Some(project))
+        }
         CheckAction::Tree {
             project,
             root,

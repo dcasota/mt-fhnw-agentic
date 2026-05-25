@@ -601,6 +601,12 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// Verified-facts integrity (ADR-0036/0042): every anchored fact has a real
+    /// source; needs_verification placeholders are surfaced as outstanding HITL.
+    FactsIntegrity {
+        #[arg(long)]
+        project: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
