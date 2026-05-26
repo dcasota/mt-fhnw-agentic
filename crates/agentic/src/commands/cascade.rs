@@ -368,19 +368,27 @@ fn push_build_book(steps: &mut Vec<Step>, opts: &CascadeOpts) {
         ));
         return;
     }
-    // The manifest is authoritative in `thesis.db` (gitignored on disk), so
-    // materialise it from the DB first — otherwise `book build` fails with
-    // "cannot find the file" on a clean checkout.
+    // The manifest is authoritative in `thesis.db`. Materialise it into an
+    // EPHEMERAL temp scratch dir — never the project root — so a cascade run no
+    // longer creates an on-disk `out/` folder in the working tree (out/
+    // deprecation: the on-disk `out/` is retired; the DB keeps its `out/sources/`
+    // paths, and `book build` reads chapters straight from the DB). `book build`
+    // only needs the manifest *file* on disk; chapters resolve from the DB.
+    let scratch = std::env::temp_dir()
+        .join(format!("agentic_cascade_{}", std::process::id()))
+        .to_string_lossy()
+        .replace('\\', "/");
+    let manifest_disk = format!("{scratch}/{}", opts.manifest);
     steps.push(Step::run(
         5,
-        "checkout manifest",
+        "checkout manifest (scratch)",
         vec![
             "content".into(),
             "checkout".into(),
             "--project".into(),
             opts.project.clone(),
             "--to".into(),
-            opts.root.clone(),
+            scratch.clone(),
             "--prefix".into(),
             opts.manifest.clone(),
         ],
@@ -392,7 +400,7 @@ fn push_build_book(steps: &mut Vec<Step>, opts: &CascadeOpts) {
             "--project".into(),
             opts.project.clone(),
             "--manifest".into(),
-            opts.manifest.clone(),
+            manifest_disk.clone(),
             "--out".into(),
             opts.out.clone(),
         ];
