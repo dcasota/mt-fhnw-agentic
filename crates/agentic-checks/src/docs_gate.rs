@@ -139,6 +139,30 @@ pub fn run(conn: &Connection, project: &str, root: &Path) -> Result<CheckReport>
         ));
     }
 
+    // 5. Generated agent-defs must match the canonical body verbatim (R10): the
+    // text after the GENERATED marker must equal specs/mission-control.canonical.md.
+    if let Ok(canon) =
+        std::fs::read_to_string(root.join(agentic_core::govdoc::CANONICAL_MISSION_CONTROL))
+    {
+        let canon = canon.trim();
+        for rel in agentic_core::govdoc::GENERATED_AGENT_DEFS {
+            let Ok(text) = std::fs::read_to_string(root.join(rel)) else {
+                continue; // absence already reported in step 3
+            };
+            match text.split_once(agentic_core::govdoc::GENERATED_MARKER) {
+                Some((_, body)) if body.trim() == canon => {}
+                _ => findings.push(finding(
+                    "REPRESENTATION_DRIFT",
+                    Severity::Warn,
+                    format!(
+                        "{rel} body diverges from the canonical — run `agentic gen agent-defs`"
+                    ),
+                    rel,
+                )),
+            }
+        }
+    }
+
     Ok(CheckReport::new("docs", findings))
 }
 

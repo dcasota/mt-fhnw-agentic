@@ -5,9 +5,15 @@
 //! emitted prompt is piped to the chosen LLM CLI (e.g. `claude -p`); the
 //! deterministic prompt logic now lives in Rust, not Python.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cli::GenAction;
+
+/// Per-tool front-matter adapters for the generated mission-control agent-defs.
+/// The adapter (front-matter) is code; the body is the canonical data file.
+const CLAUDE_FRONTMATTER: &str = "---\ndescription: Portfolio orchestrator (SDD-governed mission-control). Manages inbox processing, iteration lifecycle, rule enforcement, git versioning, overlap detection, adversarial arbitration, new-project governance, content ownership. Spectrum: balanced.\ntools: Read, Glob, Grep, LS, Bash, Edit, Write\n---";
+
+const FACTORY_FRONTMATTER: &str = "---\nname: mission-control\ndescription: >-\n  SDD-governed orchestrator for an N-project research / writing portfolio.\n  Manages inbox processing, iteration lifecycle, rule enforcement, git\n  versioning, overlap detection, adversarial arbitration, new-project\n  governance, and content ownership registry.\nmodel: inherit\ntools: [\"Read\", \"LS\", \"Grep\", \"Glob\", \"Edit\", \"Create\", \"Execute\"]\n---";
 
 pub const PREAMBLE: &str = r#"=== MANDATORY GENERATION RULES (do not violate) ===
 1. VERIFY, DON'T ASSUME (ADR-0036, Karpathy). Every reference, author, result,
@@ -73,6 +79,29 @@ pub fn run(action: GenAction, _json: bool) -> Result<()> {
         GenAction::Prompt { kind, topic, extra } => {
             let body = body_for(&kind, &topic, extra.as_deref().unwrap_or(""));
             print!("{PREAMBLE}\n{FIGSPEC_RULES}\n\n=== TASK ===\n{body}\n");
+        }
+        GenAction::AgentDefs { root } => {
+            use agentic_core::govdoc::{
+                CANONICAL_MISSION_CONTROL, GENERATED_AGENT_DEFS, GENERATED_MARKER,
+            };
+            let canon = root.join(CANONICAL_MISSION_CONTROL);
+            let body = std::fs::read_to_string(&canon)
+                .with_context(|| format!("reading canonical body {}", canon.display()))?;
+            let body = body.trim_end();
+            for rel in GENERATED_AGENT_DEFS {
+                let fm = if rel.contains(".factory") {
+                    FACTORY_FRONTMATTER
+                } else {
+                    CLAUDE_FRONTMATTER
+                };
+                let path = root.join(rel);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, format!("{fm}\n\n{GENERATED_MARKER}\n\n{body}\n"))
+                    .with_context(|| format!("writing {}", path.display()))?;
+                println!("generated {rel}");
+            }
         }
     }
     Ok(())

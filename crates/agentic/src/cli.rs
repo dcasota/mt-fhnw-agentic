@@ -515,6 +515,15 @@ pub enum GenAction {
         #[arg(long)]
         extra: Option<String>,
     },
+    /// Generate the per-tool mission-control agent-defs from the single canonical
+    /// body (ADR-0047 R10): writes .claude/agents/ and .factory/droids/ as
+    /// front-matter adapter + the verbatim canonical body. The Gemini runtime
+    /// uses the AGENTS.md pointer model and needs no generated droid file.
+    AgentDefs {
+        /// Portfolio root (holds specs/mission-control.canonical.md).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
