@@ -12,6 +12,73 @@ static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([DHI])[-·.]([NE
 static FIG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```figspec\s*\n(.*?)\n```").unwrap());
 
+// --- bold de-emphasis (R5 enforcement of bookkit RULE 1) -----------------
+// Mirrors `bookkit_gate`: bold is permitted ONLY as a short leading label
+// (starts the paragraph/list item, <= 8 words and <= 60 chars). Any other bold
+// has its `**` markers removed so the prose complies with the bookkit gate.
+static BOLD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*\*(.+?)\*\*").unwrap());
+static LEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[\s>#+-]|\d+\.|\*\s)*").unwrap());
+static JSON_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""[\w-]+"\s*:"#).unwrap());
+const MAX_LABEL_WORDS: usize = 8;
+const MAX_LABEL_CHARS: usize = 60;
+
+fn looks_like_json(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('{') || t.starts_with('}') || t.starts_with('"') || JSON_KEY.is_match(line)
+}
+
+/// De-emphasise non-compliant bold. A bold span is kept only when it is a short
+/// leading label (mirrors `bookkit_gate::bold_violations`); every other `**…**`
+/// has its markers stripped to plain text. Fence- and JSON-aware. Idempotent
+/// (compliant labels survive a re-run; stripped spans have no `**` left).
+#[must_use]
+pub fn debold(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    let mut first = true;
+    for ln in text.lines() {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        if ln.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            out.push_str(ln);
+            continue;
+        }
+        if in_fence || looks_like_json(ln) {
+            out.push_str(ln);
+            continue;
+        }
+        let lead_end = LEAD.find(ln).map_or(0, |m| m.end());
+        let mut rebuilt = String::with_capacity(ln.len());
+        let mut last = 0usize;
+        for m in BOLD.captures_iter(ln) {
+            let (Some(whole), Some(grp)) = (m.get(0), m.get(1)) else {
+                continue;
+            };
+            let inner = grp.as_str();
+            let is_leading = whole.start() == lead_end;
+            let allowed = is_leading
+                && inner.split_whitespace().count() <= MAX_LABEL_WORDS
+                && inner.chars().count() <= MAX_LABEL_CHARS;
+            rebuilt.push_str(&ln[last..whole.start()]);
+            if allowed {
+                rebuilt.push_str(whole.as_str()); // keep the compliant label
+            } else {
+                rebuilt.push_str(inner); // strip the `**` markers
+            }
+            last = whole.end();
+        }
+        rebuilt.push_str(&ln[last..]);
+        out.push_str(&rebuilt);
+    }
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 // Verified-facts corrections (each verified against a primary source).
 static CORR: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     vec![
@@ -105,7 +172,8 @@ pub fn normalize(text: &str) -> String {
         })
         .into_owned();
     let shortened = shorten_captions(&expanded);
-    apply_corrections(&shortened)
+    let corrected = apply_corrections(&shortened);
+    debold(&corrected)
 }
 
 #[cfg(test)]
@@ -150,5 +218,37 @@ mod tests {
     fn idempotent_on_clean_text() {
         let t = "A clean paragraph with Decrease / Normal already expanded.";
         assert_eq!(normalize(t), t);
+    }
+
+    #[test]
+    fn debold_strips_inline_keeps_leading_label() {
+        // Inline bold mid-prose is stripped.
+        assert_eq!(
+            debold("text with **bold** inside.\n"),
+            "text with bold inside.\n"
+        );
+        // A short leading label is preserved.
+        assert_eq!(
+            debold("**Term.** the rest is plain.\n"),
+            "**Term.** the rest is plain.\n"
+        );
+        // List-item leading label preserved; trailing inline stripped.
+        assert_eq!(
+            debold("- **Label:** see **this** part.\n"),
+            "- **Label:** see this part.\n"
+        );
+        // Over-long leading label (>8 words) is de-emphasised.
+        assert_eq!(
+            debold("**one two three four five six seven eight nine** rest.\n"),
+            "one two three four five six seven eight nine rest.\n"
+        );
+    }
+
+    #[test]
+    fn debold_is_idempotent_and_fence_safe() {
+        let t = "text with **bold** and `**code**` then\n```\n**keep** in fence\n```\n";
+        let once = debold(t);
+        assert_eq!(debold(&once), once, "debold must be idempotent");
+        assert!(once.contains("**keep** in fence"), "fenced bold preserved");
     }
 }

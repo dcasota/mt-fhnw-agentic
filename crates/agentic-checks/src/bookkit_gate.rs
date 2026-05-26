@@ -45,15 +45,56 @@ static LEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[\s>#+-]|\d+\.|
 /// Conservative non-English deny-list: common DE/FR/IT function words and a few
 /// telltales. Whole-word, case-insensitive.
 static NON_EN: LazyLock<Regex> = LazyLock::new(|| {
+    // `die` is deliberately omitted: it collides with the common English word
+    // ("live or die", a semiconductor "die"). `der`/`das` are kept as safer
+    // German markers. All-caps matches (e.g. the MIT licence) and tokens inside
+    // a parenthesised gloss (e.g. a German law title) are filtered in
+    // `non_english_tokens`.
     Regex::new(
         r"(?i)\b(?:\
 und|oder|nicht|mit|f[üu]r|[üu]ber|L[öo]sung|L[öo]sungen|Abbildung|Tabelle|Verzeichnis|\
-der|die|das|eine|sind|werden|sich|auch|sowie|zwischen|\
+der|das|eine|sind|werden|sich|auch|sowie|zwischen|\
 et|ou|pour|avec|dans|les|des|une|[êe]tre|\
 della|degli|sono|anche|perch[ée])\b",
     )
     .unwrap()
 });
+
+/// Is byte offset `pos` inside a *gloss* on `line` — parentheses, double quotes
+/// (straight or curly), or single-asterisk italics? Glossed foreign
+/// terms-of-art (a German law/book title, an italicised loan-phrase such as
+/// `*raison d'être*`) are allowed by ADR-0037 and must not be flagged.
+fn inside_gloss(line: &str, pos: usize) -> bool {
+    let mut depth = 0i32;
+    for (i, c) in line.char_indices() {
+        if i >= pos {
+            break;
+        }
+        match c {
+            '(' => depth += 1,
+            ')' => depth = (depth - 1).max(0),
+            _ => {}
+        }
+    }
+    if depth > 0 {
+        return true;
+    }
+    let pre = &line[..pos];
+    // Curly double-quote span: an opener `“` not yet closed by `”`.
+    if pre.matches('\u{201c}').count() > pre.matches('\u{201d}').count() {
+        return true;
+    }
+    // Straight double-quote parity (odd ⇒ inside an open `"…`).
+    if pre.matches('"').count() % 2 == 1 {
+        return true;
+    }
+    // Single-asterisk italics: total `*` parity is odd inside `*…*`. Bold
+    // `**…**` contributes an even count, so it does not affect the parity.
+    if pre.matches('*').count() % 2 == 1 {
+        return true;
+    }
+    false
+}
 /// A markdown heading deeper than H4 (`#####` or more, then whitespace).
 static DEEP_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#####+\s").unwrap());
 /// A URL anywhere on the line → skip RULE 2 (URLs carry foreign-looking tokens).
@@ -142,7 +183,13 @@ pub fn non_english_tokens(text: &str) -> Vec<(usize, String)> {
             continue;
         }
         for m in NON_EN.find_iter(ln) {
-            out.push((i, m.as_str().to_string()));
+            let tok = m.as_str();
+            // Skip all-caps acronyms (MIT/BSD licence, org names) and tokens
+            // inside a parenthesised gloss (e.g. a German law/standard title).
+            if tok.chars().all(|c| c.is_ascii_uppercase()) || inside_gloss(ln, m.start()) {
+                continue;
+            }
+            out.push((i, tok.to_string()));
         }
     }
     out
@@ -318,6 +365,43 @@ mod tests {
     fn english_clean() {
         // Pure English prose → 0.
         assert_eq!(non_english_tokens("the solution is good.\n").len(), 0);
+    }
+
+    #[test]
+    fn english_homographs_not_flagged() {
+        // "die" (English verb), "MIT" (licence) and a parenthesised German gloss
+        // are all legitimate English-deliverable content → 0 flags.
+        assert_eq!(
+            non_english_tokens("properties live or die here.\n").len(),
+            0
+        );
+        assert_eq!(
+            non_english_tokens("mixes Apache-2.0, BSD, MIT, GPL terms.\n").len(),
+            0
+        );
+        assert_eq!(
+            non_english_tokens(
+                "the Cybersecurity Ordinance (Verordnung über die Cybersicherheit).\n"
+            )
+            .len(),
+            0
+        );
+        // A genuine non-glossed German function word in prose is still caught.
+        assert_eq!(non_english_tokens("the Lösung is good.\n").len(), 1);
+        // Quoted / italicised foreign titles & loan-phrases are glosses → 0.
+        assert_eq!(
+            non_english_tokens("read \u{201c}Hacking und Cybersecurity mit KI\u{201d} today.\n")
+                .len(),
+            0
+        );
+        assert_eq!(
+            non_english_tokens("the *raison d'être* of the rule.\n").len(),
+            0
+        );
+        assert_eq!(
+            non_english_tokens("the *Verordnung über die Cyber* law.\n").len(),
+            0
+        );
     }
 
     #[test]
