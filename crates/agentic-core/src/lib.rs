@@ -8,6 +8,7 @@
 #![allow(clippy::missing_errors_doc, clippy::module_name_repetitions)]
 
 pub mod audit;
+pub mod authz;
 pub mod content;
 pub mod db;
 pub mod embeddings;
@@ -19,6 +20,7 @@ pub mod orchestrate;
 pub mod passport;
 pub mod project;
 pub mod signing;
+pub mod tombstone;
 pub mod worktree;
 
 pub use error::{Error, Result};

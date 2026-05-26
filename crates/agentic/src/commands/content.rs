@@ -23,6 +23,24 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
                 println!("{sha}  {} bytes  {}", bytes.len(), path.display());
             }
         }
+        ContentAction::Supersede {
+            path,
+            project,
+            reason,
+        } => {
+            // Irreversible (ADR-0047 R7): refuse without an audited authorisation.
+            agentic_core::authz::require(&conn, &project, "supersede", &path)?;
+            let authz_id = None; // grant identity is auditable in action_authorizations
+            agentic_core::tombstone::add(&conn, &project, &path, &reason, authz_id)?;
+            if json_out {
+                println!(
+                    "{}",
+                    json!({ "superseded": path, "project": project, "reason": reason })
+                );
+            } else {
+                println!("superseded (tombstoned): {path} \u{2014} {reason}");
+            }
+        }
         ContentAction::PutAt {
             path,
             from,

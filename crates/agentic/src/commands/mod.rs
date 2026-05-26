@@ -1,6 +1,7 @@
 //! Subcommand dispatchers. Each `mod` here owns one top-level verb.
 
 mod audit;
+mod authorize;
 mod bibliography;
 mod book;
 mod cascade;
@@ -39,6 +40,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Passport { action } => passport::run(&args.db, action, args.json),
         Command::Journal { action } => journal::run(&args.db, action, args.json),
         Command::Content { action } => content::run(&args.db, action, args.json),
+        Command::Authorize { action } => authorize::run(&args.db, action, args.json),
         Command::Audit { action } => audit::run(&args.db, action, args.json),
         Command::Inbox { action } => inbox::run(&args.db, action, args.json),
         Command::Normalize { project, prefix } => {

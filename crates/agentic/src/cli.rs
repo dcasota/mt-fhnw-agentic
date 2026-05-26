@@ -61,6 +61,14 @@ pub enum Command {
         action: ContentAction,
     },
 
+    /// Irreversible-action authorisations (ADR-0047): grant/list the audited
+    /// records that the tool requires before performing push/tag/publish/
+    /// translate/supersede/content-delete.
+    Authorize {
+        #[command(subcommand)]
+        action: AuthorizeAction,
+    },
+
     /// Integrity checkers (self / writing-quality / citations / contamination / ...).
     Check {
         #[command(subcommand)]
@@ -1147,12 +1155,48 @@ pub enum JournalAction {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AuthorizeAction {
+    /// Grant an audited authorisation for an irreversible action (ADR-0047 R7).
+    Grant {
+        #[arg(long)]
+        project: String,
+        /// push_main | tag | publish | translate | supersede | content_delete
+        #[arg(long)]
+        action: String,
+        /// Path/target the grant covers; '*' authorises any scope.
+        #[arg(long, default_value = "*")]
+        scope: String,
+        #[arg(long)]
+        rationale: String,
+        /// The granting governance actor (Mission-Control / SDD Cycle).
+        #[arg(long, default_value = "sdd-cycle")]
+        by: String,
+    },
+    /// List the project's authorisation records.
+    List {
+        #[arg(long)]
+        project: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ContentAction {
     /// Put a file into the content store; print its SHA.
     Put {
         path: PathBuf,
         #[arg(long)]
         lang: Option<String>,
+    },
+    /// Supersede (tombstone) a path: retire it from the live working tree without
+    /// deleting its history (ADR-0047 R5). Irreversible — requires an authorisation
+    /// (`agentic authorize grant --action supersede --scope <path>`).
+    Supersede {
+        /// The working-tree path to retire (e.g. "out/sources/old_draft.md").
+        path: String,
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        reason: String,
     },
     /// Stage a file at a path in a project's working tree (creates a commit).
     PutAt {

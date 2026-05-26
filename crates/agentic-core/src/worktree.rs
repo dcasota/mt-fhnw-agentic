@@ -182,10 +182,17 @@ pub fn list(conn: &Connection, project_id: &str, prefix: &str) -> Result<Vec<(St
     let Some(tree) = head_tree(conn, project_id)? else {
         return Ok(Vec::new());
     };
+    // Superseded (tombstoned) paths are excluded centrally here, so every gate
+    // and build that walks the working tree skips them (ADR-0047 R5).
+    let dead = crate::tombstone::tombstoned_paths(conn, project_id)?;
     let mut out: Vec<(String, String)> = tree
         .entries
         .into_iter()
-        .filter(|e| matches!(e.kind, EntryKind::Blob) && e.name.starts_with(prefix))
+        .filter(|e| {
+            matches!(e.kind, EntryKind::Blob)
+                && e.name.starts_with(prefix)
+                && !dead.contains(&e.name)
+        })
         .map(|e| (e.name, e.target))
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
