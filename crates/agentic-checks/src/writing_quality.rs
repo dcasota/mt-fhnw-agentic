@@ -402,7 +402,9 @@ pub fn check_text(text: &str, path: &str) -> Vec<Finding> {
     // The English deliverables live under thesis-draft-v5/ and out/sources/;
     // imported source material (inbox/, snapshots/, proposal/, studentnotes/,
     // thesis-draft-v4/) legitimately contains German and is exempt.
-    let deliverable = path.starts_with("thesis-draft-v5") || path.starts_with("out/sources");
+    let deliverable = path.starts_with("thesis-draft-v5")
+        || path.starts_with("thesis/")
+        || path.starts_with("out/sources");
     if deliverable {
         let mut seen = std::collections::HashSet::new();
         for caps in de_markers().captures_iter(text) {

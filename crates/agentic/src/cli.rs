@@ -852,8 +852,10 @@ pub enum CheckAction {
     PageBoundary {
         #[arg(long)]
         project: String,
-        /// Restrict the word-count to a path prefix.
-        #[arg(long, default_value = "thesis-draft-v5/")]
+        /// Restrict the word-count to a path prefix. Defaults to the FHNW
+        /// master-thesis body (ADR-0045); the superseded dimensional draft lives
+        /// under `thesis-draft-v5/` and is not the gated body.
+        #[arg(long, default_value = "thesis/")]
         prefix: String,
         /// Maximum allowed estimated pages.
         #[arg(long, default_value_t = 60)]

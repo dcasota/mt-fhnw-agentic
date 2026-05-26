@@ -41,6 +41,10 @@ struct BookSpec {
     /// Imprint lines on the title page (version, place + date); one per line.
     #[serde(default)]
     imprint: Option<String>,
+    /// Master-thesis numbering profile (ADR-0045): number body chapters,
+    /// keep only true front/back-matter unnumbered.
+    #[serde(default)]
+    thesis_profile: bool,
     #[serde(default)]
     index_terms: Vec<String>,
     /// Optional per-book chrome language (en|de|fr|it|rm|hi). Overrides the
@@ -198,6 +202,7 @@ fn build_one(
         epigraph_by: spec.epigraph_by.clone(),
         disclaimer: spec.disclaimer.clone(),
         imprint: spec.imprint.clone(),
+        thesis_profile: spec.thesis_profile,
         index_terms: spec.index_terms.clone(),
         // Chrome language: per-book `lang` wins; else the global `--lang`; else
         // "en". The i18n layer normalises/falls back, but resolve a non-empty

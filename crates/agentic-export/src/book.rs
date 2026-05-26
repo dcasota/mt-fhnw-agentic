@@ -114,6 +114,12 @@ pub struct BookMeta {
     /// Imprint lines on the title page under the affiliation (e.g. "Version 1.0",
     /// place + date). One centred line per text line. Optional.
     pub imprint: Option<String>,
+    /// Master-thesis numbering profile (ADR-0045, bookkit C). When true, body
+    /// chapters (Introduction, Theory, Conclusion, …) are NUMBERED and only true
+    /// front/back-matter (Management Summary, Acronyms, Appendix, Bibliography,
+    /// …) stays unnumbered — the opposite of the book profile, where
+    /// "Introduction" is unnumbered front-matter.
+    pub thesis_profile: bool,
     /// Extra index terms beyond the built-in set (e.g. dimension-specific).
     pub index_terms: Vec<String>,
     /// Chrome language tag (en|de|fr|it|rm|hi). Empty or unknown → English.
@@ -187,15 +193,40 @@ fn first_h1(md: &str) -> Option<String> {
     })
 }
 
+/// Front/back-matter titles for the THESIS profile (ADR-0045). Unlike the book
+/// profile, "Introduction"/"Conclusion"/etc. are NOT here — they are numbered
+/// chapters; only true front/back-matter stays unnumbered.
+const THESIS_UNNUMBERED: &[&str] = &[
+    "management summary",
+    "executive summary",
+    "acronyms and abbreviations",
+    "acronyms",
+    "abbreviations",
+    "table of contents",
+    "contents",
+    "appendix",
+    "table of figures",
+    "list of figures",
+    "table of tables",
+    "list of tables",
+    "bibliography",
+    "references",
+    "index",
+];
+
 /// Whether a chapter is numbered: numbered unless its first H1 is a known
-/// front/back-matter title.
-fn chapter_is_numbered(md: &str) -> bool {
+/// front/back-matter title. The unnumbered set depends on the profile
+/// (`thesis_profile` ⇒ body chapters like Introduction are numbered).
+fn chapter_is_numbered(md: &str, thesis_profile: bool) -> bool {
+    let set: &[&str] = if thesis_profile {
+        THESIS_UNNUMBERED
+    } else {
+        UNNUMBERED_TITLES
+    };
     match first_h1(md) {
         Some(t) => {
             let tl = t.trim().to_lowercase();
-            !UNNUMBERED_TITLES
-                .iter()
-                .any(|u| tl == *u || tl.starts_with(u))
+            !set.iter().any(|u| tl == *u || tl.starts_with(u))
         }
         None => false,
     }
@@ -1500,7 +1531,7 @@ pub fn render_book(
 
     for (ci, (_label, md)) in chapters.iter().enumerate() {
         let blocks = fold_table_captions(to_docx_blocks(md));
-        let numbered = chapter_is_numbered(md);
+        let numbered = chapter_is_numbered(md, meta.thesis_profile);
         let mut first = true;
         for b in &blocks {
             doc = render_block(doc, b, &mut ctx, first && ci > 0, numbered);
@@ -1574,15 +1605,45 @@ mod tests {
     fn front_matter_unnumbered_dimension_numbered() {
         // Front/back-matter H1s render UNNUMBERED (exact or starts-with match,
         // case-insensitive); a real dimension chapter stays numbered.
-        assert!(!chapter_is_numbered("# Foreword\n\nText.\n"));
+        assert!(!chapter_is_numbered("# Foreword\n\nText.\n", false));
         assert!(!chapter_is_numbered(
-            "# Appendix: The Research Prompts\n\nText.\n"
+            "# Appendix: The Research Prompts\n\nText.\n",
+            false
         ));
-        assert!(!chapter_is_numbered("# Acronyms and Abbreviations\n"));
-        assert!(!chapter_is_numbered("# List of Figures\n"));
+        assert!(!chapter_is_numbered(
+            "# Acronyms and Abbreviations\n",
+            false
+        ));
+        assert!(!chapter_is_numbered("# List of Figures\n", false));
         assert!(chapter_is_numbered(
-            "# Dimension 06 — Quantum Computing\n\nText.\n"
+            "# Dimension 06 — Quantum Computing\n\nText.\n",
+            false
         ));
+    }
+
+    #[test]
+    fn thesis_profile_numbers_body_chapters() {
+        // Book profile: Introduction is unnumbered front-matter.
+        assert!(!chapter_is_numbered("# Introduction\n\nText.\n", false));
+        // Thesis profile: Introduction/Theory/Conclusion are numbered chapters…
+        assert!(chapter_is_numbered("# Introduction\n\nText.\n", true));
+        assert!(chapter_is_numbered("# Theory\n\nText.\n", true));
+        assert!(chapter_is_numbered("# Conclusion\n\nText.\n", true));
+        assert!(chapter_is_numbered(
+            "# Personal Reflection\n\nText.\n",
+            true
+        ));
+        // …but Management Summary / Acronyms / Appendix / Bibliography stay front/back-matter.
+        assert!(!chapter_is_numbered(
+            "# Management Summary\n\nText.\n",
+            true
+        ));
+        assert!(!chapter_is_numbered("# Acronyms and Abbreviations\n", true));
+        assert!(!chapter_is_numbered(
+            "# Appendix: The Research Prompts\n",
+            true
+        ));
+        assert!(!chapter_is_numbered("# Bibliography\n", true));
     }
 
     #[test]
