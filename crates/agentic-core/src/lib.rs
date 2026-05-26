@@ -18,6 +18,7 @@ pub mod inbox;
 pub mod journal;
 pub mod orchestrate;
 pub mod passport;
+pub mod profiles;
 pub mod project;
 pub mod signing;
 pub mod tombstone;

@@ -87,44 +87,26 @@ impl Step {
     }
 }
 
-/// Per-profile gate subsets (ADR-0045). The UNIVERSAL gates apply to every
-/// bookkit profile (A books, B companion, C thesis) — they are about
-/// correctness and house style, not regulated thesis structure. The THESIS
-/// gates apply only to bookkit C (the master thesis): the 60-page body bound,
-/// the R&R traceability matrix, and reviewer calibration. Each entry is
-/// `(check subcommand, verdict checkpoint)`.
-const UNIVERSAL_GATES: &[(&str, &str)] = &[
-    ("self", "self"),
-    ("tree", "tree"),
-    ("deliverable", "deliverable"),
-    ("citations", "citation_tracker"),
-    ("contamination", "contamination"),
-    ("bibliography", "bibliography"),
-    ("aibom", "aibom"),
-    ("docs", "docs"),
-    ("facts-integrity", "facts_integrity"),
-    ("i18n", "i18n"),
-    ("bookkit", "bookkit"),
-    ("prisma", "prisma"),
-    ("cross-model", "cross_model"),
-    ("temporal", "temporal"),
-    ("ground-truth", "ground_truth"),
-    ("compliance", "compliance"),
-    ("sprint", "sprint"),
-    ("predatory", "predatory"),
-    ("reproducibility", "reproducibility"),
-    ("integrity", "integrity"),
-    ("figure-quality", "figure_quality"),
-    ("disclosure", "disclosure"),
-    ("freshness", "freshness"),
-];
+/// The audit gate suite is composed from the governed rule-matrix (ADR-0047 R4)
+/// — see [`agentic_core::profiles`]. The gate catalog (subcommand → checkpoint)
+/// is in code; which gates apply is governed data loaded from
+/// `specs/rule-matrix.json` (or the default matrix when absent). The cascade
+/// resolves the suite once, in `run_cascade`, and threads it into the plan.
+const RULE_MATRIX_PATH: &str = "specs/rule-matrix.json";
 
-/// Bookkit-C-only gates (master thesis): page boundary, R&R matrix, calibration.
-const THESIS_GATES: &[(&str, &str)] = &[
-    ("page-boundary", "page_boundary"),
-    ("rr-matrix", "rr_matrix"),
-    ("calibration", "calibration"),
-];
+/// Load the rule-matrix from the content store, falling back to the default.
+fn load_rule_matrix(
+    conn: &rusqlite::Connection,
+    project: &str,
+) -> agentic_core::profiles::RuleMatrix {
+    if let Ok(blob) = worktree::read_at(conn, project, RULE_MATRIX_PATH) {
+        let text = String::from_utf8_lossy(&blob.content);
+        if let Ok(m) = agentic_core::profiles::RuleMatrix::parse(&text) {
+            return m;
+        }
+    }
+    agentic_core::profiles::RuleMatrix::default_matrix()
+}
 
 /// `Dimension_NN_*.md` basename → its numeric index (01..11), else None.
 /// Mirrors the merge command's selector so the two stay in lock-step.
@@ -168,14 +150,19 @@ all ```figspec``` blocks. Then stop."
 
 /// Build the ordered 7-phase step plan (pure: depends only on `opts` + the
 /// discovered dimension paths). Used both by the executor and the unit tests.
-fn build_plan(opts: &CascadeOpts, dim_paths: &[String], inbox_has_items: bool) -> Vec<Step> {
+fn build_plan(
+    opts: &CascadeOpts,
+    dim_paths: &[String],
+    inbox_has_items: bool,
+    gate_suite: &[(&'static str, &'static str)],
+) -> Vec<Step> {
     let mut steps = Vec::new();
     push_boot_gate(&mut steps, opts);
     push_inbox_intake(&mut steps, opts, inbox_has_items);
     push_regenerate(&mut steps, opts, dim_paths);
     push_merge(&mut steps, opts);
     push_build_book(&mut steps, opts);
-    push_audit_gates(&mut steps, opts);
+    push_audit_gates(&mut steps, opts, gate_suite);
     push_seal(&mut steps, opts);
     steps
 }
@@ -393,14 +380,19 @@ fn push_build_book(steps: &mut Vec<Step>, opts: &CascadeOpts) {
     }
 }
 
-/// 6. AUDIT GATES — per-profile subsets (ADR-0045): the universal gates apply to
-/// every profile; the thesis-only gates apply to bookkit C (always built here).
-/// Each records its own verdict.
-fn push_audit_gates(steps: &mut Vec<Step>, opts: &CascadeOpts) {
+/// 6. AUDIT GATES — composed from the governed rule-matrix (ADR-0047 R4): the
+/// `gate_suite` is `universal + per-profile additions`, resolved once in
+/// `run_cascade` from `specs/rule-matrix.json` (or the default matrix). Each
+/// gate records its own verdict.
+fn push_audit_gates(
+    steps: &mut Vec<Step>,
+    opts: &CascadeOpts,
+    gate_suite: &[(&'static str, &'static str)],
+) {
     let p = &opts.project;
-    let emit = |steps: &mut Vec<Step>, sub: &str, cp: &str, tag: &str| {
-        let mut args = vec!["check".into(), sub.into(), "--project".into(), p.clone()];
-        match sub {
+    for (sub, cp) in gate_suite {
+        let mut args = vec!["check".into(), (*sub).into(), "--project".into(), p.clone()];
+        match *sub {
             "tree" | "docs" => {
                 args.push("--root".into());
                 args.push(opts.root.clone());
@@ -408,14 +400,7 @@ fn push_audit_gates(steps: &mut Vec<Step>, opts: &CascadeOpts) {
             "contamination" => args.push("--offline".into()),
             _ => {}
         }
-        steps.push(Step::gate(6, format!("check {sub}{tag}"), args, cp));
-    };
-    for (sub, cp) in UNIVERSAL_GATES {
-        emit(steps, sub, cp, "");
-    }
-    // Bookkit C — the master thesis is always a cascade deliverable.
-    for (sub, cp) in THESIS_GATES {
-        emit(steps, sub, cp, " [C]");
+        steps.push(Step::gate(6, format!("check {sub}"), args, cp));
     }
 }
 
@@ -505,7 +490,11 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
     // Does the inbox/ worktree prefix carry any items?
     let inbox_has_items = !worktree::list(&conn, &opts.project, "inbox")?.is_empty();
 
-    let plan = build_plan(opts, &dim_paths, inbox_has_items);
+    // Compose the audit gate suite from the governed rule-matrix (ADR-0047 R4).
+    let matrix = load_rule_matrix(&conn, &opts.project);
+    let gate_suite = matrix.gate_suite();
+
+    let plan = build_plan(opts, &dim_paths, inbox_has_items, &gate_suite);
 
     let exe = std::env::current_exe().context("locating the agentic executable")?;
     let db = db_path.to_string_lossy().to_string();
@@ -657,6 +646,11 @@ mod tests {
         ]
     }
 
+    /// The default gate suite, as the cascade resolves it from the rule-matrix.
+    fn suite() -> Vec<(&'static str, &'static str)> {
+        agentic_core::profiles::RuleMatrix::default_matrix().gate_suite()
+    }
+
     #[test]
     fn split_dim_extracts_nn_and_slug() {
         assert_eq!(
@@ -681,7 +675,7 @@ mod tests {
 
     #[test]
     fn dry_run_produces_the_seven_phase_plan() {
-        let plan = build_plan(&opts(true, false, true), &dims(), false);
+        let plan = build_plan(&opts(true, false, true), &dims(), false, &suite());
         // All seven phases must be represented exactly once-or-more, in order.
         let phases: Vec<u8> = plan.iter().map(|s| s.phase).collect();
         for n in 1u8..=7 {
@@ -713,17 +707,14 @@ mod tests {
                 .filter(|s| s.phase == 7)
                 .all(|s| s.args.is_empty())
         );
-        // The gate suite (phase 6) runs all read-only gates (universal + thesis).
-        assert_eq!(
-            plan.iter().filter(|s| s.phase == 6).count(),
-            UNIVERSAL_GATES.len() + THESIS_GATES.len()
-        );
+        // The gate suite (phase 6) runs every gate the rule-matrix composes.
+        assert_eq!(plan.iter().filter(|s| s.phase == 6).count(), suite().len());
     }
 
     #[test]
     fn default_builds_three_profiles_per_dimension_builds_all() {
         // Default (no --per-dimension): three profile builds (A/B/C), each --only.
-        let plan = build_plan(&opts(false, false, false), &dims(), false);
+        let plan = build_plan(&opts(false, false, false), &dims(), false, &suite());
         let profile_builds: Vec<&Step> = plan
             .iter()
             .filter(|s| s.label.starts_with("book build ") && s.label != "book build (all)")
@@ -743,7 +734,7 @@ mod tests {
         assert!(keys.contains(&"master_thesis".to_string()));
 
         // With --per-dimension: one all-books build, `--only` omitted.
-        let plan = build_plan(&opts(false, true, false), &dims(), false);
+        let plan = build_plan(&opts(false, true, false), &dims(), false, &suite());
         let build = plan
             .iter()
             .find(|s| s.label == "book build (all)")
@@ -753,7 +744,7 @@ mod tests {
 
     #[test]
     fn regenerate_adds_one_session_per_dimension_plus_run() {
-        let plan = build_plan(&opts(false, false, true), &dims(), false);
+        let plan = build_plan(&opts(false, false, true), &dims(), false, &suite());
         let adds = plan
             .iter()
             .filter(|s| s.label.starts_with("orchestrate add dim"))
@@ -764,7 +755,7 @@ mod tests {
 
     #[test]
     fn no_regenerate_skips_phase_three() {
-        let plan = build_plan(&opts(false, false, false), &dims(), false);
+        let plan = build_plan(&opts(false, false, false), &dims(), false, &suite());
         assert!(
             plan.iter()
                 .filter(|s| s.phase == 3)
@@ -775,17 +766,17 @@ mod tests {
 
     #[test]
     fn inbox_intake_runs_only_when_items_present() {
-        let with = build_plan(&opts(false, false, false), &dims(), true);
+        let with = build_plan(&opts(false, false, false), &dims(), true, &suite());
         assert!(with.iter().any(|s| s.label == "import dir inbox"));
         assert!(with.iter().any(|s| s.label == "embed inbox"));
         assert!(with.iter().any(|s| s.label == "classify inbox"));
 
-        let without = build_plan(&opts(false, false, false), &dims(), false);
+        let without = build_plan(&opts(false, false, false), &dims(), false, &suite());
         assert!(without.iter().any(|s| s.label == "inbox empty — skipping"));
         assert!(!without.iter().any(|s| s.label == "import dir inbox"));
 
         // dry-run with items present is intent-only (no mutating subprocess).
-        let dry = build_plan(&opts(true, false, false), &dims(), true);
+        let dry = build_plan(&opts(true, false, false), &dims(), true, &suite());
         assert!(
             dry.iter()
                 .filter(|s| s.phase == 2)
@@ -797,16 +788,13 @@ mod tests {
     #[test]
     fn gate_suite_has_distinct_checkpoints() {
         use std::collections::HashSet;
-        let cps: HashSet<&str> = UNIVERSAL_GATES
-            .iter()
-            .chain(THESIS_GATES.iter())
-            .map(|(_, cp)| *cp)
-            .collect();
-        let total = UNIVERSAL_GATES.len() + THESIS_GATES.len();
-        assert_eq!(total, 26);
-        assert_eq!(cps.len(), total, "checkpoint names must be distinct");
+        let s = suite();
+        let cps: HashSet<&str> = s.iter().map(|(_, cp)| *cp).collect();
+        // Default matrix = the full catalog (universal 23 + C additions 3).
+        assert_eq!(s.len(), agentic_core::profiles::GATE_CATALOG.len());
+        assert_eq!(cps.len(), s.len(), "checkpoint names must be distinct");
         // contamination runs offline; tree/docs carry --root.
-        let plan = build_plan(&opts(true, false, true), &dims(), false);
+        let plan = build_plan(&opts(true, false, true), &dims(), false, &suite());
         let contam = plan
             .iter()
             .find(|s| s.label == "check contamination")
