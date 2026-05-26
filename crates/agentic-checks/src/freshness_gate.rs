@@ -22,7 +22,9 @@ use crate::{CheckReport, Finding, Severity};
 /// A recency marker: a freshness keyword, an optional 3-letter month, a year.
 static MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(last verified|verified|as of|accessed|retrieved|updated)\b[^.\n]{0,24}?(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?(20\d\d)\b",
+        // `\b` BEFORE the year too, so a 4-digit run inside a longer number
+        // (e.g. the ISO standard number 42006 → "2006") is not misread as a date.
+        r"(?i)\b(last verified|verified|as of|accessed|retrieved|updated)\b[^.\n]{0,24}?(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?\b(20\d\d)\b",
     )
     .unwrap()
 });
@@ -140,6 +142,25 @@ mod tests {
     fn year_only_marker() {
         let v = stale_markers("Figures accessed 2023 from the registry.\n", 2026, 5, 12);
         assert_eq!(v.len(), 1);
+    }
+
+    #[test]
+    fn iso_standard_number_not_misread_as_year() {
+        // "ISO/IEC 17021-1 + 42006" must NOT be flagged: 42006 contains "2006"
+        // but it is a standard number, not a recency date.
+        let v = stale_markers(
+            "a body with verified ISO/IEC 17021-1 + 42006 accreditation scope\n",
+            2026,
+            5,
+            12,
+        );
+        assert!(
+            v.is_empty(),
+            "ISO standard number must not be read as a year"
+        );
+        // A real marker on the same line still flags.
+        let v2 = stale_markers("verified ISO/IEC 42006 as of 2019\n", 2026, 5, 12);
+        assert_eq!(v2.len(), 1);
     }
 
     #[test]
