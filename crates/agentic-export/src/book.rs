@@ -21,7 +21,7 @@ use agentic_core::i18n::t;
 
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
 
-const NAVY: &str = "1F497D";
+const NAVY: &str = "1F3864"; // gold bookkit HEAD (book_build): headings + title
 const HEAD2: &str = "2E4A7A";
 const GREY: &str = "666666";
 const ACCENT: &str = "0B5C9E"; // hyperlink blue

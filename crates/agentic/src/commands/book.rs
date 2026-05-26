@@ -55,6 +55,12 @@ struct BookSpec {
     /// global `--lang`; absent → fall back to `--lang` then "en".
     #[serde(default)]
     lang: Option<String>,
+    /// Optional content-image asset prefix in the working tree (e.g.
+    /// `out/sources/norms/media`). When set, every blob under it is materialised
+    /// (by basename) into the per-book scratch dir so `![caption](name.png)`
+    /// image references resolve. Opt-in: books without it are unaffected.
+    #[serde(default)]
+    assets: Option<String>,
     chapters: Vec<String>,
 }
 
@@ -172,6 +178,18 @@ fn build_one(
             "{{\"id\":\"icon_{kind}\",\"type\":\"icon\",\"data\":{{\"variant\":\"{kind}\"}}}}"
         );
         let _ = agentic_figures::render_figspec(&json, &work.join(format!("icon_{kind}.png")));
+    }
+    // Materialise content-image assets (if any) into the scratch dir, by
+    // basename, so `![caption](name.png)` references resolve at render time.
+    if let Some(prefix) = &spec.assets {
+        if let Ok(items) = worktree::list(conn, project, prefix) {
+            for (path, _sha) in items {
+                if let Ok(blob) = worktree::read_at(conn, project, &path) {
+                    let base = path.rsplit('/').next().unwrap_or(&path);
+                    let _ = std::fs::write(work.join(base), &blob.content);
+                }
+            }
+        }
     }
     let mut chapters: Vec<(String, String)> = Vec::new();
     let mut figs = 0usize;
