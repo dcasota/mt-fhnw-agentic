@@ -42,8 +42,53 @@ struct CascadeOpts {
     companion_key: String,
     /// Bookkit C — the master-thesis key.
     thesis_key: String,
+    /// Skip expensive steps already completed for the current fingerprint.
+    resume: bool,
+    /// Ignore checkpoints; run every step from scratch.
+    force_full: bool,
     dry_run: bool,
     root: String,
+}
+
+/// Phases whose steps are checkpointed/skippable on `--resume` (the expensive
+/// ones: regenerate, merge, build). Gates and seal always re-run.
+const CHECKPOINTED_PHASES: &[u8] = &[3, 4, 5];
+
+/// A content fingerprint of the project's working tree — changes whenever any
+/// blob does, naturally invalidating stale checkpoints (input-delta gating).
+fn input_fingerprint(conn: &rusqlite::Connection, project: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let entries = worktree::list(conn, project, "").unwrap_or_default();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for (p, sha) in &entries {
+        p.hash(&mut h);
+        sha.hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+fn step_done(conn: &rusqlite::Connection, project: &str, fp: &str, label: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM cascade_steps WHERE project_id=?1 AND fingerprint=?2 AND step_label=?3",
+        rusqlite::params![project, fp, label],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+fn record_step(conn: &rusqlite::Connection, project: &str, fp: &str, label: &str) {
+    let _ = conn.execute(
+        "INSERT INTO cascade_steps (project_id, fingerprint, step_label) VALUES (?1,?2,?3)",
+        rusqlite::params![project, fp, label],
+    );
+}
+
+fn clear_steps(conn: &rusqlite::Connection, project: &str) {
+    let _ = conn.execute(
+        "DELETE FROM cascade_steps WHERE project_id=?1",
+        rusqlite::params![project],
+    );
 }
 
 /// One planned step: a human label, the `agentic` args (after `--db <db>`) to
@@ -447,6 +492,8 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
             merged_key,
             companion_key,
             thesis_key,
+            resume,
+            force_full,
             dry_run,
             root,
         } => {
@@ -468,6 +515,8 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
                 merged_key,
                 companion_key,
                 thesis_key,
+                resume,
+                force_full,
                 dry_run,
                 root: root.to_string_lossy().to_string(),
             };
@@ -503,6 +552,14 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
     let mut last_phase = 0u8;
     let mut any_fail = false;
 
+    // Checkpoint/resume (ADR-0047 R3): a content fingerprint scopes the
+    // checkpoints; `--force-full` clears them; `--resume` skips expensive steps
+    // already completed for the current fingerprint.
+    let fingerprint = input_fingerprint(&conn, &opts.project);
+    if opts.force_full && !opts.dry_run {
+        clear_steps(&conn, &opts.project);
+    }
+
     for step in &plan {
         // Print the phase banner once per phase boundary.
         if step.phase != last_phase && !json_out {
@@ -518,6 +575,17 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
                 println!("  · {}", step.label);
             }
             rows.push((step.phase, step.label.clone(), "SKIP".into()));
+            continue;
+        }
+
+        // Resume: skip an expensive step already completed for this fingerprint.
+        let checkpointed = CHECKPOINTED_PHASES.contains(&step.phase);
+        if checkpointed && opts.resume && step_done(&conn, &opts.project, &fingerprint, &step.label)
+        {
+            if !json_out {
+                println!("  \u{27f3} {} (cached — unchanged inputs)", step.label);
+            }
+            rows.push((step.phase, step.label.clone(), "CACHED".into()));
             continue;
         }
 
@@ -554,6 +622,10 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
         };
         if verdict == "FAIL" {
             any_fail = true;
+        }
+        // Checkpoint a completed expensive step so --resume can skip it next time.
+        if checkpointed && matches!(verdict.as_str(), "OK" | "PASS" | "WARN") {
+            record_step(&conn, &opts.project, &fingerprint, &step.label);
         }
         rows.push((step.phase, step.label.clone(), verdict.clone()));
 
@@ -634,6 +706,8 @@ mod tests {
             merged_key: "governing_the_agentic_machine".into(),
             companion_key: "student_notes".into(),
             thesis_key: "master_thesis".into(),
+            resume: false,
+            force_full: false,
             dry_run,
             root: ".".into(),
         }

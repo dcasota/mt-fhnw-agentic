@@ -329,6 +329,13 @@ pub enum CascadeAction {
         /// Bookkit C — the master-thesis key (FHNW structure + thesis-only gates).
         #[arg(long, default_value = "master_thesis")]
         thesis_key: String,
+        /// Resume: skip the expensive steps (regenerate/merge/build) already
+        /// completed for the current content fingerprint (ADR-0047 R3).
+        #[arg(long)]
+        resume: bool,
+        /// Ignore checkpoints and run every step from scratch.
+        #[arg(long)]
+        force_full: bool,
         /// Print the ordered plan and run only the cheap read-only gates; skip LLM
         /// regeneration, book render and signing.
         #[arg(long)]
