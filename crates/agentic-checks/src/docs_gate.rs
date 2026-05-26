@@ -28,11 +28,7 @@ pub const DOCS: &[&str] = &[
 /// schema and the cross-tool mission-control agent-defs. A missing one — or one
 /// that no longer references the SDD-chain canonical model — is representation
 /// drift (advisory: these are derived/secondary, not the 6 core docs).
-pub const REPRESENTATIONS: &[&str] = &[
-    "CASCADE_PIPELINE.md",
-    ".claude/agents/mission-control.md",
-    ".factory/droids/mission-control.md",
-];
+pub const REPRESENTATIONS: &[&str] = &["CASCADE_PIPELINE.md"];
 
 static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap());
 
@@ -139,26 +135,42 @@ pub fn run(conn: &Connection, project: &str, root: &Path) -> Result<CheckReport>
         ));
     }
 
-    // 5. Generated agent-defs must match the canonical body verbatim (R10): the
-    // text after the GENERATED marker must equal specs/mission-control.canonical.md.
-    if let Ok(canon) =
-        std::fs::read_to_string(root.join(agentic_core::govdoc::CANONICAL_MISSION_CONTROL))
-    {
-        let canon = canon.trim();
-        for rel in agentic_core::govdoc::GENERATED_AGENT_DEFS {
-            let Ok(text) = std::fs::read_to_string(root.join(rel)) else {
-                continue; // absence already reported in step 3
+    // 5. Generated agent-defs must match their canonical body (R10): for each
+    // specs/agents/<role>.canonical.md, both per-tool generated files' body
+    // (after the GENERATED marker) must equal the canonical body.
+    let agents_dir = root.join(agentic_core::govdoc::AGENTS_CANONICAL_DIR);
+    if let Ok(rd) = std::fs::read_dir(&agents_dir) {
+        for entry in rd.filter_map(std::result::Result::ok) {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            let Some(role) = fname.strip_suffix(".canonical.md") else {
+                continue;
             };
-            match text.split_once(agentic_core::govdoc::GENERATED_MARKER) {
-                Some((_, body)) if body.trim() == canon => {}
-                _ => findings.push(finding(
-                    "REPRESENTATION_DRIFT",
-                    Severity::Warn,
-                    format!(
-                        "{rel} body diverges from the canonical — run `agentic gen agent-defs`"
-                    ),
-                    rel,
-                )),
+            let Ok(canon_raw) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let canon_body = canon_raw
+                .split_once("\n---\n")
+                .map_or_else(|| canon_raw.trim(), |(_, b)| b.trim());
+            for rel in agentic_core::govdoc::generated_paths(role) {
+                match std::fs::read_to_string(root.join(&rel)) {
+                    Err(_) => findings.push(finding(
+                        "REPRESENTATION_MISSING",
+                        Severity::Warn,
+                        format!("generated agent-def absent: {rel} (run `agentic gen agent-defs`)"),
+                        &rel,
+                    )),
+                    Ok(text) => match text.split_once(agentic_core::govdoc::GENERATED_MARKER) {
+                        Some((_, body)) if body.trim() == canon_body => {}
+                        _ => findings.push(finding(
+                            "REPRESENTATION_DRIFT",
+                            Severity::Warn,
+                            format!(
+                                "{rel} body diverges from {role}.canonical — run `agentic gen agent-defs`"
+                            ),
+                            &rel,
+                        )),
+                    },
+                }
             }
         }
     }
@@ -194,6 +206,26 @@ mod tests {
             "x",
         )
         .unwrap();
+        // One canonical role + its two generated files (bodies matching).
+        std::fs::create_dir_all(root.join("specs/agents")).unwrap();
+        let body = "The sample role body, references SDD.";
+        std::fs::write(
+            root.join("specs/agents/sample.canonical.md"),
+            format!("name: sample\ndescription: d\n---\n\n{body}\n"),
+        )
+        .unwrap();
+        for rel in agentic_core::govdoc::generated_paths("sample") {
+            let p = root.join(&rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(
+                p,
+                format!(
+                    "---\nx\n---\n\n{}\n\n{body}\n",
+                    agentic_core::govdoc::GENERATED_MARKER
+                ),
+            )
+            .unwrap();
+        }
         root
     }
 
@@ -212,11 +244,12 @@ mod tests {
                     | "DOC_MISSING"
             )
         }));
-        // Removing a representation surfaces drift; a non-SDD body surfaces drift.
+        // Removing a representation surfaces MISSING (§3); a generated agent-def
+        // whose body diverges from its canonical surfaces DRIFT (§5).
         std::fs::remove_file(root.join("CASCADE_PIPELINE.md")).unwrap();
         std::fs::write(
-            root.join(".claude/agents/mission-control.md"),
-            "no canonical ref",
+            root.join(".claude/agents/sample.md"),
+            "no marker, wrong body",
         )
         .unwrap();
         let report = run(&conn, &pid, &root).unwrap();

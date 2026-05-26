@@ -9,11 +9,44 @@ use anyhow::{Context, Result};
 
 use crate::cli::GenAction;
 
-/// Per-tool front-matter adapters for the generated mission-control agent-defs.
-/// The adapter (front-matter) is code; the body is the canonical data file.
-const CLAUDE_FRONTMATTER: &str = "---\ndescription: Portfolio orchestrator (SDD-governed mission-control). Manages inbox processing, iteration lifecycle, rule enforcement, git versioning, overlap detection, adversarial arbitration, new-project governance, content ownership. Spectrum: balanced.\ntools: Read, Glob, Grep, LS, Bash, Edit, Write\n---";
+/// Per-tool tool-lists for the generated agent-defs (the adapter is code; the
+/// per-role name/description/body is the canonical data). Tool names differ by
+/// ecosystem (Claude: Bash/Write; Factory: Create/Execute) but are the same
+/// across roles within a tool, so they live here, not in the canonical files.
+const CLAUDE_TOOLS: &str = "Read, Glob, Grep, LS, Bash, Edit, Write";
+const FACTORY_TOOLS: &str =
+    "[\"Read\", \"LS\", \"Grep\", \"Glob\", \"Edit\", \"Create\", \"Execute\"]";
 
-const FACTORY_FRONTMATTER: &str = "---\nname: mission-control\ndescription: >-\n  SDD-governed orchestrator for an N-project research / writing portfolio.\n  Manages inbox processing, iteration lifecycle, rule enforcement, git\n  versioning, overlap detection, adversarial arbitration, new-project\n  governance, and content ownership registry.\nmodel: inherit\ntools: [\"Read\", \"LS\", \"Grep\", \"Glob\", \"Edit\", \"Create\", \"Execute\"]\n---";
+/// Render one tool's agent-def: front-matter adapter + marker + verbatim body.
+fn render_agent_def(tool: &str, name: &str, description: &str, body: &str, marker: &str) -> String {
+    let front = if tool == "factory" {
+        format!(
+            "---\nname: {name}\ndescription: >-\n  {description}\nmodel: inherit\ntools: {FACTORY_TOOLS}\n---"
+        )
+    } else {
+        format!("---\ndescription: {description}\ntools: {CLAUDE_TOOLS}\n---")
+    };
+    format!("{front}\n\n{marker}\n\n{body}\n")
+}
+
+/// Parse a `specs/agents/<role>.canonical.md` file into (name, description, body).
+/// Header is `name:`/`description:` lines, then a `---` line, then the body.
+fn parse_canonical(text: &str) -> Option<(String, String, String)> {
+    let (header, body) = text.split_once("\n---\n")?;
+    let mut name = String::new();
+    let mut description = String::new();
+    for line in header.lines() {
+        if let Some(v) = line.strip_prefix("name:") {
+            name = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("description:") {
+            description = v.trim().to_string();
+        }
+    }
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, description, body.trim().to_string()))
+}
 
 pub const PREAMBLE: &str = r#"=== MANDATORY GENERATION RULES (do not violate) ===
 1. VERIFY, DON'T ASSUME (ADR-0036, Karpathy). Every reference, author, result,
@@ -81,27 +114,40 @@ pub fn run(action: GenAction, _json: bool) -> Result<()> {
             print!("{PREAMBLE}\n{FIGSPEC_RULES}\n\n=== TASK ===\n{body}\n");
         }
         GenAction::AgentDefs { root } => {
-            use agentic_core::govdoc::{
-                CANONICAL_MISSION_CONTROL, GENERATED_AGENT_DEFS, GENERATED_MARKER,
-            };
-            let canon = root.join(CANONICAL_MISSION_CONTROL);
-            let body = std::fs::read_to_string(&canon)
-                .with_context(|| format!("reading canonical body {}", canon.display()))?;
-            let body = body.trim_end();
-            for rel in GENERATED_AGENT_DEFS {
-                let fm = if rel.contains(".factory") {
-                    FACTORY_FRONTMATTER
-                } else {
-                    CLAUDE_FRONTMATTER
+            use agentic_core::govdoc::{AGENTS_CANONICAL_DIR, GENERATED_MARKER};
+            let dir = root.join(AGENTS_CANONICAL_DIR);
+            let mut entries: Vec<_> = std::fs::read_dir(&dir)
+                .with_context(|| format!("reading {}", dir.display()))?
+                .filter_map(std::result::Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.to_string_lossy().ends_with(".canonical.md"))
+                .collect();
+            entries.sort();
+            let mut n = 0usize;
+            for canon in entries {
+                let text = std::fs::read_to_string(&canon)
+                    .with_context(|| format!("reading {}", canon.display()))?;
+                let Some((name, description, body)) = parse_canonical(&text) else {
+                    eprintln!("skip (no name): {}", canon.display());
+                    continue;
                 };
-                let path = root.join(rel);
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                for (tool, rel) in [
+                    ("claude", format!(".claude/agents/{name}.md")),
+                    ("factory", format!(".factory/droids/{name}.md")),
+                ] {
+                    let path = root.join(&rel);
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    let content =
+                        render_agent_def(tool, &name, &description, &body, GENERATED_MARKER);
+                    std::fs::write(&path, content)
+                        .with_context(|| format!("writing {}", path.display()))?;
+                    println!("generated {rel}");
+                    n += 1;
                 }
-                std::fs::write(&path, format!("{fm}\n\n{GENERATED_MARKER}\n\n{body}\n"))
-                    .with_context(|| format!("writing {}", path.display()))?;
-                println!("generated {rel}");
             }
+            println!("generated {n} agent-def(s) from {}", dir.display());
         }
     }
     Ok(())
