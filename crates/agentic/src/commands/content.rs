@@ -206,6 +206,19 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
             } else {
                 println!("Checked out {n} files to {}", to.display());
             }
+            // out/ deprecation history signal (ADR-0048): materialising out/
+            // paths into the working tree re-creates a deprecated prefix —
+            // legitimate only for historical/pre-deprecation content. Emitted to
+            // stderr (never pollutes --json). Skip the tool's own ephemeral
+            // scratch checkouts (temp dir), which are internal, not history.
+            let to_temp = to.starts_with(std::env::temp_dir());
+            if !to_temp && entries.iter().any(|(p, _)| p.starts_with("out/")) {
+                eprintln!(
+                    "note: out/ is a DEPRECATED working-tree prefix (ADR-0048) — this checkout \
+                     materialises historical out/ paths. out/ content is DB-authoritative and \
+                     regenerable; renders go to snapshots/. Do not commit the on-disk out/."
+                );
+            }
         }
     }
     Ok(())
