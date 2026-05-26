@@ -10,6 +10,24 @@ use agentic_checks::{CheckReport, Verdict};
 use crate::cli::CheckAction;
 
 pub async fn run(db_path: &Path, action: CheckAction, lang: &str, json_out: bool) -> Result<()> {
+    let (report, _project) = run_report(db_path, action, lang).await?;
+    print_report(&report, json_out);
+    if matches!(report.verdict, Verdict::Fail) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Run a single gate and return its `(report, project)` WITHOUT printing or
+/// calling `process::exit` — so the cascade / SDD Cycle can compose gates
+/// in-process and harvest verdicts directly (ADR-0047, item 1). The verdict is
+/// still recorded in `audit_verdicts` here; the CLI wrapper `run` adds printing
+/// and the exit-on-FAIL. In-process callers must never exit.
+pub async fn run_report(
+    db_path: &Path,
+    action: CheckAction,
+    lang: &str,
+) -> Result<(CheckReport, Option<String>)> {
     let conn = agentic_core::db::open(db_path)?;
     // Each arm yields (report, project?) so EVERY check can record an
     // audit_verdict (ADR-0041: enhanced checks after the research-skill must
@@ -173,11 +191,7 @@ pub async fn run(db_path: &Path, action: CheckAction, lang: &str, json_out: bool
         );
     }
 
-    print_report(&report, json_out);
-    if matches!(report.verdict, Verdict::Fail) {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok((report, project))
 }
 
 fn print_report(report: &CheckReport, json_out: bool) {
