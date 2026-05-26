@@ -116,6 +116,7 @@ const UNIVERSAL_GATES: &[(&str, &str)] = &[
     ("integrity", "integrity"),
     ("figure-quality", "figure_quality"),
     ("disclosure", "disclosure"),
+    ("freshness", "freshness"),
 ];
 
 /// Bookkit-C-only gates (master thesis): page boundary, R&R matrix, calibration.
@@ -794,15 +795,16 @@ mod tests {
     }
 
     #[test]
-    fn gate_suite_has_twentyfive_distinct_checkpoints() {
+    fn gate_suite_has_distinct_checkpoints() {
         use std::collections::HashSet;
         let cps: HashSet<&str> = UNIVERSAL_GATES
             .iter()
             .chain(THESIS_GATES.iter())
             .map(|(_, cp)| *cp)
             .collect();
-        assert_eq!(UNIVERSAL_GATES.len() + THESIS_GATES.len(), 25);
-        assert_eq!(cps.len(), 25, "checkpoint names must be distinct");
+        let total = UNIVERSAL_GATES.len() + THESIS_GATES.len();
+        assert_eq!(total, 26);
+        assert_eq!(cps.len(), total, "checkpoint names must be distinct");
         // contamination runs offline; tree/docs carry --root.
         let plan = build_plan(&opts(true, false, true), &dims(), false);
         let contam = plan

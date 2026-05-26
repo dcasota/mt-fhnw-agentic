@@ -909,6 +909,14 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// Domain-freshness gate (ADR-0047): flags recency markers ("last verified
+    /// <Mon YYYY>", "as of <YYYY>", …) older than --max-age-months. Advisory.
+    Freshness {
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value_t = 12)]
+        max_age_months: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]

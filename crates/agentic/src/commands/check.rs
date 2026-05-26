@@ -154,6 +154,23 @@ pub async fn run_report(
             agentic_checks::calibration_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::Freshness {
+            project,
+            max_age_months,
+        } => {
+            use chrono::Datelike;
+            let now = chrono::Local::now();
+            (
+                agentic_checks::freshness_gate::run(
+                    &conn,
+                    &project,
+                    u32::try_from(now.year()).unwrap_or(2026),
+                    now.month(),
+                    max_age_months,
+                )?,
+                Some(project),
+            )
+        }
         CheckAction::PageBoundary {
             project,
             prefix,
