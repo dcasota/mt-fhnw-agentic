@@ -5,8 +5,10 @@
 //!   2. INBOX INTAKE       — `import dir inbox` → `embed` → `classify` (if any)
 //!   3. REGENERATE DIMS    — `orchestrate add dim<NN>` × N → `orchestrate run --wave`
 //!   4. MERGE              — `merge dimensions`
-//!   5. BUILD BOOK         — `book build --only <merged-key>` (R2: merged only)
-//!   6. AUDIT GATES        — the full gate suite, verdicts harvested
+//!   5. BUILD BOOK         — the three bookkit profiles (A merged, B companion,
+//!                           C thesis); `--per-dimension` renders every book
+//!   6. AUDIT GATES        — universal gates (all profiles) + thesis-only gates
+//!                           (bookkit C); verdicts harvested (ADR-0045)
 //!   7. SEAL               — `audit sign-commits` → `audit report`
 //!
 //! This module COMPOSES the existing commands; it does not reimplement them.
@@ -34,7 +36,12 @@ struct CascadeOpts {
     out: String,
     regenerate: bool,
     per_dimension: bool,
+    /// Bookkit A — the merged dimensions book key.
     merged_key: String,
+    /// Bookkit B — the student-notes companion key.
+    companion_key: String,
+    /// Bookkit C — the master-thesis key.
+    thesis_key: String,
     dry_run: bool,
     root: String,
 }
@@ -80,9 +87,13 @@ impl Step {
     }
 }
 
-/// The 25-gate audit suite (step 6), each `(check subcommand, verdict checkpoint)`.
-/// The checkpoint is the checker name the gate records under in `audit_verdicts`.
-const GATE_SUITE: &[(&str, &str)] = &[
+/// Per-profile gate subsets (ADR-0045). The UNIVERSAL gates apply to every
+/// bookkit profile (A books, B companion, C thesis) — they are about
+/// correctness and house style, not regulated thesis structure. The THESIS
+/// gates apply only to bookkit C (the master thesis): the 60-page body bound,
+/// the R&R traceability matrix, and reviewer calibration. Each entry is
+/// `(check subcommand, verdict checkpoint)`.
+const UNIVERSAL_GATES: &[(&str, &str)] = &[
     ("self", "self"),
     ("tree", "tree"),
     ("deliverable", "deliverable"),
@@ -102,11 +113,14 @@ const GATE_SUITE: &[(&str, &str)] = &[
     ("sprint", "sprint"),
     ("predatory", "predatory"),
     ("reproducibility", "reproducibility"),
-    ("page-boundary", "page_boundary"),
-    // five ARS gates (ADR-0044)
     ("integrity", "integrity"),
     ("figure-quality", "figure_quality"),
     ("disclosure", "disclosure"),
+];
+
+/// Bookkit-C-only gates (master thesis): page boundary, R&R matrix, calibration.
+const THESIS_GATES: &[(&str, &str)] = &[
+    ("page-boundary", "page_boundary"),
     ("rr-matrix", "rr_matrix"),
     ("calibration", "calibration"),
 ];
@@ -301,13 +315,19 @@ fn push_merge(steps: &mut Vec<Step>, opts: &CascadeOpts) {
     }
 }
 
-/// 5. BUILD BOOK — merged only (R2) unless `--per-dimension`.
+/// 5. BUILD BOOK — the three bookkit profiles (ADR-0045): A merged dimensions
+/// book, B student-notes companion, C master thesis. With `--per-dimension`,
+/// every book in the manifest is rendered instead (covers the individual
+/// dimension/campaign books too).
 fn push_build_book(steps: &mut Vec<Step>, opts: &CascadeOpts) {
     if opts.dry_run {
         let scope = if opts.per_dimension {
             "all books".to_string()
         } else {
-            format!("merged only (--only {})", opts.merged_key)
+            format!(
+                "three profiles (A {}, B {}, C {})",
+                opts.merged_key, opts.companion_key, opts.thesis_key
+            )
         };
         steps.push(Step::note(
             5,
@@ -332,31 +352,54 @@ fn push_build_book(steps: &mut Vec<Step>, opts: &CascadeOpts) {
             opts.manifest.clone(),
         ],
     ));
-    let mut args = vec![
-        "book".into(),
-        "build".into(),
-        "--project".into(),
-        opts.project.clone(),
-        "--manifest".into(),
-        opts.manifest.clone(),
-        "--out".into(),
-        opts.out.clone(),
-    ];
-    // R2: by default build ONLY the merged book; with --per-dimension omit
-    // --only so every book in the manifest is rendered.
-    if !opts.per_dimension {
-        args.push("--only".into());
-        args.push(opts.merged_key.clone());
+    let build = |only: Option<&str>| -> Vec<String> {
+        let mut a = vec![
+            "book".into(),
+            "build".into(),
+            "--project".into(),
+            opts.project.clone(),
+            "--manifest".into(),
+            opts.manifest.clone(),
+            "--out".into(),
+            opts.out.clone(),
+        ];
+        if let Some(k) = only {
+            a.push("--only".into());
+            a.push(k.to_string());
+        }
+        a
+    };
+    if opts.per_dimension {
+        // Render every book in the manifest (all profiles + per-dimension/campaign).
+        steps.push(Step::run(5, "book build (all)", build(None)));
+    } else {
+        // Default: the three profile deliverables, one build each.
+        steps.push(Step::run(
+            5,
+            format!("book build A ({})", opts.merged_key),
+            build(Some(&opts.merged_key)),
+        ));
+        steps.push(Step::run(
+            5,
+            format!("book build B ({})", opts.companion_key),
+            build(Some(&opts.companion_key)),
+        ));
+        steps.push(Step::run(
+            5,
+            format!("book build C ({})", opts.thesis_key),
+            build(Some(&opts.thesis_key)),
+        ));
     }
-    steps.push(Step::run(5, "book build", args));
 }
 
-/// 6. AUDIT GATES — the full 25-gate suite (each records its own verdict).
+/// 6. AUDIT GATES — per-profile subsets (ADR-0045): the universal gates apply to
+/// every profile; the thesis-only gates apply to bookkit C (always built here).
+/// Each records its own verdict.
 fn push_audit_gates(steps: &mut Vec<Step>, opts: &CascadeOpts) {
     let p = &opts.project;
-    for (sub, cp) in GATE_SUITE {
-        let mut args = vec!["check".into(), (*sub).into(), "--project".into(), p.clone()];
-        match *sub {
+    let emit = |steps: &mut Vec<Step>, sub: &str, cp: &str, tag: &str| {
+        let mut args = vec!["check".into(), sub.into(), "--project".into(), p.clone()];
+        match sub {
             "tree" | "docs" => {
                 args.push("--root".into());
                 args.push(opts.root.clone());
@@ -364,7 +407,14 @@ fn push_audit_gates(steps: &mut Vec<Step>, opts: &CascadeOpts) {
             "contamination" => args.push("--offline".into()),
             _ => {}
         }
-        steps.push(Step::gate(6, format!("check {sub}"), args, cp));
+        steps.push(Step::gate(6, format!("check {sub}{tag}"), args, cp));
+    };
+    for (sub, cp) in UNIVERSAL_GATES {
+        emit(steps, sub, cp, "");
+    }
+    // Bookkit C — the master thesis is always a cascade deliverable.
+    for (sub, cp) in THESIS_GATES {
+        emit(steps, sub, cp, " [C]");
     }
 }
 
@@ -409,6 +459,8 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
             no_regenerate,
             per_dimension,
             merged_key,
+            companion_key,
+            thesis_key,
             dry_run,
             root,
         } => {
@@ -428,6 +480,8 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
                 regenerate: !no_regenerate,
                 per_dimension,
                 merged_key,
+                companion_key,
+                thesis_key,
                 dry_run,
                 root: root.to_string_lossy().to_string(),
             };
@@ -587,7 +641,9 @@ mod tests {
             out: "out/books".into(),
             regenerate,
             per_dimension,
-            merged_key: "master_thesis".into(),
+            merged_key: "governing_the_agentic_machine".into(),
+            companion_key: "student_notes".into(),
+            thesis_key: "master_thesis".into(),
             dry_run,
             root: ".".into(),
         }
@@ -656,30 +712,41 @@ mod tests {
                 .filter(|s| s.phase == 7)
                 .all(|s| s.args.is_empty())
         );
-        // The gate suite (phase 6) still runs all 25 read-only gates.
+        // The gate suite (phase 6) runs all read-only gates (universal + thesis).
         assert_eq!(
             plan.iter().filter(|s| s.phase == 6).count(),
-            GATE_SUITE.len()
+            UNIVERSAL_GATES.len() + THESIS_GATES.len()
         );
     }
 
     #[test]
-    fn merged_only_by_default_per_dimension_omits_only() {
-        // Default (no --per-dimension): build carries `--only master_thesis`.
+    fn default_builds_three_profiles_per_dimension_builds_all() {
+        // Default (no --per-dimension): three profile builds (A/B/C), each --only.
         let plan = build_plan(&opts(false, false, false), &dims(), false);
-        let build = plan
+        let profile_builds: Vec<&Step> = plan
             .iter()
-            .find(|s| s.label == "book build")
-            .expect("book build step present in a non-dry run");
-        assert!(build.args.contains(&"--only".to_string()));
-        assert!(build.args.contains(&"master_thesis".to_string()));
+            .filter(|s| s.label.starts_with("book build ") && s.label != "book build (all)")
+            .collect();
+        assert_eq!(profile_builds.len(), 3, "A + B + C profile builds");
+        assert!(
+            profile_builds
+                .iter()
+                .all(|s| s.args.contains(&"--only".to_string()))
+        );
+        let keys: Vec<String> = profile_builds
+            .iter()
+            .filter_map(|s| s.args.iter().skip_while(|a| *a != "--only").nth(1).cloned())
+            .collect();
+        assert!(keys.contains(&"governing_the_agentic_machine".to_string()));
+        assert!(keys.contains(&"student_notes".to_string()));
+        assert!(keys.contains(&"master_thesis".to_string()));
 
-        // With --per-dimension: `--only` is omitted (every book renders).
+        // With --per-dimension: one all-books build, `--only` omitted.
         let plan = build_plan(&opts(false, true, false), &dims(), false);
         let build = plan
             .iter()
-            .find(|s| s.label == "book build")
-            .expect("book build step present");
+            .find(|s| s.label == "book build (all)")
+            .expect("all-books build present");
         assert!(!build.args.contains(&"--only".to_string()));
     }
 
@@ -729,8 +796,12 @@ mod tests {
     #[test]
     fn gate_suite_has_twentyfive_distinct_checkpoints() {
         use std::collections::HashSet;
-        let cps: HashSet<&str> = GATE_SUITE.iter().map(|(_, cp)| *cp).collect();
-        assert_eq!(GATE_SUITE.len(), 25);
+        let cps: HashSet<&str> = UNIVERSAL_GATES
+            .iter()
+            .chain(THESIS_GATES.iter())
+            .map(|(_, cp)| *cp)
+            .collect();
+        assert_eq!(UNIVERSAL_GATES.len() + THESIS_GATES.len(), 25);
         assert_eq!(cps.len(), 25, "checkpoint names must be distinct");
         // contamination runs offline; tree/docs carry --root.
         let plan = build_plan(&opts(true, false, true), &dims(), false);

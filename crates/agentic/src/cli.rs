@@ -300,6 +300,12 @@ pub enum CascadeAction {
         /// Manifest key of the merged book to build.
         #[arg(long, default_value = "governing_the_agentic_machine")]
         merged_key: String,
+        /// Bookkit B — the student-notes companion key (built plain, no book chrome).
+        #[arg(long, default_value = "student_notes")]
+        companion_key: String,
+        /// Bookkit C — the master-thesis key (FHNW structure + thesis-only gates).
+        #[arg(long, default_value = "master_thesis")]
+        thesis_key: String,
         /// Print the ordered plan and run only the cheap read-only gates; skip LLM
         /// regeneration, book render and signing.
         #[arg(long)]
