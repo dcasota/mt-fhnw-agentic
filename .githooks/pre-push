@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-push guard: block any push that would fail the CI rustfmt gate.
+#
+# CI runs `cargo fmt --all -- --check`; a formatting diff turns the whole run
+# red. This hook runs the identical check locally so the failure is caught
+# before the push instead of in CI. Enable once per clone with:
+#   git config core.hooksPath .githooks
+#
+# To bypass intentionally (discouraged): git push --no-verify
+echo "pre-push: cargo fmt --all -- --check"
+if ! cargo fmt --all -- --check; then
+    echo "" >&2
+    echo "pre-push BLOCKED: rustfmt check failed." >&2
+    echo "Run 'cargo fmt --all' and re-stage before pushing." >&2
+    exit 1
+fi

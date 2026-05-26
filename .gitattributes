@@ -1,0 +1,3 @@
+# Shell hooks must stay LF so `sh` can run them (a CRLF shebang breaks /bin/sh).
+.githooks/** text eol=lf
+*.sh text eol=lf
