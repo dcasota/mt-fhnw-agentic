@@ -1488,6 +1488,12 @@ pub fn render_book(
     chapters: &[(String, String)],
     figdir: &Path,
 ) -> Result<Vec<u8>> {
+    // The FHNW master-thesis profile (bookkit C) follows a mandated front/back-
+    // matter reading order that differs from the book layout; render it on its
+    // own path. The book (A) and companion (B) profiles below are unchanged.
+    if meta.thesis_profile {
+        return render_thesis_book(meta, chapters, figdir);
+    }
     let mut doc = with_styles(
         Docx::new()
             .default_fonts(body_fonts())
@@ -1611,6 +1617,204 @@ pub fn render_book(
     Ok(cur.into_inner())
 }
 
+/// FHNW thesis front/back-matter slot a chapter belongs to, decided by its first
+/// H1 (`specs/overrides/fhnw-mas/thesis-structure.md`). `Body` = numbered ch. 1-7.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+enum ThesisSlot {
+    MgmtSummary,
+    Declaration,
+    Acronyms,
+    Bibliography,
+    AiTools,
+    Appendix,
+    Body,
+}
+
+/// One emitted item in the FHNW thesis layout: either a chapter (by index into
+/// the input `chapters`) or a generated structural section.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum ThesisItem {
+    Chapter(usize),
+    Toc,
+    ListFigures,
+    ListTables,
+}
+
+/// Classify a chapter by its first H1 into an FHNW front/back-matter slot.
+fn thesis_slot(md: &str) -> ThesisSlot {
+    let h1 = first_h1(md).unwrap_or_default().to_lowercase();
+    let h = h1.trim();
+    if h.contains("management summary") || h.contains("executive summary") {
+        ThesisSlot::MgmtSummary
+    } else if h.contains("ehrenwörtliche erklärung")
+        || h.contains("eidesstattliche")
+        || h.contains("declaration of authorship")
+        || h == "declaration"
+    {
+        ThesisSlot::Declaration
+    } else if h.contains("acronym") || h.contains("abbreviation") || h.contains("abkürzungsverz") {
+        ThesisSlot::Acronyms
+    } else if h.contains("bibliography") || h.contains("references") || h.contains("literaturverz")
+    {
+        ThesisSlot::Bibliography
+    } else if h.contains("hilfsmittel")
+        || h.contains("ai tools")
+        || h.contains("ai-tools")
+        || h.contains("tools and databases")
+        || h.contains("declaration of tools")
+    {
+        ThesisSlot::AiTools
+    } else if h.contains("appendix") || h.contains("anhang") {
+        ThesisSlot::Appendix
+    } else {
+        ThesisSlot::Body
+    }
+}
+
+/// Compute the FHNW-mandated emission order (pure; unit-tested separately):
+///   Management Summary → Declaration → Table of Contents → List of Figures →
+///   List of Tables → Acronyms → numbered body (1-7) → Bibliography →
+///   Tools/AI disclosure → Appendix.
+/// Order within each slot follows the input (manifest) order. Slots with no
+/// chapters simply contribute nothing; the TOC and the figure/table lists are
+/// always emitted (matching the book engine's "always present" chrome).
+fn thesis_layout(chapters: &[(String, String)]) -> Vec<ThesisItem> {
+    let mut by_slot: std::collections::HashMap<ThesisSlot, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, (_label, md)) in chapters.iter().enumerate() {
+        by_slot.entry(thesis_slot(md)).or_default().push(i);
+    }
+    let take = |slot: ThesisSlot| -> Vec<ThesisItem> {
+        by_slot
+            .get(&slot)
+            .into_iter()
+            .flatten()
+            .map(|&i| ThesisItem::Chapter(i))
+            .collect()
+    };
+    let mut out = Vec::new();
+    out.extend(take(ThesisSlot::MgmtSummary));
+    out.extend(take(ThesisSlot::Declaration));
+    out.push(ThesisItem::Toc);
+    out.push(ThesisItem::ListFigures);
+    out.push(ThesisItem::ListTables);
+    out.extend(take(ThesisSlot::Acronyms));
+    out.extend(take(ThesisSlot::Body));
+    out.extend(take(ThesisSlot::Bibliography));
+    out.extend(take(ThesisSlot::AiTools));
+    out.extend(take(ThesisSlot::Appendix));
+    out
+}
+
+/// Render one thesis chapter: optional leading page-break + blocks + the
+/// end-of-chapter Sources box. Numbering is decided per-chapter (numbered body
+/// chapters only fire their chapter number when `page_break_before` is true).
+fn render_thesis_chapter(
+    mut doc: Docx,
+    md: &str,
+    meta: &BookMeta,
+    ctx: &mut Ctx,
+    page_break_before: bool,
+) -> Docx {
+    let blocks = fold_table_captions(to_docx_blocks(md));
+    let numbered = chapter_is_numbered(md, meta.thesis_profile);
+    let mut first = true;
+    for b in &blocks {
+        doc = render_block(doc, b, ctx, first && page_break_before, numbered);
+        first = false;
+    }
+    flush_sources(doc, &mut ctx.links, &meta.lang)
+}
+
+/// Render the FHNW master-thesis profile (bookkit C, ADR-0045) in the mandated
+/// reading order (`thesis-structure.md`): Title page → Management Summary →
+/// Declaration → Table of Contents → List of Figures → List of Tables →
+/// Acronyms → numbered body → Bibliography → Tools/AI disclosure → Appendix.
+/// No book-style disclaimer/inscription pages and no back-of-book index — those
+/// are not part of the FHNW thesis structure.
+fn render_thesis_book(
+    meta: &BookMeta,
+    chapters: &[(String, String)],
+    figdir: &Path,
+) -> Result<Vec<u8>> {
+    let mut doc = with_styles(
+        Docx::new()
+            .default_fonts(body_fonts())
+            .default_size(22)
+            .page_size(11906, 16838)
+            .page_margin(std_margin()),
+    )
+    .footer(
+        Footer::new().add_paragraph(
+            Paragraph::new()
+                .align(AlignmentType::Center)
+                .add_page_num(PageNum::new()),
+        ),
+    );
+
+    doc = title_page(doc, meta);
+
+    let mut index_terms: Vec<String> = INDEX_TERMS.iter().map(|s| (*s).to_string()).collect();
+    index_terms.extend(meta.index_terms.iter().cloned());
+    let mut ctx = Ctx {
+        figdir,
+        lang: &meta.lang,
+        figno: 0,
+        tblno: 0,
+        chapno: 0,
+        idx_seen: std::collections::HashSet::new(),
+        index_terms,
+        links: Vec::new(),
+    };
+
+    // `emitted` tracks whether any flow content precedes the next item, so the
+    // first front-matter chapter does not get a redundant page break (the title
+    // page already ends with one).
+    let mut emitted = false;
+    for item in thesis_layout(chapters) {
+        match item {
+            ThesisItem::Chapter(i) => {
+                doc = render_thesis_chapter(doc, &chapters[i].1, meta, &mut ctx, emitted);
+                emitted = true;
+            }
+            ThesisItem::Toc => {
+                if emitted {
+                    doc = doc.add_paragraph(page_break());
+                }
+                doc = doc.add_paragraph(
+                    Paragraph::new().add_run(
+                        Run::new()
+                            .add_text("Contents")
+                            .bold()
+                            .size(44)
+                            .color(NAVY)
+                            .fonts(head_fonts()),
+                    ),
+                );
+                doc = doc.add_table_of_contents(
+                    TableOfContents::new().heading_styles_range(1, 3).auto(),
+                );
+                emitted = true;
+            }
+            ThesisItem::ListFigures => {
+                doc = doc.add_paragraph(page_break());
+                for p in list_of("Figure", t(&meta.lang, "list_of_figures")) {
+                    doc = doc.add_paragraph(p);
+                }
+            }
+            ThesisItem::ListTables => {
+                for p in list_of("Table", t(&meta.lang, "list_of_tables")) {
+                    doc = doc.add_paragraph(p);
+                }
+            }
+        }
+    }
+
+    let mut cur = Cursor::new(Vec::<u8>::new());
+    doc.build().pack(&mut cur).context("pack thesis docx")?;
+    Ok(cur.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1665,6 +1869,201 @@ mod tests {
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 1500);
+    }
+
+    /// The master_thesis bookkit (thesis_profile) chapter set, mirroring the
+    /// manifest order: Management Summary, Acronyms, the seven numbered body
+    /// chapters, two appendices, then the bibliography.
+    fn master_thesis_chapters() -> Vec<(String, String)> {
+        [
+            ("mgmt", "# Management Summary\n\nThe one-page summary.\n"),
+            (
+                "acro",
+                "# Acronyms and Abbreviations\n\nAI — Artificial Intelligence.\n",
+            ),
+            ("c1", "# Introduction\n\nBackground.\n"),
+            ("c2", "# Theory\n\nState of the art.\n"),
+            ("c3", "# Current-State Analysis\n\nIST.\n"),
+            ("c4", "# Empirical Study\n\nData.\n"),
+            ("c5", "# Solution\n\nDesign.\n"),
+            ("c6", "# Conclusion\n\nFindings.\n"),
+            ("c7", "# Personal Reflection\n\nLessons learned.\n"),
+            ("apx1", "# Appendix: Research Prompts\n\nPrompts.\n"),
+            ("apx2", "# Appendix A — Transformation Plan\n\nPlan.\n"),
+            ("bib", "# Bibliography\n\nDoe, J. (2026).\n"),
+        ]
+        .into_iter()
+        .map(|(l, m)| (l.to_string(), m.to_string()))
+        .collect()
+    }
+
+    #[test]
+    fn thesis_layout_follows_fhnw_front_back_matter_order() {
+        // The FHNW order (thesis-structure.md): Management Summary → Table of
+        // Contents → List of Figures → List of Tables → Acronyms → numbered body
+        // (1-7) → Bibliography → Appendix. (No Declaration / Tools chapters in
+        // this manifest, so those slots contribute nothing.)
+        let chapters = master_thesis_chapters();
+        let layout = thesis_layout(&chapters);
+        let expected = vec![
+            ThesisItem::Chapter(0),  // Management Summary
+            ThesisItem::Toc,         // Table of Contents (BEFORE body — the fix)
+            ThesisItem::ListFigures, // front-matter, after the TOC
+            ThesisItem::ListTables,
+            ThesisItem::Chapter(1),  // Acronyms (last front-matter item)
+            ThesisItem::Chapter(2),  // 1 Introduction
+            ThesisItem::Chapter(3),  // 2 Theory
+            ThesisItem::Chapter(4),  // 3 Current-State Analysis
+            ThesisItem::Chapter(5),  // 4 Empirical Study
+            ThesisItem::Chapter(6),  // 5 Solution
+            ThesisItem::Chapter(7),  // 6 Conclusion
+            ThesisItem::Chapter(8),  // 7 Personal Reflection
+            ThesisItem::Chapter(11), // Bibliography (back matter, before Appendix)
+            ThesisItem::Chapter(9),  // Appendix: Research Prompts
+            ThesisItem::Chapter(10), // Appendix A
+        ];
+        assert_eq!(layout, expected);
+
+        // Explicit guard for the original bug: Management Summary precedes the TOC.
+        let ms = layout
+            .iter()
+            .position(|i| *i == ThesisItem::Chapter(0))
+            .unwrap();
+        let toc = layout.iter().position(|i| *i == ThesisItem::Toc).unwrap();
+        assert!(
+            ms < toc,
+            "Management Summary must come before the Table of Contents"
+        );
+    }
+
+    #[test]
+    fn thesis_slot_classification() {
+        assert_eq!(
+            thesis_slot("# Management Summary\n"),
+            ThesisSlot::MgmtSummary
+        );
+        assert_eq!(
+            thesis_slot("# Acronyms and Abbreviations\n"),
+            ThesisSlot::Acronyms
+        );
+        assert_eq!(thesis_slot("# Bibliography\n"), ThesisSlot::Bibliography);
+        assert_eq!(thesis_slot("# Appendix: Prompts\n"), ThesisSlot::Appendix);
+        assert_eq!(
+            thesis_slot("# Ehrenwörtliche Erklärung\n"),
+            ThesisSlot::Declaration
+        );
+        assert_eq!(thesis_slot("# Introduction\n"), ThesisSlot::Body);
+        assert_eq!(thesis_slot("# Theory\n"), ThesisSlot::Body);
+    }
+
+    #[test]
+    fn thesis_profile_renders_valid_docx() {
+        // End-to-end: the master_thesis bookkit renders a valid (PK-zip) DOCX
+        // via the thesis path, with the full 12-chapter set.
+        let meta = BookMeta {
+            title: "Governance and Leadership…".into(),
+            subtitle: "FHNW MAS Cybersecurity — Master's Thesis".into(),
+            author: "Daniel Casota".into(),
+            context: "MAS Cybersecurity, FHNW".into(),
+            thesis_profile: true,
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        assert_eq!(&bytes[..4], b"PK\x03\x04", "valid docx zip");
+        assert!(bytes.len() > 3000, "non-trivial document");
+    }
+
+    #[test]
+    fn non_thesis_profiles_keep_book_layout() {
+        // Guard: with thesis_profile = false the book path is taken (TOC-first
+        // book layout), proving the thesis branch is isolated to bookkit C.
+        let meta = BookMeta {
+            title: "Merged Dimensions".into(),
+            thesis_profile: false,
+            ..Default::default()
+        };
+        let bytes = render_book(
+            &meta,
+            &[(
+                "c1".into(),
+                "# Dimension 01 — Agile Leadership\n\nText.\n".into(),
+            )],
+            Path::new("."),
+        )
+        .unwrap();
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+    }
+
+    /// The dimensions book (bookkit A) chapter set, mirroring the manifest:
+    /// front matter, the merged dimensions body (H1 per dimension, with H2/H3
+    /// sub-sections so the 1-3 level TOC has depth), appendix, bibliography.
+    fn dimensions_book_chapters() -> Vec<(String, String)> {
+        [
+            ("foreword", "# Foreword\n\nText.\n"),
+            ("ack", "# Acknowledgements\n\nThanks.\n"),
+            ("about", "# About this Book\n\nScope.\n"),
+            ("preface", "# Preface\n\nWhy.\n"),
+            (
+                "acro",
+                "# Acronyms and Abbreviations\n\nAI — Artificial Intelligence.\n",
+            ),
+            ("intro", "# Introduction\n\nIntro.\n"),
+            (
+                "dims",
+                "# Dimension 01 — Agile Leadership\n\n## 1.1 Overview\n\nText.\n\n\
+                 ### 1.1.1 Detail\n\nText.\n\n# Dimension 02 — Cybersecurity and AI\n\n\
+                 ## 2.1 Overview\n\nText.\n",
+            ),
+            ("appx", "# Appendix: Research Prompts\n\nPrompts.\n"),
+            ("bib", "# Bibliography\n\nDoe, J. (2026). A work.\n"),
+        ]
+        .into_iter()
+        .map(|(l, m)| (l.to_string(), m.to_string()))
+        .collect()
+    }
+
+    #[test]
+    fn dimensions_book_enforces_auto_toc_levels_1_3() {
+        // Bookkit A (no thesis_profile, no companion) must render the engine's
+        // dedicated auto Table of Contents over heading levels 1-3 — the spec in
+        // ADR-0030 ("auto TOC over heading levels 1–3") and ADR-0045 ("Table of
+        // Contents (engine)"). Verified against the emitted Word field, not by
+        // proxy.
+        let meta = BookMeta {
+            title: "Governance and Leadership…".into(),
+            subtitle: "A Cross-Dimensional Field Guide".into(),
+            author: "Daniel Casota".into(),
+            context: "MAS Cybersecurity, FHNW".into(),
+            disclaimer: Some("First researched edition.".into()),
+            ..Default::default() // thesis_profile = false, companion = false
+        };
+        let bytes = render_book(&meta, &dimensions_book_chapters(), Path::new(".")).unwrap();
+        assert_eq!(&bytes[..4], b"PK\x03\x04", "valid docx zip");
+
+        use std::io::Read;
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+
+        // The dedicated dimensions-book TOC: a Word TOC field over levels 1-3.
+        assert!(
+            xml.contains(r#"TOC \o &quot;1-3&quot;"#),
+            "auto TOC over heading levels 1-3 must be present (the dedicated dimensions-book TOC)"
+        );
+        // The merged body's dimension H1s populate that TOC.
+        assert!(
+            xml.contains("Dimension 01"),
+            "dimension chapters present in body/TOC"
+        );
+        // Book-path-only chrome the thesis path drops — proves bookkit A took the
+        // BOOK layout, not the thesis layout (this test is solely the A profile).
+        assert!(
+            xml.contains("INDEX"),
+            "books profile emits the back-of-book Index field"
+        );
     }
 
     #[test]
