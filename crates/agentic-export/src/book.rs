@@ -2066,6 +2066,78 @@ mod tests {
         );
     }
 
+    /// A campaign book (bookkit A) chapter set, mirroring the manifest: a
+    /// campaign overview chapter followed by per-project/tool (PT-Cxx-n)
+    /// sub-chapters, with H2/H3 sub-sections so the 1-3 level TOC has depth.
+    fn campaign_book_chapters() -> Vec<(String, String)> {
+        [
+            (
+                "overview",
+                "# Campaign 01: Autonomous CVE Self-Patch\n\n## 0 At a glance\n\nMap.\n\n\
+                 ## 1 Executive summary\n\nText.\n\n### 1.1 Value\n\nText.\n",
+            ),
+            (
+                "pt1",
+                "# P1 — Self-scout CVE feed integration\n\n## Owner\n\nTeam.\n\n## Effort\n\nM.\n",
+            ),
+            (
+                "pt2",
+                "# P2 — Backporting agent consensus\n\n## Owner\n\nTeam.\n\n## HITL\n\nGate.\n",
+            ),
+        ]
+        .into_iter()
+        .map(|(l, m)| (l.to_string(), m.to_string()))
+        .collect()
+    }
+
+    #[test]
+    fn campaign_book_enforces_auto_toc_levels_1_3() {
+        // A campaign book is bookkit A (no thesis_profile, no companion): it must
+        // render the engine's dedicated auto Table of Contents over heading
+        // levels 1-3 (ADR-0030 / ADR-0045 "Table of Contents (engine)"). Verified
+        // against the emitted Word field, not by proxy. Solely the campaign
+        // bookkit (campaign overview + per-project/tool sub-chapters).
+        let meta = BookMeta {
+            title: "Campaign 01 — CVE Self-Patch".into(),
+            subtitle: "Broadcom + partner SDD campaign".into(),
+            author: "Daniel Casota".into(),
+            context: "MAS Cybersecurity, FHNW".into(),
+            disclaimer: Some("First researched edition.".into()),
+            ..Default::default() // thesis_profile = false, companion = false
+        };
+        let bytes = render_book(&meta, &campaign_book_chapters(), Path::new(".")).unwrap();
+        assert_eq!(&bytes[..4], b"PK\x03\x04", "valid docx zip");
+
+        use std::io::Read;
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+
+        // The dedicated campaign-book TOC: a Word TOC field over levels 1-3.
+        assert!(
+            xml.contains(r#"TOC \o &quot;1-3&quot;"#),
+            "auto TOC over heading levels 1-3 must be present (the dedicated campaign-book TOC)"
+        );
+        // The campaign overview + per-project chapters populate that TOC.
+        assert!(
+            xml.contains("Campaign 01"),
+            "campaign overview present in body/TOC"
+        );
+        assert!(
+            xml.contains("Self-scout CVE feed"),
+            "per-project/tool sub-chapters present"
+        );
+        // Book-path-only chrome the thesis path drops — proves the campaign book
+        // took the BOOK layout, not the thesis layout (solely the A profile).
+        assert!(
+            xml.contains("INDEX"),
+            "books profile emits the back-of-book Index field"
+        );
+    }
+
     #[test]
     fn thesis_profile_numbers_body_chapters() {
         // Book profile: Introduction is unnumbered front-matter.
