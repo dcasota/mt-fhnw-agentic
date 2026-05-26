@@ -45,6 +45,10 @@ struct BookSpec {
     /// keep only true front/back-matter unnumbered.
     #[serde(default)]
     thesis_profile: bool,
+    /// Companion-paper profile (ADR-0045, bookkit B): skip the book chrome
+    /// (title page / disclaimer / inscription); plain title + contents only.
+    #[serde(default)]
+    companion: bool,
     #[serde(default)]
     index_terms: Vec<String>,
     /// Optional per-book chrome language (en|de|fr|it|rm|hi). Overrides the
@@ -203,6 +207,7 @@ fn build_one(
         disclaimer: spec.disclaimer.clone(),
         imprint: spec.imprint.clone(),
         thesis_profile: spec.thesis_profile,
+        companion: spec.companion,
         index_terms: spec.index_terms.clone(),
         // Chrome language: per-book `lang` wins; else the global `--lang`; else
         // "en". The i18n layer normalises/falls back, but resolve a non-empty

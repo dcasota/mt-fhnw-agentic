@@ -120,6 +120,10 @@ pub struct BookMeta {
     /// …) stays unnumbered — the opposite of the book profile, where
     /// "Introduction" is unnumbered front-matter.
     pub thesis_profile: bool,
+    /// Companion-paper profile (ADR-0045, bookkit B). When true the document is
+    /// NOT transformed into a book: the elaborate title page, edition/disclaimer
+    /// and inscription pages are skipped in favour of a plain title + contents.
+    pub companion: bool,
     /// Extra index terms beyond the built-in set (e.g. dimension-specific).
     pub index_terms: Vec<String>,
     /// Chrome language tag (en|de|fr|it|rm|hi). Empty or unknown → English.
@@ -1499,9 +1503,35 @@ pub fn render_book(
         ),
     );
 
-    doc = title_page(doc, meta);
-    doc = disclaimer_page(doc, meta);
-    doc = inscription_page(doc, meta);
+    if meta.companion {
+        // Companion paper (bookkit B): a plain title, no book chrome.
+        doc = doc.add_paragraph(
+            Paragraph::new().align(AlignmentType::Center).add_run(
+                Run::new()
+                    .add_text(&meta.title)
+                    .bold()
+                    .size(48)
+                    .color(NAVY)
+                    .fonts(head_fonts()),
+            ),
+        );
+        if !meta.subtitle.is_empty() {
+            doc = doc.add_paragraph(
+                Paragraph::new().align(AlignmentType::Center).add_run(
+                    Run::new()
+                        .add_text(&meta.subtitle)
+                        .size(26)
+                        .color(GREY)
+                        .fonts(head_fonts()),
+                ),
+            );
+        }
+        doc = doc.add_paragraph(page_break());
+    } else {
+        doc = title_page(doc, meta);
+        doc = disclaimer_page(doc, meta);
+        doc = inscription_page(doc, meta);
+    }
     doc = doc.add_paragraph(
         Paragraph::new().add_run(
             Run::new()
@@ -1619,6 +1649,22 @@ mod tests {
             "# Dimension 06 — Quantum Computing\n\nText.\n",
             false
         ));
+    }
+
+    #[test]
+    fn companion_renders_without_book_chrome() {
+        // Companion profile still produces a valid docx (plain title, no
+        // title/disclaimer/inscription pages).
+        let meta = BookMeta {
+            title: "Student Notes".into(),
+            disclaimer: Some("should be skipped in companion mode".into()),
+            companion: true,
+            ..Default::default()
+        };
+        let md = "# Overview\n\nSome synthesis text.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+        assert!(bytes.len() > 1500);
     }
 
     #[test]
