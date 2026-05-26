@@ -25,6 +25,7 @@ mod orchestrate;
 mod passport;
 mod prisma;
 mod project;
+mod promote;
 mod provider;
 mod risk;
 mod verify;
@@ -41,6 +42,11 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Journal { action } => journal::run(&args.db, action, args.json),
         Command::Content { action } => content::run(&args.db, action, args.json),
         Command::Authorize { action } => authorize::run(&args.db, action, args.json),
+        Command::Promote {
+            project,
+            issue,
+            snapshot,
+        } => promote::run(&args.db, &project, &issue, snapshot.as_deref(), args.json),
         Command::Audit { action } => audit::run(&args.db, action, args.json),
         Command::Inbox { action } => inbox::run(&args.db, action, args.json),
         Command::Normalize { project, prefix } => {

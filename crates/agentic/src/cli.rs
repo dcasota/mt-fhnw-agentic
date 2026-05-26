@@ -69,6 +69,21 @@ pub enum Command {
         action: AuthorizeAction,
     },
 
+    /// SDD-Cycle promotion gate (ADR-0047 R6/R8): evaluate the latest gate
+    /// verdicts; BLOCK on any FAIL, else record the promotion (a
+    /// `submission_freeze` verdict) and issue authorisations for held actions.
+    Promote {
+        #[arg(long)]
+        project: String,
+        /// Irreversible action(s) to authorise on a clean promotion (repeatable),
+        /// e.g. --issue publish --issue translate.
+        #[arg(long = "issue")]
+        issue: Vec<String>,
+        /// Optional snapshot path to record as the promoted/citable deliverable.
+        #[arg(long)]
+        snapshot: Option<String>,
+    },
+
     /// Integrity checkers (self / writing-quality / citations / contamination / ...).
     Check {
         #[command(subcommand)]
