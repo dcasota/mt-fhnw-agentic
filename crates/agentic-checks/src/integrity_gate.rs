@@ -143,7 +143,7 @@ pub fn frame_lock_repeats(text: &str) -> Vec<(String, usize)> {
 pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
     let mut findings = Vec::new();
     let mut files = 0usize;
-    for (path, sha) in worktree::list(conn, project, "out/sources/")? {
+    for (path, sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !path.ends_with(".md") {
             continue;
         }

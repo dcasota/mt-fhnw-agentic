@@ -19,6 +19,7 @@ pub mod inbox;
 pub mod journal;
 pub mod orchestrate;
 pub mod passport;
+pub mod paths;
 pub mod profiles;
 pub mod project;
 pub mod signing;

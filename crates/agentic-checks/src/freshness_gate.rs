@@ -93,7 +93,7 @@ pub fn run(
 ) -> Result<CheckReport> {
     let mut findings = Vec::new();
     let mut total = 0usize;
-    for (path, _sha) in worktree::list(conn, project, "out/sources/")? {
+    for (path, _sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !path.ends_with(".md") {
             continue;
         }

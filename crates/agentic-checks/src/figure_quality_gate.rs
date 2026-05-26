@@ -106,7 +106,7 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
     let mut findings = Vec::new();
     let mut imgs = 0usize;
     let mut caps = 0usize;
-    for (path, sha) in worktree::list(conn, project, "out/sources/")? {
+    for (path, sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !path.ends_with(".md") {
             continue;
         }

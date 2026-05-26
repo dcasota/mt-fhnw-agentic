@@ -62,7 +62,7 @@ pub fn scan(text: &str) -> (bool, Vec<&'static str>) {
 pub fn run(conn: &Connection, project: &str, venue: Option<&str>) -> Result<CheckReport> {
     let mut findings = Vec::new();
     let mut corpus = String::new();
-    for (path, sha) in worktree::list(conn, project, "out/sources/")? {
+    for (path, sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !path.ends_with(".md") {
             continue;
         }

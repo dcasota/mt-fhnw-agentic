@@ -20,7 +20,7 @@ use crate::{CheckReport, Finding, Severity};
 
 pub const FNR_MAX: f64 = 0.15;
 pub const FPR_MAX: f64 = 0.10;
-const GOLD_PATH: &str = "out/calibration_gold.json";
+const GOLD_PATH: &str = agentic_core::paths::CALIBRATION_GOLD;
 
 /// `(fnr, fpr, balanced_accuracy)` from confusion counts.
 #[must_use]

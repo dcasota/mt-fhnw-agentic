@@ -208,7 +208,7 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
     // PRISMA-trAIce-17 + RAISE coverage over the AI-disclosure material (ADR-0044).
     // Only scored when a disclosure context exists; otherwise advisory INFO.
     let mut disclosure = String::new();
-    for (path, sha) in worktree::list(conn, project, "out/sources/")? {
+    for (path, sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !path.ends_with(".md") {
             continue;
         }

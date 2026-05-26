@@ -106,7 +106,7 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
 
     // ADR-0044 pass 2: leakage `[MATERIAL GAP]` markers in deliverables.
     let mut gaps = 0usize;
-    for (path, sha) in worktree::list(conn, project, "out/sources/")? {
+    for (path, sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !path.ends_with(".md") {
             continue;
         }

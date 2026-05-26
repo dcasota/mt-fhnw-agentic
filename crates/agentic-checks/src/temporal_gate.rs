@@ -167,7 +167,7 @@ pub fn run(conn: &Connection, project: &str, max_year: u32) -> Result<CheckRepor
     let mut total = 0usize;
 
     // 1. Deliverable markdown under out/sources/.
-    for (path, _sha) in worktree::list(conn, project, "out/sources/")? {
+    for (path, _sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !is_markdown(&path) {
             continue;
         }

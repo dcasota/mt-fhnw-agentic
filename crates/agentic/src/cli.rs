@@ -245,7 +245,7 @@ pub enum Command {
     Normalize {
         #[arg(long)]
         project: String,
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
     },
 
@@ -304,7 +304,7 @@ pub enum CascadeAction {
         #[arg(long)]
         project: String,
         /// Book manifest consumed by the build step.
-        #[arg(long, default_value = "out/book_manifest.json")]
+        #[arg(long, default_value = agentic_core::paths::MANIFEST_PATH)]
         manifest: PathBuf,
         /// Output directory for the rendered .docx books. If omitted, the
         /// cascade renders into an immutable timestamped snapshot
@@ -355,10 +355,10 @@ pub enum MergeAction {
         #[arg(long)]
         project: String,
         /// Working-tree prefix the dimension sources live under.
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
         /// Destination path in the content store for the merged document.
-        #[arg(long, default_value = "out/sources/Dimensions_merged_EN.md")]
+        #[arg(long, default_value = agentic_core::paths::MERGED_DOC)]
         out: String,
     },
 }
@@ -781,7 +781,7 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
         /// Restrict to a path prefix (e.g. "out/sources/").
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
     },
     /// Mission-control documentation currency gate (CLAUDE.md rule 9): the
@@ -799,7 +799,7 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
         /// Restrict the orphan-URL scan to a path prefix.
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
     },
     /// AIBOM chronological-ledger integrity (Phase 2): every commit signed, the
@@ -833,7 +833,7 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
         /// Restrict the audit to a path prefix.
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
     },
     /// PRISMA claim→source coverage (ADR-0020/0026): every in-text citation key
@@ -843,7 +843,7 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
         /// Restrict the scan to a path prefix.
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
     },
     /// Cross-model attestation coverage (ADR-0028): external_stat / measured
@@ -1019,7 +1019,7 @@ pub enum FactsAction {
     Scan {
         #[arg(long)]
         project: String,
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
     },
     /// Collapse duplicate `needs_verification` placeholders that share the same
@@ -1041,7 +1041,7 @@ pub enum PrismaAction {
     Build {
         #[arg(long)]
         project: String,
-        #[arg(long, default_value = "out/sources/")]
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
     },
 }

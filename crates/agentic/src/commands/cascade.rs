@@ -529,10 +529,11 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
     let conn = agentic_core::db::open(db_path)?;
 
     // Discover the dimension sources (content store is the source of truth).
-    let mut dim_paths: Vec<(u32, String)> = worktree::list(&conn, &opts.project, "out/sources/")?
-        .into_iter()
-        .filter_map(|(path, _sha)| dimension_index(&path).map(|n| (n, path)))
-        .collect();
+    let mut dim_paths: Vec<(u32, String)> =
+        worktree::list(&conn, &opts.project, agentic_core::paths::SOURCES_PREFIX)?
+            .into_iter()
+            .filter_map(|(path, _sha)| dimension_index(&path).map(|n| (n, path)))
+            .collect();
     dim_paths.sort_by_key(|(n, _)| *n);
     let dim_paths: Vec<String> = dim_paths.into_iter().map(|(_, p)| p).collect();
 
