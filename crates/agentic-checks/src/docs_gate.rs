@@ -24,7 +24,27 @@ pub const DOCS: &[&str] = &[
     "TEMPLATE.md",
 ];
 
+/// Secondary governance representations (ADR-0047 R10): the canonical cascade
+/// schema and the cross-tool mission-control agent-defs. A missing one — or one
+/// that no longer references the SDD-chain canonical model — is representation
+/// drift (advisory: these are derived/secondary, not the 6 core docs).
+pub const REPRESENTATIONS: &[&str] = &[
+    "CASCADE_PIPELINE.md",
+    ".claude/agents/mission-control.md",
+    ".factory/droids/mission-control.md",
+];
+
 static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap());
+
+/// Does any `specs/adr/0047*` canonical-contract ADR exist under `root`?
+fn canonical_adr_present(root: &Path) -> bool {
+    std::fs::read_dir(root.join("specs/adr"))
+        .map(|rd| {
+            rd.filter_map(std::result::Result::ok)
+                .any(|e| e.file_name().to_string_lossy().starts_with("0047"))
+        })
+        .unwrap_or(false)
+}
 
 fn finding(cat: &str, sev: Severity, msg: String, loc: &str) -> Finding {
     Finding {
@@ -85,5 +105,109 @@ pub fn run(conn: &Connection, project: &str, root: &Path) -> Result<CheckReport>
         }
     }
 
+    // 3. Representation drift (ADR-0047 R10): the secondary governance
+    // representations must exist and still reflect the SDD-chain canonical.
+    for r in REPRESENTATIONS {
+        let path = root.join(r);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            findings.push(finding(
+                "REPRESENTATION_MISSING",
+                Severity::Warn,
+                format!("governance representation absent: {r}"),
+                r,
+            ));
+            continue;
+        };
+        if !text.to_lowercase().contains("sdd") {
+            findings.push(finding(
+                "REPRESENTATION_DRIFT",
+                Severity::Warn,
+                format!("{r} no longer references the SDD-chain canonical model"),
+                r,
+            ));
+        }
+    }
+
+    // 4. The canonical cascade contract (ADR-0047) must exist as the source the
+    // other representations derive from / point to.
+    if !canonical_adr_present(root) {
+        findings.push(finding(
+            "CANONICAL_ABSENT",
+            Severity::Warn,
+            "no specs/adr/0047* canonical cascade-contract ADR found".to_string(),
+            "specs/adr",
+        ));
+    }
+
     Ok(CheckReport::new("docs", findings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentic_core::{
+        db::open_in_memory,
+        project::{ProjectKind, create as create_project},
+    };
+
+    fn populated_root() -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("docsgate_{}_{nanos}", std::process::id()));
+        std::fs::create_dir_all(root.join("specs/adr")).unwrap();
+        for d in DOCS {
+            std::fs::write(root.join(d), "2026-05-26 entry").unwrap();
+        }
+        for r in REPRESENTATIONS {
+            let p = root.join(r);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "references the SDD-chain canonical").unwrap();
+        }
+        std::fs::write(
+            root.join("specs/adr/0047-cascade-parameterised-family.md"),
+            "x",
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn complete_governance_set_has_no_representation_findings() {
+        let conn = open_in_memory().unwrap();
+        let pid = create_project(&conn, "T", ProjectKind::Thesis, "en", None).unwrap();
+        let root = populated_root();
+        let report = run(&conn, &pid, &root).unwrap();
+        assert!(!report.findings.iter().any(|f| {
+            matches!(
+                f.category.as_str(),
+                "REPRESENTATION_MISSING"
+                    | "REPRESENTATION_DRIFT"
+                    | "CANONICAL_ABSENT"
+                    | "DOC_MISSING"
+            )
+        }));
+        // Removing a representation surfaces drift; a non-SDD body surfaces drift.
+        std::fs::remove_file(root.join("CASCADE_PIPELINE.md")).unwrap();
+        std::fs::write(
+            root.join(".claude/agents/mission-control.md"),
+            "no canonical ref",
+        )
+        .unwrap();
+        let report = run(&conn, &pid, &root).unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.category == "REPRESENTATION_MISSING")
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.category == "REPRESENTATION_DRIFT")
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
