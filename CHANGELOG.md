@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] — 2026-05-27
+
+### Fixed — gate precision (cascade triage, reduce-only)
+
+- `deliverable` NUMBER_UNSOURCED carries a source across a multi-line
+  parenthetical and skips quoted titles; `freshness` requires a month for bare
+  `updated`/`verified` and honours `early/mid/late <year>`; `integrity` gained
+  `has_genuine_shortcut`/`has_genuine_impl_bug` (skip decomposed/tamper-evidence
+  "broken", quoted/dismissed terms, noun stub/placeholder), skips the derived
+  merged doc, and skips list/heading scaffolding in frame-lock; `figure_quality`
+  treats a descriptive alt as a label; `temporal` skips forecast-framed /
+  horizon-table / regulatory-deadline-pair future years and refines the
+  comparator check; `ground_truth` recognises measurement scripts and the RAMP
+  estimator as concrete anchors.
+
+### Fixed — DOCX / bookkit fidelity (gold `book_build` parity)
+
+- **Word refreshes fields on open**: inject `<w:updateFields>` and add `\h` to
+  the main TOC (clickable entries) + `dirty` on TOC/list fields.
+- **Table of Tables is complete**: every table is numbered (was numbered only
+  when captioned).
+- **Pagination**: table rows set `w:cantSplit`; the "Table N." caption keeps
+  with its table; a figure keeps with its caption; multi-page table headers
+  repeat (`w:tblHeader`, injected post-pack since docx-rs 0.4 has no API).
+- **True superscript** for source-ref `[n]` via `RunProperty::vert_align`.
+
 ## [0.1.5] — 2026-05-27
 
 ### Fixed — Linux release binaries
