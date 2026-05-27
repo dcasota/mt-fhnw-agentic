@@ -1359,25 +1359,30 @@ fn render_block(
             rows,
             caption,
         } => {
-            // bookkit caption-above with "Table N." SEQ numbering.
-            if let Some(cap) = caption {
-                ctx.tblno += 1;
-                let cap_style = |t: &str| {
-                    Run::new()
-                        .add_text(t.to_string())
-                        .italic()
-                        .size(18)
-                        .color(GREY)
-                        .fonts(body_fonts())
-                };
-                doc = doc.add_paragraph(
-                    Paragraph::new()
-                        .line_spacing(LineSpacing::new().before(SPACE_AROUND_TABLE).after(40))
-                        .add_run(cap_style(t(ctx.lang, "table_prefix")))
-                        .add_run(field_run("SEQ Table \\* ARABIC", &format!("{}", ctx.tblno)))
-                        .add_run(cap_style(&format!(". {cap}"))),
-                );
-            }
+            // Every table is numbered ("Table N.") so it always appears in the
+            // Table of Tables — matching figures, which always number. A caption,
+            // when present, follows the number; an untitled table is still
+            // numbered and listed.
+            ctx.tblno += 1;
+            let cap_style = |t: &str| {
+                Run::new()
+                    .add_text(t.to_string())
+                    .italic()
+                    .size(18)
+                    .color(GREY)
+                    .fonts(body_fonts())
+            };
+            let title = match caption {
+                Some(cap) => format!(". {cap}"),
+                None => String::new(),
+            };
+            doc = doc.add_paragraph(
+                Paragraph::new()
+                    .line_spacing(LineSpacing::new().before(SPACE_AROUND_TABLE).after(40))
+                    .add_run(cap_style(t(ctx.lang, "table_prefix")))
+                    .add_run(field_run("SEQ Table \\* ARABIC", &format!("{}", ctx.tblno)))
+                    .add_run(cap_style(&title)),
+            );
             if col_count(header, rows) >= LANDSCAPE_COLS {
                 // Wide table → its own A4 landscape page (ADR-0030). The empty
                 // paragraph carrying the portrait sectPr ends the portrait
@@ -1882,6 +1887,29 @@ mod tests {
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 2000);
+    }
+
+    #[test]
+    fn uncaptioned_table_is_still_numbered() {
+        use std::io::Read;
+        // A plain markdown table with no caption must still emit a SEQ Table
+        // field, so it appears in the Table of Tables (gap #1).
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n| A | B |\n|---|---|\n| 1 | 2 |\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains("SEQ Table"),
+            "an uncaptioned table must still be numbered for the Table of Tables"
+        );
     }
 
     #[test]
