@@ -38,8 +38,12 @@ static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(20\d\d)\b").unwr
 /// market projections), not the typo `future_years` is meant to catch. Without
 /// such a cue a bare future date ("the survey ran in 2031") is still flagged.
 static FORECAST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b)").unwrap()
+    Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bbetween\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bobligation\b|\bbinding\b|\bmandat\w*|\bregulat\w*|\bdirective\b|\bcompliance\b|\beffective\b|\bin force\b|\banchor\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b|\btoday\b|\bforward\b|\bpost-quantum\b|\bquantum-safe\b|\bpqc\b|\bnist\b|\bcnsa\b|\bnis2\b|\bcra\b|\bfips\b|\bcert-in\b|\bir\s*8547\b|\betsi\b|\benisa\b)").unwrap()
 });
+/// A `YYYY/YYYY` deadline pair (e.g. CNSA 2.0 "2027/2033", NIST IR 8547
+/// "2030/2035") — a regulatory milestone set, not a typo.
+static YEARPAIR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b20\d\d\s*/\s*20\d\d\b").unwrap());
 /// A URL/DOI on the line → skip (identifiers carry digit runs that aren't years).
 static URLDOI: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)https?://|doi\.org|10\.\d{4,}").unwrap());
@@ -66,6 +70,40 @@ static DEICTIC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(currently|at present|as of (?:now|today)|nowadays|these days|right now|at the moment)\b").unwrap()
 });
 
+/// A *genuine* unmaterialised comparative claim on the line, or `None`. Filters
+/// the cascade false positives: a line carrying a citation (materialised); a
+/// research question (`?` — "for QUBO to outperform …?"); `state-of-the-art` /
+/// `best-in-class` used attributively (followed by a noun — describes a
+/// category, not a benchmarked result); and hypothetical/infinitive
+/// `outperform` ("for X to outperform", "can outperform").
+#[must_use]
+pub fn genuine_comparator(ln: &str) -> Option<String> {
+    if CITE.is_match(ln) || ln.contains('?') {
+        return None;
+    }
+    for m in COMPARATOR.find_iter(ln) {
+        let w = m.as_str().to_lowercase();
+        let pre = ln[..m.start()].to_lowercase();
+        let post = ln[m.end()..].trim_start();
+        if (w.contains("state") || w.contains("best-in-class"))
+            && post.chars().next().is_some_and(char::is_alphabetic)
+        {
+            continue; // attributive adjective ("state-of-the-art LLM")
+        }
+        if w.contains("outperform")
+            && [
+                "to ", "can ", "could ", "would ", "may ", "might ", "cannot ",
+            ]
+            .iter()
+            .any(|p| pre.ends_with(p))
+        {
+            continue; // hypothetical / infinitive, not an asserted result
+        }
+        return Some(m.as_str().to_owned());
+    }
+    None
+}
+
 /// Case-insensitive `.md` extension test (avoids a locale-sensitive compare).
 fn is_markdown(path: &str) -> bool {
     std::path::Path::new(path)
@@ -89,7 +127,12 @@ pub fn future_years(text: &str, max_year: u32) -> Vec<(usize, u32)> {
         // structured roadmap data), and forecast-framed lines (intentional
         // forward references).
         let lt = ln.trim_start();
-        if in_fence || URLDOI.is_match(ln) || lt.starts_with('|') || FORECAST.is_match(ln) {
+        if in_fence
+            || URLDOI.is_match(ln)
+            || lt.starts_with('|')
+            || FORECAST.is_match(ln)
+            || YEARPAIR.is_match(ln)
+        {
             continue;
         }
         for cap in YEAR.captures_iter(ln) {
@@ -139,8 +182,7 @@ pub fn extra_passes(text: &str) -> Vec<(usize, &'static str, Severity, String)> 
             }
         }
         // Pass 4 — comparator without a materialised baseline.
-        if COMPARATOR.is_match(ln) && !CITE.is_match(ln) {
-            let m = COMPARATOR.find(ln).map_or("", |x| x.as_str());
+        if let Some(m) = genuine_comparator(ln) {
             out.push((
                 i,
                 "TEMPORAL_COMPARATOR",
@@ -270,6 +312,29 @@ mod tests {
             future_years("The user survey was conducted in 2031.\n", 2026).len(),
             1
         );
+    }
+
+    #[test]
+    fn regulatory_deadlines_and_ranges_are_intentional() {
+        assert!(future_years("NIST IR 8547 2030/2035; CNSA 2.0 2027/2033.\n", 2026).is_empty());
+        assert!(future_years("CRQC arrival between 2030 and 2035.\n", 2026).is_empty());
+        assert!(future_years("the 2027 binding obligation under the CRA.\n", 2026).is_empty());
+    }
+
+    #[test]
+    fn comparator_precision() {
+        // Attributive adjective, research question, hypothetical — not claims.
+        assert!(genuine_comparator("a state-of-the-art LLM trained to code").is_none());
+        assert!(
+            genuine_comparator("OR-Tools and Gurobi are best-in-class classical solvers").is_none()
+        );
+        assert!(
+            genuine_comparator("the minimum capability for QUBO to outperform classical SAT?")
+                .is_none()
+        );
+        // A bare predicative performance claim still flags.
+        assert!(genuine_comparator("our method is 10x faster than the baseline").is_some());
+        assert!(genuine_comparator("the system outperforms every competitor").is_some());
     }
 
     #[test]

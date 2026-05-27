@@ -56,11 +56,15 @@ static NEG_SHORTCUT: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// A predicative article just before a soft marker — the scaffolding sense
-/// ("is a stub", "just a placeholder", "the placeholder").
+/// A *predicative* frame just before a soft marker — the scaffolding sense
+/// ("is a stub", "just a placeholder", "remains the placeholder"). A bare
+/// article alone is not enough: "replace with a placeholder" is a legitimate
+/// noun, so a predicative/intensifier word (optionally + article) is required.
 static ARTICLE_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(a|an|the|this|that|just|mere|merely|only|is|was|be|been|remains?)\s+$")
-        .unwrap()
+    Regex::new(
+        r"(?i)\b(is|was|are|were|be|been|being|remains?|just|merely|mere|only|still)\s+(?:(?:a|an|the|this|that)\s+)?$",
+    )
+    .unwrap()
 });
 static IMPL_BUG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(known bug|does not work|doesn't work|is broken|currently broken|fails to (?:build|compile|run))\b").unwrap()
@@ -260,10 +264,13 @@ pub fn frame_lock_repeats(text: &str) -> Vec<(String, usize)> {
         for seg in ln.split(|c| c == '.' || c == '!' || c == '?') {
             let s = seg.trim();
             // Skip structural scaffolding, not narrative prose: markdown table
-            // rows (start `|`), headings (start `#`), and section lead-in
-            // labels (end `:`). Template-driven docs (campaign sheets, dimension
-            // chapters) legitimately repeat these across parallel sections.
-            if s.starts_with('|') || s.starts_with('#') || s.ends_with(':') {
+            // rows (start `|`), headings (start `#`), section lead-in labels
+            // (end `:`), and list items (start `-`/`*`/`+`/`N.`) — enum and
+            // definition bullets. Template-driven docs (campaign sheets,
+            // dimension chapters) legitimately repeat these across parallel
+            // sections; frame-lock targets repeated narrative prose.
+            let is_list = s.starts_with('-') || s.starts_with('*') || s.starts_with('+');
+            if s.starts_with('|') || s.starts_with('#') || s.ends_with(':') || is_list {
                 continue;
             }
             let prose_words = s
@@ -356,6 +363,7 @@ mod tests {
             "this is not a placeholder: the solver is evidence-backed", // negated
             "read \"default solver\" as \"weak placeholder we tolerate\"", // quoted
             "M2 — Detection over stub",                         // prepositional noun
+            "mask (replace with a placeholder), drop, or hash", // noun after preposition
         ] {
             assert!(
                 !has_genuine_shortcut(ln),
@@ -402,6 +410,9 @@ mod tests {
         assert!(frame_lock_repeats(&labels).is_empty());
         let headings = "## the assessment establishes campaign value here\n".repeat(4);
         assert!(frame_lock_repeats(&headings).is_empty());
+        // Enum/definition list items repeat across template facet sections.
+        let bullets = "- **future prediction** in decrease hold or increase set\n".repeat(4);
+        assert!(frame_lock_repeats(&bullets).is_empty());
     }
 
     #[test]
