@@ -33,6 +33,13 @@ use crate::{CheckReport, Finding, Severity};
 
 /// A standalone 21st-century year token (word-bounded `20\d\d`).
 static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(20\d\d)\b").unwrap());
+/// A forward-looking / forecast frame on the line. A future year inside such a
+/// frame is an intentional roadmap horizon (PQC migration, CRA/NIS2 deadlines,
+/// market projections), not the typo `future_years` is meant to catch. Without
+/// such a cue a bare future date ("the survey ran in 2031") is still flagged.
+static FORECAST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b)").unwrap()
+});
 /// A URL/DOI on the line → skip (identifiers carry digit runs that aren't years).
 static URLDOI: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)https?://|doi\.org|10\.\d{4,}").unwrap());
@@ -78,7 +85,11 @@ pub fn future_years(text: &str, max_year: u32) -> Vec<(usize, u32)> {
             in_fence = !in_fence;
             continue;
         }
-        if in_fence || URLDOI.is_match(ln) {
+        // Skip URL/DOI lines, markdown table rows (horizon/timeline tables are
+        // structured roadmap data), and forecast-framed lines (intentional
+        // forward references).
+        let lt = ln.trim_start();
+        if in_fence || URLDOI.is_match(ln) || lt.starts_with('|') || FORECAST.is_match(ln) {
             continue;
         }
         for cap in YEAR.captures_iter(ln) {
@@ -171,6 +182,12 @@ pub fn run(conn: &Connection, project: &str, max_year: u32) -> Result<CheckRepor
         if !is_markdown(&path) {
             continue;
         }
+        // The merged dimensions doc is a deterministic concatenation of the
+        // dimension sources (scanned individually); skip it so future-year and
+        // comparator findings are not double-counted.
+        if path == agentic_core::paths::MERGED_DOC {
+            continue;
+        }
         let blob = worktree::read_at(conn, project, &path)?;
         let text = String::from_utf8_lossy(&blob.content);
         for (line, year) in future_years(&text, max_year) {
@@ -238,6 +255,21 @@ mod tests {
     #[test]
     fn current_year_ok() {
         assert_eq!(future_years("Published in 2024.\n", 2026).len(), 0);
+    }
+
+    #[test]
+    fn forecast_framed_future_years_are_intentional() {
+        // Forward-looking roadmap horizons are not typos.
+        assert!(future_years("the market reaches USD 1.45 B by 2030.\n", 2026).is_empty());
+        assert!(future_years("CRA becomes enforceable in 2027.\n", 2026).is_empty());
+        assert!(future_years("ML-KEM-512 is deprecated after 2030.\n", 2026).is_empty());
+        // Horizon table rows carry roadmap years as structured data.
+        assert!(future_years("| 10-yr (→2036) | ~USD 1.5 B | Increase |\n", 2026).is_empty());
+        // A bare future date with no forecast frame is still flagged (typo guard).
+        assert_eq!(
+            future_years("The user survey was conducted in 2031.\n", 2026).len(),
+            1
+        );
     }
 
     #[test]

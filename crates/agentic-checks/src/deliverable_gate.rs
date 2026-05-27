@@ -51,12 +51,30 @@ pub fn findings_for(label: &str, text: &str) -> Vec<Finding> {
     findings_for_facts(label, text, &[])
 }
 
+/// True if byte offset `pos` in `ln` sits inside an open quotation span — i.e.
+/// an odd number of quote toggles (straight `"` or curly `“`/`”`) precede it.
+/// Numbers inside a quoted title/quote (e.g. the *"$200 million … playbook"*)
+/// are part of a name, not the author's own unsourced quantitative claim.
+fn inside_quote(ln: &str, pos: usize) -> bool {
+    ln[..pos]
+        .chars()
+        .filter(|&c| c == '"' || c == '“' || c == '”')
+        .count()
+        % 2
+        == 1
+}
+
 /// As [`findings_for`], but a number on a line matching an anchored verified-fact
 /// claim (ADR-0016/0042) is treated as already-sourced (no NUMBER_UNSOURCED).
 #[must_use]
 pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut in_fence = false;
+    // Parenthesis nesting carried across prose lines: a number inside a
+    // multi-line `(…)` aside is rescued exactly as the existing single-line
+    // `(` rule (NUMSRC) already rescues one. Reset at paragraph breaks so a
+    // stray unclosed `(` can't bleed past a blank line.
+    let mut paren_depth: i32 = 0;
     for (idx, ln) in text.lines().enumerate() {
         let i = idx + 1;
         // Fenced code/figspec blocks are literal, not prose: a ``` toggles the
@@ -70,6 +88,13 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
         if in_fence {
             continue;
         }
+        if ln.trim().is_empty() {
+            paren_depth = 0; // paragraph break closes any dangling parenthetical
+        }
+        let paren_before = paren_depth;
+        paren_depth += i32::try_from(ln.matches('(').count()).unwrap_or(0)
+            - i32::try_from(ln.matches(')').count()).unwrap_or(0);
+        paren_depth = paren_depth.max(0);
         let here = || Some(format!("{label}:{i}"));
         // ADR-0037 English-only (skip terms glossed in *…* or (…) just before).
         if let Some(m) = DE.find(ln) {
@@ -107,10 +132,14 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
                 here(),
             ));
         }
-        if NUM.is_match(ln)
-            && !NUMSRC.is_match(ln)
-            && !anchored.iter().any(|a| ln.contains(a.as_str()))
-        {
+        // A number is unsourced only if its line carries no source marker, it
+        // is not inside a multi-line parenthetical aside, it doesn't match an
+        // anchored verified fact, AND at least one of its occurrences sits
+        // outside a quoted title/quote.
+        let line_sourced = NUMSRC.is_match(ln)
+            || paren_before > 0
+            || anchored.iter().any(|a| ln.contains(a.as_str()));
+        if !line_sourced && NUM.find_iter(ln).any(|m| !inside_quote(ln, m.start())) {
             out.push(Finding {
                 category: "NUMBER_UNSOURCED".into(),
                 severity: Severity::Warn,
@@ -206,6 +235,37 @@ mod tests {
         // German term in parentheses (a gloss) is exempt.
         let fs = findings_for("x.md", "The conclusion (Schlussbetrachtung) follows.\n");
         assert!(!fs.iter().any(|f| f.category == "NON_ENGLISH_TEXT"));
+    }
+
+    #[test]
+    fn bare_unsourced_number_still_flags() {
+        // Control: an unquoted number with no source and no parenthetical
+        // must still be flagged — the precision fixes must not over-suppress.
+        let fs = findings_for("x.md", "The final disk image is 47 GB total.\n");
+        assert!(fs.iter().any(|f| f.category == "NUMBER_UNSOURCED"));
+    }
+
+    #[test]
+    fn number_in_multiline_parenthetical_is_sourced() {
+        // The citation opens a parenthetical on an earlier line; the numbers
+        // land on later lines of the same aside and must inherit the source.
+        let md = "Certificate lifetimes shorten (per CA/Browser Forum\nBallot SC-081v3: 200 days from 2026, 100 days from\n2027, and 47 days from 2029) so automation is required.\n";
+        let fs = findings_for("x.md", md);
+        assert!(
+            !fs.iter().any(|f| f.category == "NUMBER_UNSOURCED"),
+            "numbers inside a multi-line parenthetical aside should be rescued"
+        );
+    }
+
+    #[test]
+    fn number_inside_quoted_title_is_exempt() {
+        // A number that is part of a quoted proper-noun title is a name, not
+        // an unsourced quantitative claim.
+        let fs = findings_for(
+            "x.md",
+            "The \"$200 million hybrid AI-media buying playbook\" names the trend.\n",
+        );
+        assert!(!fs.iter().any(|f| f.category == "NUMBER_UNSOURCED"));
     }
 
     #[test]

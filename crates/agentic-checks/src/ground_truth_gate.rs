@@ -22,15 +22,22 @@ use crate::{CheckReport, Finding, Severity};
 const ANCHORED_KINDS: &[&str] = &["measured", "build_artifact"];
 /// A 7+ hex commit-ish run.
 static COMMITISH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[0-9a-fA-F]{7,}\b").unwrap());
-/// Literal anchor substrings (case-insensitive for the alpha tokens).
+/// Literal anchor substrings (case-insensitive for the alpha tokens). Beyond
+/// paths/URLs/DBs/docs, a named *measurement instrument* is concrete,
+/// re-runnable ground truth: a script file (`.ps1`/`.sh`/`.py`) or the RAMP
+/// estimator invocation (`risk invest`, ADR-0040 — same class as `RAMP`).
 const ANCHORS: &[&str] = &[
     "/",
     "http",
     "RAMP",
+    "risk invest",
     "packages.",
     ".db",
     ".docx",
     ".md",
+    ".ps1",
+    ".sh",
+    ".py",
     "SRPMS",
 ];
 
@@ -101,6 +108,11 @@ mod tests {
         assert!(has_anchor("https://example.org"));
         assert!(has_anchor("commit 9ecddd6abc")); // hex run
         assert!(!has_anchor("trust me it is true"));
+        // Measurement instruments are concrete, re-runnable ground truth.
+        assert!(has_anchor("photonos-package-report.ps1 package walk"));
+        assert!(has_anchor("parameterised as `agentic risk invest`")); // RAMP estimator
+        assert!(has_anchor("computed by collect.sh"));
+        assert!(has_anchor("counted via tally.py"));
     }
 
     #[test]

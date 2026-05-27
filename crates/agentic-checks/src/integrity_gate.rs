@@ -39,8 +39,28 @@ static CITE: LazyLock<Regex> = LazyLock::new(|| {
 static METHOD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bwe (?:trained|ran|conducted|evaluated|implemented and tested|deployed|benchmarked|surveyed)\b|our (?:experiment|user study|benchmark)\b").unwrap()
 });
-static SHORTCUT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(todo|fixme|xxx|placeholder|lorem ipsum|tbd|stub)\b").unwrap()
+/// Strong shortcut markers — imperative scaffolding that is essentially always
+/// a left-in artifact, regardless of context.
+static SHORTCUT_STRONG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(todo|fixme|xxx|lorem ipsum|tbd)\b").unwrap());
+/// Soft shortcut words — also legitimate engineering nouns ("parallelisation
+/// stub", "test stub", a config "placeholder value"). Only the *predicative
+/// scaffolding* sense ("is a stub", "just a placeholder", "placeholder text")
+/// is a genuine left-in marker; compound-noun and negated/quoted uses are not.
+static SHORTCUT_SOFT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(placeholder|stub)\b").unwrap());
+/// A negation just before a soft marker ("not a stub", "no placeholder").
+static NEG_SHORTCUT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(not|no|never|neither|isn't|aren't|wasn't|doesn't|don't|cannot)\b[\s\w,'-]{0,20}$",
+    )
+    .unwrap()
+});
+/// A predicative article just before a soft marker — the scaffolding sense
+/// ("is a stub", "just a placeholder", "the placeholder").
+static ARTICLE_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(a|an|the|this|that|just|mere|merely|only|is|was|be|been|remains?)\s+$")
+        .unwrap()
 });
 static IMPL_BUG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(known bug|does not work|doesn't work|is broken|currently broken|fails to (?:build|compile|run))\b").unwrap()
@@ -87,6 +107,60 @@ pub fn has_genuine_overclaim(ln: &str) -> bool {
     }
     false
 }
+
+/// Is `pre` (the text before a match) inside an open quotation or italic gloss?
+fn in_quote_or_gloss(pre: &str) -> bool {
+    pre.matches('"').count() % 2 == 1
+        || pre.matches('\u{201c}').count() > pre.matches('\u{201d}').count()
+        || pre.matches('*').count() % 2 == 1
+}
+
+/// Is there a *genuine* left-in shortcut marker on the line? Strong markers
+/// (TODO/FIXME/XXX/TBD/lorem ipsum) always count unless quoted. Soft words
+/// (placeholder/stub) count only in the predicative scaffolding sense — not as
+/// compound nouns ("parallelisation stub"), nor when negated ("not a stub") or
+/// quoted (the dismissed "weak placeholder").
+#[must_use]
+pub fn has_genuine_shortcut(ln: &str) -> bool {
+    for m in SHORTCUT_STRONG.find_iter(ln) {
+        if !in_quote_or_gloss(&ln[..m.start()]) {
+            return true;
+        }
+    }
+    for m in SHORTCUT_SOFT.find_iter(ln) {
+        let pre = &ln[..m.start()];
+        if in_quote_or_gloss(pre) || NEG_SHORTCUT.is_match(pre) {
+            continue;
+        }
+        let post = ln[m.end()..].trim_start().to_lowercase();
+        if ARTICLE_BEFORE.is_match(pre) || post.starts_with("text") {
+            return true; // "is a stub" / "just a placeholder" / "placeholder text"
+        }
+    }
+    false
+}
+
+/// Is there a *genuine* implementation-defect admission on the line? Filters the
+/// benign uses surfaced in triage: quoted ("RSA is broken" headline being
+/// dismissed), "broken into" (decomposed), and "broken by X" (a tamper-evidence
+/// design property, e.g. a hash chain broken by any edit).
+#[must_use]
+pub fn has_genuine_impl_bug(ln: &str) -> bool {
+    for m in IMPL_BUG.find_iter(ln) {
+        let pre = &ln[..m.start()];
+        if in_quote_or_gloss(pre) {
+            continue;
+        }
+        if m.as_str().to_lowercase().contains("broken") {
+            let post = ln[m.end()..].trim_start().to_lowercase();
+            if post.starts_with("into") || post.starts_with("by ") || post.starts_with("by,") {
+                continue;
+            }
+        }
+        return true;
+    }
+    false
+}
 static NEEDS_VERIFY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)NEEDS-VERIFICATION").unwrap());
 /// A sentence worth tracking for frame-lock: ≥6 words.
@@ -128,7 +202,7 @@ pub fn line_findings(text: &str, path: &str) -> Vec<Finding> {
             push(&mut out, "INTEGRITY_METHOD_FABRICATION", Severity::Info,
                 "empirical-work claim — confirm the work was actually performed and is reproducible".into());
         }
-        if SHORTCUT.is_match(ln) {
+        if has_genuine_shortcut(ln) {
             push(
                 &mut out,
                 "INTEGRITY_SHORTCUT",
@@ -136,7 +210,7 @@ pub fn line_findings(text: &str, path: &str) -> Vec<Finding> {
                 "left-in shortcut marker (TODO/FIXME/placeholder/stub) in a deliverable".into(),
             );
         }
-        if IMPL_BUG.is_match(ln) {
+        if has_genuine_impl_bug(ln) {
             push(
                 &mut out,
                 "INTEGRITY_IMPL_BUG",
@@ -185,8 +259,11 @@ pub fn frame_lock_repeats(text: &str) -> Vec<(String, usize)> {
         }
         for seg in ln.split(|c| c == '.' || c == '!' || c == '?') {
             let s = seg.trim();
-            // Skip markdown table rows (separators + data rows) — structural.
-            if s.starts_with('|') {
+            // Skip structural scaffolding, not narrative prose: markdown table
+            // rows (start `|`), headings (start `#`), and section lead-in
+            // labels (end `:`). Template-driven docs (campaign sheets, dimension
+            // chapters) legitimately repeat these across parallel sections.
+            if s.starts_with('|') || s.starts_with('#') || s.ends_with(':') {
                 continue;
             }
             let prose_words = s
@@ -208,6 +285,13 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
     let mut files = 0usize;
     for (path, sha) in worktree::list(conn, project, agentic_core::paths::SOURCES_PREFIX)? {
         if !path.ends_with(".md") {
+            continue;
+        }
+        // The merged dimensions doc is a deterministic concatenation of the 11
+        // dimension sources (scanned individually below); auditing it too would
+        // double-count every finding and stack per-chapter boilerplate to ~11×
+        // verbatim (spurious FRAME_LOCK). Skip the derived artifact.
+        if path == agentic_core::paths::MERGED_DOC {
             continue;
         }
         files += 1;
@@ -264,9 +348,60 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_soft_word_noun_uses_not_flagged() {
+        // "stub"/"placeholder" as engineering nouns or negated/quoted — benign.
+        for ln in [
+            "the parallelisation stub feeds the trace harness", // compound noun
+            "validated against a PT-C02-2 stub; the cap is checked", // named test stub
+            "this is not a placeholder: the solver is evidence-backed", // negated
+            "read \"default solver\" as \"weak placeholder we tolerate\"", // quoted
+            "M2 — Detection over stub",                         // prepositional noun
+        ] {
+            assert!(
+                !has_genuine_shortcut(ln),
+                "benign soft-marker use should not flag: {ln}"
+            );
+        }
+        // Genuine scaffolding senses still flag.
+        assert!(has_genuine_shortcut("this section is just a placeholder"));
+        assert!(has_genuine_shortcut(
+            "Placeholder text to be filled in later"
+        ));
+        assert!(has_genuine_shortcut("FIXME: revisit the threshold"));
+    }
+
+    #[test]
+    fn impl_bug_benign_broken_senses_not_flagged() {
+        for ln in [
+            "A monolithic workflow is broken into Work Units", // decomposed
+            "the hash chain is broken by any edit and re-checked", // tamper-evidence
+            "dismiss the sensational \"RSA is broken\" headline", // quoted/dismissed
+        ] {
+            assert!(
+                !has_genuine_impl_bug(ln),
+                "benign 'broken' sense should not flag: {ln}"
+            );
+        }
+        // Genuine defect admissions still flag.
+        assert!(has_genuine_impl_bug("the build is currently broken"));
+        assert!(has_genuine_impl_bug("this feature does not work yet"));
+        assert!(has_genuine_impl_bug("the binary fails to compile on arm"));
+    }
+
+    #[test]
     fn frame_lock_counts_repeats() {
         let t = "the quick brown fox jumps high. ".repeat(3);
         assert!(!frame_lock_repeats(&t).is_empty());
+    }
+
+    #[test]
+    fn frame_lock_skips_structural_labels() {
+        // Section lead-in labels and headings repeat by design across the
+        // parallel sections of a template-driven document — not frame-lock.
+        let labels = "specific to this campaign (not generic):\n".repeat(4);
+        assert!(frame_lock_repeats(&labels).is_empty());
+        let headings = "## the assessment establishes campaign value here\n".repeat(4);
+        assert!(frame_lock_repeats(&headings).is_empty());
     }
 
     #[test]

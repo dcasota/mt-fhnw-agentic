@@ -19,12 +19,24 @@ use agentic_core::worktree;
 
 use crate::{CheckReport, Finding, Severity};
 
-/// A recency marker: a freshness keyword, an optional 3-letter month, a year.
+/// A recency marker: a freshness keyword, an optional `early/mid/late`
+/// qualifier, an optional 3-letter month, and a year.
+///
+/// Two keyword classes:
+/// * **strong stamps** (`last verified`, `last updated`, `as of`, `accessed`,
+///   `retrieved`) accept a bare year — they unambiguously date the *claim*.
+/// * **weak keywords** (bare `verified`/`updated`) require an explicit month,
+///   so narrative revision facts ("…published in 2008 and updated in 2015",
+///   "updated its 2020 national strategy in 2025") — which describe an external
+///   entity's history, not the thesis's own verification — are not misread.
+///
+/// `\b` before the year guards against a 4-digit run inside a longer number
+/// (e.g. ISO standard 42006 → "2006") being read as a date.
+/// Groups: 1 = strong-branch month, 2 = weak-branch month, 3 = early/mid/late,
+/// 4 = year.
 static MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        // `\b` BEFORE the year too, so a 4-digit run inside a longer number
-        // (e.g. the ISO standard number 42006 → "2006") is not misread as a date.
-        r"(?i)\b(last verified|verified|as of|accessed|retrieved|updated)\b[^.\n]{0,24}?(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?\b(20\d\d)\b",
+        r"(?i)\b(?:(?:last verified|last updated|as of|accessed|retrieved)\b[^.\n]{0,24}?(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?|(?:verified|updated)\b[^.\n]{0,24}?(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+))(?:(early|mid|late)\s+)?\b(20\d\d)\b",
     )
     .unwrap()
 });
@@ -69,10 +81,26 @@ pub fn stale_markers(
             continue;
         }
         for cap in MARKER.captures_iter(ln) {
-            let Ok(year) = cap[3].parse::<u32>() else {
+            let Ok(year) = cap[4].parse::<u32>() else {
                 continue;
             };
-            let month = cap.get(2).map_or(1, |m| month_num(m.as_str()));
+            // Month precision: an explicit 3-letter month (either branch) wins;
+            // otherwise an `early/mid/late` qualifier maps to a representative
+            // month so "as of late 2025" isn't mis-dated to January.
+            let month = if let Some(m) = cap.get(1).or_else(|| cap.get(2)) {
+                month_num(m.as_str())
+            } else {
+                match cap
+                    .get(3)
+                    .map(|q| q.as_str().to_ascii_lowercase())
+                    .as_deref()
+                {
+                    Some("early") => 3,
+                    Some("mid") => 6,
+                    Some("late") => 10,
+                    _ => 1,
+                }
+            };
             let then = year * 12 + month;
             if now > then {
                 let age = now - then;
@@ -167,5 +195,37 @@ mod tests {
     fn fence_skipped() {
         let md = "```\nlast verified May 2020\n```\n";
         assert!(stale_markers(md, 2026, 5, 12).is_empty());
+    }
+
+    #[test]
+    fn narrative_revision_history_not_a_recency_marker() {
+        // Bare "updated"/"verified" with no month is narrative about an
+        // external entity, not the thesis's own recency stamp.
+        let a = stale_markers(
+            "ISO/IEC 38500 was first published in 2008 and updated in 2015.\n",
+            2026,
+            5,
+            12,
+        );
+        assert!(
+            a.is_empty(),
+            "'updated in 2015' is revision history, not a stamp"
+        );
+        let b = stale_markers(
+            "Egypt updated its 2020 national AI strategy in 2025.\n",
+            2026,
+            5,
+            12,
+        );
+        assert!(b.is_empty(), "'updated its 2020' is narrative, not a stamp");
+    }
+
+    #[test]
+    fn early_mid_late_qualifier_dates_the_month() {
+        // "late 2025" ≈ Oct 2025 → ~7 months before 2026-05 → not stale.
+        assert!(stale_markers("Picture as of late 2025.\n", 2026, 5, 12).is_empty());
+        // "early 2025" ≈ Mar 2025 → ~14 months → still stale.
+        let early = stale_markers("Picture as of early 2025.\n", 2026, 5, 12);
+        assert_eq!(early.len(), 1);
     }
 }

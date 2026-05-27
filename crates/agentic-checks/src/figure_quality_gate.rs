@@ -89,17 +89,33 @@ pub fn figure_findings(text: &str, path: &str) -> Vec<Finding> {
         }
     }
 
-    // No caption anywhere but images present → caption hygiene.
-    if IMG.is_match(text) && defined.is_empty() {
+    // Caption hygiene: flag only if the document has image(s), defines no
+    // "Figure N:" caption, AND at least one image is genuinely *unlabeled*. A
+    // descriptive alt text (a phrase: whitespace + ≥ 8 chars) labels an inline
+    // illustration, so richly-captioned-by-alt diagrams in reference chapters
+    // are not false-flagged; empty/trivial alt is still caught by FIGURE_NO_ALT.
+    if defined.is_empty()
+        && IMG.is_match(text)
+        && IMG
+            .captures_iter(text)
+            .any(|c| !is_descriptive_alt(c.get(1).map_or("", |m| m.as_str())))
+    {
         out.push(Finding {
             category: "FIGURE_NO_CAPTION".into(),
             severity: Severity::Warn,
-            message: "document embeds image(s) but defines no 'Figure N:' caption".into(),
+            message: "document embeds unlabeled image(s) with no 'Figure N:' caption".into(),
             location: Some(path.to_owned()),
         });
     }
 
     out
+}
+
+/// A descriptive alt text labels its image: a phrase (contains whitespace) of
+/// at least 8 characters, e.g. "ISO/IEC 38500 governance-of-IT model".
+fn is_descriptive_alt(alt: &str) -> bool {
+    let a = alt.trim();
+    a.chars().count() >= 8 && a.contains(char::is_whitespace)
 }
 
 pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
@@ -143,6 +159,23 @@ mod tests {
         assert!(f
             .iter()
             .any(|x| x.category == "FIGURE_ORPHAN_REF" && matches!(x.severity, Severity::Error)));
+    }
+
+    #[test]
+    fn descriptive_alt_labels_inline_illustration() {
+        // A reference chapter whose images all carry descriptive alt text and
+        // no "Figure N" cross-reference must not be flagged NO_CAPTION.
+        let md = "Text.\n\n![ISO/IEC 38500 governance-of-IT model](iso.png)\n\nMore text.\n";
+        let f = figure_findings(md, "norms/06.md");
+        assert!(!f.iter().any(|x| x.category == "FIGURE_NO_CAPTION"));
+        assert!(!f.iter().any(|x| x.category == "FIGURE_NO_ALT"));
+    }
+
+    #[test]
+    fn unlabeled_image_without_caption_flagged() {
+        // A short/trivial alt and no caption is a genuinely unlabeled figure.
+        let f = figure_findings("![plot](f.png)\n\nSome prose.\n", "c.md");
+        assert!(f.iter().any(|x| x.category == "FIGURE_NO_CAPTION"));
     }
 
     #[test]
