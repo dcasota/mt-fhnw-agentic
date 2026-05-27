@@ -982,8 +982,12 @@ fn rule_para() -> Paragraph {
 }
 
 /// A Word field `{ instr }` with a cached display value — lets us emit arbitrary
-/// fields (SEQ, TOC \c, XE, INDEX) that docx-rs has no builder for.
-fn field_run(instr: &str, cached: &str) -> Run {
+/// fields (SEQ, TOC \c, XE, INDEX) that docx-rs has no builder for. `dirty`
+/// marks the field begin stale so Word refreshes it on open (with the
+/// `updateFields` setting): true for auto-computed result fields whose result we
+/// cannot pre-compute (`TOC \c` lists, INDEX), false for fields with a correct
+/// cached value (SEQ numbers) or no result (XE).
+fn field_run(instr: &str, cached: &str, dirty: bool) -> Run {
     // `InstrText::Unsupported` is written verbatim (no escaping), so a term such
     // as "MITRE ATT&CK" would emit a raw `&` and break the XML. Escape it.
     let instr = instr
@@ -991,7 +995,7 @@ fn field_run(instr: &str, cached: &str) -> Run {
         .replace('<', "&lt;")
         .replace('>', "&gt;");
     let mut r = Run::new()
-        .add_field_char(FieldCharType::Begin, false)
+        .add_field_char(FieldCharType::Begin, dirty)
         .add_instr_text(InstrText::Unsupported(instr))
         .add_field_char(FieldCharType::Separate, false);
     if !cached.is_empty() {
@@ -1156,7 +1160,7 @@ fn index_marks(
     for term in terms {
         if !seen.contains(term) && lower.contains(&term.to_lowercase()) {
             seen.insert(term.clone());
-            out.push(field_run(&format!("XE \"{term}\""), ""));
+            out.push(field_run(&format!("XE \"{term}\""), "", false));
         }
     }
     out
@@ -1181,7 +1185,7 @@ fn list_of(seq: &str, heading: &str) -> [Paragraph; 2] {
                     .color(NAVY)
                     .fonts(head_fonts()),
             ),
-        Paragraph::new().add_run(field_run(&format!("TOC \\h \\z \\c \"{seq}\""), "")),
+        Paragraph::new().add_run(field_run(&format!("TOC \\h \\z \\c \"{seq}\""), "", true)),
     ]
 }
 
@@ -1428,7 +1432,11 @@ fn render_block(
                     .line_spacing(LineSpacing::new().before(SPACE_AROUND_TABLE).after(40))
                     .keep_next(true) // caption stays on the same page as its table
                     .add_run(cap_style(t(ctx.lang, "table_prefix")))
-                    .add_run(field_run("SEQ Table \\* ARABIC", &format!("{}", ctx.tblno)))
+                    .add_run(field_run(
+                        "SEQ Table \\* ARABIC",
+                        &format!("{}", ctx.tblno),
+                        false,
+                    ))
                     .add_run(cap_style(&title)),
             );
             if col_count(header, rows) >= LANDSCAPE_COLS {
@@ -1493,6 +1501,7 @@ fn render_block(
                         .add_run(field_run(
                             "SEQ Figure \\* ARABIC",
                             &format!("{}", ctx.figno),
+                            false,
                         ))
                         .add_run(cap_style(&format!(". {caption}"))),
                 )
@@ -1711,7 +1720,7 @@ pub fn render_book(
                 .fonts(body_fonts()),
         ),
     );
-    doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "")));
+    doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)));
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
@@ -2091,6 +2100,42 @@ mod tests {
             d.contains(r#"<w:vertAlign w:val="superscript""#),
             "the source-ref [n] must be a true superscript (w:vertAlign)"
         );
+    }
+
+    #[test]
+    fn list_of_figures_tables_fields_are_dirty() {
+        use std::io::Read;
+        // The TOC \c list fields must be dirty so Word refreshes them on open
+        // (matching the main TOC); otherwise the lists stay stale until a manual
+        // F9. Regression guard for the "lists still need refresh" bug.
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let bytes = render_book(
+            &meta,
+            &[("c1".into(), "# C\n\nText.\n".into())],
+            Path::new("."),
+        )
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        // Find each TOC \c list field and confirm its begin fldChar is dirty.
+        for seq in ["Figure", "Table"] {
+            let needle = format!("TOC \\h \\z \\c \"{seq}\"");
+            let pos = d
+                .find(&needle)
+                .unwrap_or_else(|| panic!("no List-of-{seq} field"));
+            let pre = &d[pos.saturating_sub(140)..pos];
+            assert!(
+                pre.contains(r#"w:fldCharType="begin" w:dirty="true""#),
+                "List-of-{seq} field must be dirty=true so Word refreshes it on open"
+            );
+        }
     }
 
     #[test]
