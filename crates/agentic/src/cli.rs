@@ -117,6 +117,14 @@ pub enum Command {
         action: VerifyAction,
     },
 
+    /// LLM document/ranking review (ADR-0049): a second model (e.g. xAI Grok)
+    /// reviews each deliverable class and the rankings; verdicts are recorded as
+    /// signed `claim_audit_results` (kind=model_review) that feed cascade adoption.
+    Review {
+        #[command(subcommand)]
+        action: ReviewAction,
+    },
+
     /// Diagnose the environment + binary configuration.
     Doctor,
 
@@ -1074,6 +1082,30 @@ pub enum VerifyAction {
         /// Model id for the chosen provider.
         #[arg(long)]
         model: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReviewAction {
+    /// Sequentially review every deliverable document under `--prefix` (and the
+    /// current rankings) with a second model, recording a per-document verdict
+    /// `{assessment: accept|revise|exclude, score, issues, ranking_feedback}`
+    /// into `claim_audit_results` (kind=model_review). Feeds cascade adoption.
+    Run {
+        #[arg(long)]
+        project: String,
+        /// Content prefix to review (default: all deliverable sources).
+        #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
+        prefix: String,
+        /// Provider (default: first configured cloud provider, e.g. grok).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model id (default for grok: grok-4.3).
+        #[arg(long)]
+        model: Option<String>,
+        /// Review at most N documents (0 = all). Useful for a scoped pass.
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
     },
 }
 

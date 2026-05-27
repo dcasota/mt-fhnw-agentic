@@ -27,6 +27,7 @@ mod prisma;
 mod project;
 mod promote;
 mod provider;
+mod review;
 mod risk;
 mod verify;
 
@@ -63,6 +64,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Facts { action } => facts::run(&args.db, action, args.json),
         Command::Prisma { action } => prisma::run(&args.db, action, args.json),
         Command::Verify { action } => verify::run(&args.db, action, args.json).await,
+        Command::Review { action } => review::run(&args.db, action, args.json).await,
         Command::Doctor => doctor::run(args.json),
         Command::Provider { action } => provider::run(action, args.json).await,
         Command::Config { action } => config::run(action, args.json),
