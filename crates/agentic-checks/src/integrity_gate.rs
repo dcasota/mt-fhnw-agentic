@@ -125,14 +125,38 @@ pub fn line_findings(text: &str, path: &str) -> Vec<Finding> {
     out
 }
 
-/// Mode 5 — frame-lock: a non-trivial sentence repeated ≥3× verbatim in `text`.
+/// Mode 5 — frame-lock: a non-trivial *prose* sentence repeated ≥3× verbatim in
+/// `text`. Markdown table rows (a segment starting with `|`, e.g. a `| --- |`
+/// separator) are structural, not prose, and are skipped; a segment must carry
+/// ≥6 *alphabetic* words (so pipe/dash runs are not mistaken for a sentence).
 #[must_use]
 pub fn frame_lock_repeats(text: &str) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for seg in text.split(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
-        let s = seg.trim();
-        if s.split_whitespace().count() >= 6 {
-            *counts.entry(s.to_lowercase()).or_default() += 1;
+    let mut in_fence = false;
+    for ln in text.lines() {
+        if ln.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        // Skip fenced blocks (figspec/code) and JSON-ish lines (figure captions
+        // such as `{"caption":"…"}` are data, not repeated prose).
+        let lt = ln.trim_start();
+        if in_fence || lt.starts_with('{') || lt.starts_with('}') || lt.starts_with('"') {
+            continue;
+        }
+        for seg in ln.split(|c| c == '.' || c == '!' || c == '?') {
+            let s = seg.trim();
+            // Skip markdown table rows (separators + data rows) — structural.
+            if s.starts_with('|') {
+                continue;
+            }
+            let prose_words = s
+                .split_whitespace()
+                .filter(|w| w.chars().any(char::is_alphabetic))
+                .count();
+            if prose_words >= 6 {
+                *counts.entry(s.to_lowercase()).or_default() += 1;
+            }
         }
     }
     let mut v: Vec<(String, usize)> = counts.into_iter().filter(|(_, n)| *n >= 3).collect();
@@ -204,5 +228,21 @@ mod tests {
     fn frame_lock_counts_repeats() {
         let t = "the quick brown fox jumps high. ".repeat(3);
         assert!(!frame_lock_repeats(&t).is_empty());
+    }
+
+    #[test]
+    fn table_separators_not_frame_locked() {
+        // Repeated markdown table separators / rows are structural, not prose —
+        // must NOT be flagged (the cascade false positive).
+        let md = "| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n\n\
+                  | x | y | z |\n| --- | --- | --- |\n| 4 | 5 | 6 |\n\n\
+                  | p | q | r |\n| --- | --- | --- |\n| 7 | 8 | 9 |\n";
+        assert!(
+            frame_lock_repeats(md).is_empty(),
+            "table separators/rows must not be frame-locked"
+        );
+        // Genuine repeated prose is still caught.
+        let prose = "the quick brown fox jumps over the lazy dog. ".repeat(3);
+        assert!(!frame_lock_repeats(&prose).is_empty());
     }
 }
