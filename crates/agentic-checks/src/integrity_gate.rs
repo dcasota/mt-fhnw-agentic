@@ -48,6 +48,45 @@ static IMPL_BUG: LazyLock<Regex> = LazyLock::new(|| {
 static OVERCLAIM: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(proves|proven|guarantees|definitively|first ever|the first to|without any doubt|undeniably)\b").unwrap()
 });
+/// A negation ending the text *before* a proof word ("cannot (be formally)
+/// proven", "not yet proven", "never proven", "hard to prove") — a HEDGE, the
+/// opposite of an overclaim, so it must not be flagged.
+static NEG_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(cannot|can ?not|can't|could not|couldn't|not|never|no|without|unable|impossible|difficult|hard|yet to|cease to|fail(?:s|ed)? to)\b[\w\s,'-]{0,24}$").unwrap()
+});
+/// A qualifier ending the text before `guarantees`/`proven` that makes it a
+/// NOUN/adjective ("crypto guarantees", "security guarantees", "a proven …"),
+/// not an absolute claim.
+static NOUN_QUALIFIER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(crypto|cryptographic|security|safety|integrity|formal|strong|the|these|those|such|its|their|our|a|an|provide[sd]?|offers?|deliver[sd]?)\s+$").unwrap()
+});
+
+/// Is there a *genuine* (author-voice, non-negated, non-quoted, non-noun)
+/// overclaim on the line? Filters the precision false positives surfaced in the
+/// cascade triage: hedged "cannot be proven", quoted/glossed spans, and
+/// `guarantees`/`proven` used as a noun/adjective.
+#[must_use]
+pub fn has_genuine_overclaim(ln: &str) -> bool {
+    for m in OVERCLAIM.find_iter(ln) {
+        let pre = &ln[..m.start()];
+        // Inside a quote / italic gloss → not the author's own claim.
+        if pre.matches('"').count() % 2 == 1
+            || pre.matches('\u{201c}').count() > pre.matches('\u{201d}').count()
+            || pre.matches('*').count() % 2 == 1
+        {
+            continue;
+        }
+        if NEG_BEFORE.is_match(pre) {
+            continue; // a hedge ("cannot be proven"), not an overclaim
+        }
+        let w = m.as_str().to_lowercase();
+        if (w == "guarantees" || w == "proven") && NOUN_QUALIFIER.is_match(pre) {
+            continue; // noun/adjective use ("crypto guarantees", "a proven …")
+        }
+        return true;
+    }
+    false
+}
 static NEEDS_VERIFY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)NEEDS-VERIFICATION").unwrap());
 /// A sentence worth tracking for frame-lock: ≥6 words.
@@ -113,7 +152,7 @@ pub fn line_findings(text: &str, path: &str) -> Vec<Finding> {
                 "quantitative claim still tagged NEEDS-VERIFICATION".into(),
             );
         }
-        if OVERCLAIM.is_match(ln) {
+        if has_genuine_overclaim(ln) {
             push(
                 &mut out,
                 "INTEGRITY_OVERCLAIM",
@@ -228,6 +267,28 @@ mod tests {
     fn frame_lock_counts_repeats() {
         let t = "the quick brown fox jumps high. ".repeat(3);
         assert!(!frame_lock_repeats(&t).is_empty());
+    }
+
+    #[test]
+    fn overclaim_precision() {
+        use super::has_genuine_overclaim;
+        // Hedge ("cannot be ... proven") is NOT an overclaim.
+        assert!(!has_genuine_overclaim(
+            "ML security cannot be formally proven (CAR-04-001)."
+        ));
+        assert!(!has_genuine_overclaim("this has never been proven."));
+        // Noun use of guarantees/proven is not an absolute claim.
+        assert!(!has_genuine_overclaim(
+            "crypto guarantees from C3/C5/C6 supply governance."
+        ));
+        assert!(!has_genuine_overclaim("a proven approach to backporting."));
+        // Quoted/italic spans are not the author's own claim.
+        assert!(!has_genuine_overclaim(
+            "the report calls it \"the first to ship\"."
+        ));
+        // A genuine author-voice overclaim IS still flagged.
+        assert!(has_genuine_overclaim("the dashboard proves the value."));
+        assert!(has_genuine_overclaim("this guarantees zero downtime."));
     }
 
     #[test]
