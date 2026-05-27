@@ -40,10 +40,11 @@ static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(20\d\d)\b").unwr
 static FORECAST: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bbetween\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bobligation\b|\bbinding\b|\bmandat\w*|\bregulat\w*|\bdirective\b|\bcompliance\b|\beffective\b|\bin force\b|\banchor\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b|\btoday\b|\bforward\b|\bpost-quantum\b|\bquantum-safe\b|\bpqc\b|\bnist\b|\bcnsa\b|\bnis2\b|\bcra\b|\bfips\b|\bcert-in\b|\bir\s*8547\b|\betsi\b|\benisa\b)").unwrap()
 });
-/// A `YYYY/YYYY` deadline pair (e.g. CNSA 2.0 "2027/2033", NIST IR 8547
-/// "2030/2035") — a regulatory milestone set, not a typo.
+/// A two-year span — `YYYY/YYYY` deadline pair (CNSA 2.0 "2027/2033", NIST IR
+/// 8547 "2030/2035") or a `YYYY–YYYY` window ("2026–2030") — a roadmap
+/// milestone set / horizon, not a typo. Covers slash, hyphen, en/em dash.
 static YEARPAIR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b20\d\d\s*/\s*20\d\d\b").unwrap());
+    LazyLock::new(|| Regex::new(r"\b20\d\d\s*[-/\x{2013}\x{2014}]\s*20\d\d\b").unwrap());
 /// A URL/DOI on the line → skip (identifiers carry digit runs that aren't years).
 static URLDOI: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)https?://|doi\.org|10\.\d{4,}").unwrap());
@@ -85,8 +86,17 @@ pub fn genuine_comparator(ln: &str) -> Option<String> {
         let w = m.as_str().to_lowercase();
         let pre = ln[..m.start()].to_lowercase();
         let post = ln[m.end()..].trim_start();
+        // Inside an italic gloss (*state-of-the-art*) or quote → a named/defined
+        // term (e.g. the regulatory "state of the art" standard), not a claim.
+        if pre.matches('*').count() % 2 == 1 || pre.matches('"').count() % 2 == 1 {
+            continue;
+        }
         if (w.contains("state") || w.contains("best-in-class"))
-            && post.chars().next().is_some_and(char::is_alphabetic)
+            && post
+                .trim_start_matches(['*', '_', '"'])
+                .chars()
+                .next()
+                .is_some_and(char::is_alphabetic)
         {
             continue; // attributive adjective ("state-of-the-art LLM")
         }
@@ -130,6 +140,7 @@ pub fn future_years(text: &str, max_year: u32) -> Vec<(usize, u32)> {
         if in_fence
             || URLDOI.is_match(ln)
             || lt.starts_with('|')
+            || lt.starts_with('#') // a section heading referencing a year is intentional framing
             || FORECAST.is_match(ln)
             || YEARPAIR.is_match(ln)
         {
@@ -319,6 +330,9 @@ mod tests {
         assert!(future_years("NIST IR 8547 2030/2035; CNSA 2.0 2027/2033.\n", 2026).is_empty());
         assert!(future_years("CRQC arrival between 2030 and 2035.\n", 2026).is_empty());
         assert!(future_years("the 2027 binding obligation under the CRA.\n", 2026).is_empty());
+        // En-dash window and a heading referencing a year are intentional.
+        assert!(future_years("the 2026\u{2013}2030 window is a managed exit.\n", 2026).is_empty());
+        assert!(future_years("### What the picture buys the 2030 standpoint\n", 2026).is_empty());
     }
 
     #[test]
@@ -331,6 +345,10 @@ mod tests {
         assert!(
             genuine_comparator("the minimum capability for QUBO to outperform classical SAT?")
                 .is_none()
+        );
+        // An italic-glossed regulatory term is a name, not a claim.
+        assert!(
+            genuine_comparator("ENSI guidelines follow a *state-of-the-art* requirement").is_none()
         );
         // A bare predicative performance claim still flags.
         assert!(genuine_comparator("our method is 10x faster than the baseline").is_some());
