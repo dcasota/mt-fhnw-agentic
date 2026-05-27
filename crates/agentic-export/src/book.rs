@@ -996,14 +996,12 @@ fn field_run(instr: &str, cached: &str) -> Run {
     r.add_field_char(FieldCharType::End, false)
 }
 
-/// Set `<w:updateFields w:val="true"/>` in the packed `.docx`'s settings.
-///
-/// docx-rs 0.4 has no API for this setting and is not a layout engine, so it
-/// cannot compute the page numbers the TOC / List-of-Figures / List-of-Tables /
-/// index fields need. Setting this makes Word refresh those fields on open (one
-/// prompt) instead of showing blank page numbers until a manual F9. All other
-/// zip entries are copied verbatim (raw, no recompression).
-fn enable_update_fields(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+/// Post-process the packed `.docx`: rewrite the two text parts, copy the rest
+/// verbatim. settings.xml gets `<w:updateFields>` (so Word refreshes the
+/// TOC/lists/index on open — docx-rs 0.4 has no API and can't paginate);
+/// document.xml gets `<w:tblHeader>` on content-table header rows (header
+/// repeats on each page a long table spans — docx-rs 0.4 has no API for it).
+fn postprocess_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
     let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
     let mut out = Cursor::new(Vec::<u8>::new());
@@ -1011,21 +1009,17 @@ fn enable_update_fields(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
         let mut zout = zip::ZipWriter::new(&mut out);
         for i in 0..zin.len() {
             let mut f = zin.by_index(i).context("read zip entry")?;
-            if f.name() == "word/settings.xml" {
-                let name = f.name().to_string();
+            let name = f.name().to_string();
+            if name == "word/settings.xml" || name == "word/document.xml" {
                 let mut s = String::new();
-                f.read_to_string(&mut s).context("read settings.xml")?;
-                if !s.contains("<w:updateFields") {
-                    // Schema order: updateFields precedes <w:compat>; fall back to
-                    // before the closing tag if no compat block is present.
-                    let tag = r#"<w:updateFields w:val="true"/>"#;
-                    if let Some(p) = s.find("<w:compat").or_else(|| s.find("</w:settings>")) {
-                        s.insert_str(p, tag);
-                    }
-                }
+                f.read_to_string(&mut s).context("read xml part")?;
+                let s = match name.as_str() {
+                    "word/settings.xml" => inject_update_fields(s),
+                    _ => mark_header_rows(&s),
+                };
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
-                    .context("start settings.xml")?;
-                zout.write_all(s.as_bytes()).context("write settings.xml")?;
+                    .context("start xml part")?;
+                zout.write_all(s.as_bytes()).context("write xml part")?;
             } else {
                 zout.raw_copy_file(f).context("copy zip entry")?;
             }
@@ -1033,6 +1027,54 @@ fn enable_update_fields(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
         zout.finish().context("finish docx zip")?;
     }
     Ok(out.into_inner())
+}
+
+/// Insert `<w:updateFields w:val="true"/>` into settings.xml (schema order:
+/// before `<w:compat>`; else before the closing tag). Idempotent.
+fn inject_update_fields(mut s: String) -> String {
+    if !s.contains("<w:updateFields") {
+        let tag = r#"<w:updateFields w:val="true"/>"#;
+        if let Some(p) = s.find("<w:compat").or_else(|| s.find("</w:settings>")) {
+            s.insert_str(p, tag);
+        }
+    }
+    s
+}
+
+/// Add `<w:tblHeader>` to each content-table header row so it repeats on every
+/// page the table spans. A header row is the only `<w:tr>` carrying BOTH the
+/// Gap-#2 `<w:cantSplit>` (emitted only by content tables) AND the `HEADBG`
+/// header fill — data rows use other fills and chrome boxes (key-points) lack
+/// `cantSplit`, so neither is touched. `tblHeader` is inserted last in
+/// `<w:trPr>` (after cantSplit / trHeight), matching the CT_TrPr schema order.
+fn mark_header_rows(doc: &str) -> String {
+    let headbg_fill = format!("w:fill=\"{HEADBG}\"");
+    let mut out = String::with_capacity(doc.len() + 512);
+    let mut rest = doc;
+    while let Some(open) = rest.find("<w:tr>") {
+        let after_open = open + "<w:tr>".len();
+        let Some(close_rel) = rest[after_open..].find("</w:tr>") else {
+            break; // no closing tag — emit the remainder unchanged below
+        };
+        let row_end = after_open + close_rel;
+        out.push_str(&rest[..after_open]);
+        let row = &rest[after_open..row_end];
+        if row.contains("<w:cantSplit") && row.contains(&headbg_fill) {
+            if let Some(p) = row.find("</w:trPr>") {
+                out.push_str(&row[..p]);
+                out.push_str(r#"<w:tblHeader w:val="true" />"#);
+                out.push_str(&row[p..]);
+            } else {
+                out.push_str(row);
+            }
+        } else {
+            out.push_str(row);
+        }
+        out.push_str("</w:tr>");
+        rest = &rest[row_end + "</w:tr>".len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Curated index terms (bookkit.py port). Matched case-insensitively in body
@@ -1669,7 +1711,7 @@ pub fn render_book(
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
-    enable_update_fields(cur.into_inner())
+    postprocess_docx(cur.into_inner())
 }
 
 /// FHNW thesis front/back-matter slot a chapter belongs to, decided by its first
@@ -1871,7 +1913,7 @@ fn render_thesis_book(
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack thesis docx")?;
-    enable_update_fields(cur.into_inner())
+    postprocess_docx(cur.into_inner())
 }
 
 #[cfg(test)]
@@ -1988,6 +2030,41 @@ mod tests {
             d.contains("keepNext"),
             "the image paragraph must keep_next so it stays with its caption"
         );
+    }
+
+    #[test]
+    fn table_header_row_repeats_across_pages() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n| H1 | H2 |\n|----|----|\n| a | b |\n| c | d |\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains("<w:tblHeader"),
+            "a content-table header row must set w:tblHeader to repeat across pages"
+        );
+    }
+
+    #[test]
+    fn mark_header_rows_targets_only_content_table_headers() {
+        // Content-table header row: cantSplit + HEADBG → marked.
+        let hdr = r#"<w:tr><w:trPr><w:cantSplit /></w:trPr><w:tc><w:tcPr><w:shd w:fill="1F3864" /></w:tcPr></w:tc></w:tr>"#;
+        assert!(mark_header_rows(hdr).contains("<w:tblHeader"));
+        // Data row: cantSplit but ALTBG fill → not marked.
+        let data = r#"<w:tr><w:trPr><w:cantSplit /></w:trPr><w:tc><w:tcPr><w:shd w:fill="F4F6FA" /></w:tcPr></w:tc></w:tr>"#;
+        assert!(!mark_header_rows(data).contains("tblHeader"));
+        // Chrome box header: HEADBG but no cantSplit → not marked.
+        let chrome =
+            r#"<w:tr><w:trPr /><w:tc><w:tcPr><w:shd w:fill="1F3864" /></w:tcPr></w:tc></w:tr>"#;
+        assert!(!mark_header_rows(chrome).contains("tblHeader"));
     }
 
     #[test]
