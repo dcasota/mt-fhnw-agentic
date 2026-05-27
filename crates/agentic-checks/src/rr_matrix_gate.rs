@@ -58,6 +58,15 @@ pub fn is_rr_header(header: &str) -> bool {
     header.contains("verified") && RR_CONTEXT.iter().any(|t| header.contains(t))
 }
 
+/// A markdown table separator row (`|---|:--:|…`) — only `|`, `-`, `:`, space.
+/// Used to identify a real *header* row (the line before a separator), so data
+/// rows that happen to contain "verified"/"review" are not mistaken for headers.
+#[must_use]
+pub fn is_separator_row(s: &str) -> bool {
+    let t = s.trim();
+    t.contains('-') && t.contains('|') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+}
+
 /// Missing required column groups for a lower-cased header row.
 #[must_use]
 pub fn missing_columns(header: &str) -> Vec<&'static str> {
@@ -79,9 +88,13 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
             continue;
         };
         let text = String::from_utf8_lossy(&blob.content);
-        for (idx, ln) in text.lines().enumerate() {
-            // A markdown table header row contains pipes and (here) "verified".
-            if ln.contains('|') {
+        let lines: Vec<&str> = text.lines().collect();
+        for (idx, ln) in lines.iter().enumerate() {
+            // Only an actual table HEADER row (immediately followed by a `|---|`
+            // separator) is a candidate — not a data row that merely contains
+            // "verified"/"review" (e.g. a data-tier table listing a "Verified"
+            // layer seen by "review agents").
+            if ln.contains('|') && lines.get(idx + 1).is_some_and(|n| is_separator_row(n)) {
                 let lower = ln.to_lowercase();
                 if is_rr_header(&lower) {
                     matrices += 1;
@@ -129,5 +142,32 @@ mod tests {
     fn missing_location_flagged() {
         let h = "| reviewer point | author claim | verified |";
         assert!(missing_columns(h).contains(&"change location"));
+    }
+
+    #[test]
+    fn separator_row_detection() {
+        assert!(is_separator_row("|---|:--:|---|"));
+        assert!(is_separator_row("| --- | --- |"));
+        assert!(!is_separator_row(
+            "| Layer 2 -- Verified | x | review agents |"
+        ));
+        assert!(!is_separator_row("plain text - with a dash"));
+    }
+
+    #[test]
+    fn data_row_not_mistaken_for_header() {
+        // A data-tier table: its header has no `verified`/R&R token; a DATA row
+        // contains "Verified" (a tier name) + "review" (a role). Only the header
+        // is a candidate, so this must NOT be treated as an R&R matrix.
+        let header = "| tier | examples | who may see |".to_lowercase();
+        assert!(
+            !is_rr_header(&header),
+            "data-tier header is not an R&R header"
+        );
+        let data = "| layer 2 -- verified | artefacts | drafting + review agents |";
+        // The gate would test `is_rr_header` only on a header row; the data row
+        // matching is the bug we fixed. Confirm the data row, if mis-tested,
+        // would have matched (documenting why header-only gating is required).
+        assert!(is_rr_header(data));
     }
 }
