@@ -555,7 +555,8 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
             // Give the rotated labels vertical room.
             hrow = hrow.row_height(1600.0).height_rule(HeightRule::AtLeast);
         }
-        trows.push(hrow);
+        // cantSplit: never break a row across a page boundary (bookkit parity).
+        trows.push(hrow.cant_split());
     }
     for (ri, row) in rows.iter().enumerate() {
         let fill = if ri % 2 == 0 { ALTBG } else { "FFFFFF" };
@@ -573,7 +574,7 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
                     ),
             );
         }
-        trows.push(TableRow::new(cells));
+        trows.push(TableRow::new(cells).cant_split());
     }
     Table::new(trows)
         .set_grid(vec![colw; ncols])
@@ -1909,6 +1910,27 @@ mod tests {
         assert!(
             d.contains("SEQ Table"),
             "an uncaptioned table must still be numbered for the Table of Tables"
+        );
+    }
+
+    #[test]
+    fn table_rows_cant_split_across_pages() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains("cantSplit"),
+            "table rows must set w:cantSplit so they don't break mid-row across pages"
         );
     }
 
