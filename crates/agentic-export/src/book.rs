@@ -1380,6 +1380,7 @@ fn render_block(
             doc = doc.add_paragraph(
                 Paragraph::new()
                     .line_spacing(LineSpacing::new().before(SPACE_AROUND_TABLE).after(40))
+                    .keep_next(true) // caption stays on the same page as its table
                     .add_run(cap_style(t(ctx.lang, "table_prefix")))
                     .add_run(field_run("SEQ Table \\* ARABIC", &format!("{}", ctx.tblno)))
                     .add_run(cap_style(&title)),
@@ -1397,7 +1398,9 @@ fn render_block(
                 // Breathing room around the table (ADR-0030 relaxed placement).
                 let spacer =
                     || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
-                doc = doc.add_paragraph(spacer());
+                // keep_next chains caption -> spacer -> table so the title never
+                // strands at a page foot (the trailing spacer must NOT keep_next).
+                doc = doc.add_paragraph(spacer().keep_next(true));
                 doc = doc.add_table(table_block(header, rows, CONTENT_TWIPS));
                 doc.add_paragraph(spacer())
             }
@@ -1931,6 +1934,29 @@ mod tests {
         assert!(
             d.contains("cantSplit"),
             "table rows must set w:cantSplit so they don't break mid-row across pages"
+        );
+    }
+
+    #[test]
+    fn table_caption_keeps_with_table() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        // A table with no surrounding headings: the only keepNext comes from the
+        // caption + pre-table spacer (gap #3), so we expect at least two.
+        let md = "Intro text.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.matches("keepNext").count() >= 2,
+            "table caption + pre-table spacer must keep_next so the title stays with the table"
         );
     }
 
