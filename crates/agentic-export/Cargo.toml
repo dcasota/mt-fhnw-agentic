@@ -24,10 +24,10 @@ tracing        = { workspace = true }
 chrono         = { workspace = true }
 qrcode         = { version = "0.14", default-features = false }
 image          = { version = "0.25", default-features = false, features = ["png"] }
+zip            = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3.14"
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

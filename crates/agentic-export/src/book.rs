@@ -995,6 +995,45 @@ fn field_run(instr: &str, cached: &str) -> Run {
     r.add_field_char(FieldCharType::End, false)
 }
 
+/// Set `<w:updateFields w:val="true"/>` in the packed `.docx`'s settings.
+///
+/// docx-rs 0.4 has no API for this setting and is not a layout engine, so it
+/// cannot compute the page numbers the TOC / List-of-Figures / List-of-Tables /
+/// index fields need. Setting this makes Word refresh those fields on open (one
+/// prompt) instead of showing blank page numbers until a manual F9. All other
+/// zip entries are copied verbatim (raw, no recompression).
+fn enable_update_fields(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
+    let mut out = Cursor::new(Vec::<u8>::new());
+    {
+        let mut zout = zip::ZipWriter::new(&mut out);
+        for i in 0..zin.len() {
+            let mut f = zin.by_index(i).context("read zip entry")?;
+            if f.name() == "word/settings.xml" {
+                let name = f.name().to_string();
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read settings.xml")?;
+                if !s.contains("<w:updateFields") {
+                    // Schema order: updateFields precedes <w:compat>; fall back to
+                    // before the closing tag if no compat block is present.
+                    let tag = r#"<w:updateFields w:val="true"/>"#;
+                    if let Some(p) = s.find("<w:compat").or_else(|| s.find("</w:settings>")) {
+                        s.insert_str(p, tag);
+                    }
+                }
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start settings.xml")?;
+                zout.write_all(s.as_bytes()).context("write settings.xml")?;
+            } else {
+                zout.raw_copy_file(f).context("copy zip entry")?;
+            }
+        }
+        zout.finish().context("finish docx zip")?;
+    }
+    Ok(out.into_inner())
+}
+
 /// Curated index terms (bookkit.py port). Matched case-insensitively in body
 /// text; the first hit per term per book gets an XE field so the INDEX field can
 /// compile a real, page-referenced index.
@@ -1548,7 +1587,13 @@ pub fn render_book(
                 .fonts(head_fonts()),
         ),
     );
-    doc = doc.add_table_of_contents(TableOfContents::new().heading_styles_range(1, 3).auto());
+    doc = doc.add_table_of_contents(
+        TableOfContents::new()
+            .heading_styles_range(1, 3)
+            .hyperlink() // \h — clickable entries (gold parity)
+            .auto()
+            .dirty(), // mark stale so Word refreshes it on open (with updateFields below)
+    );
     doc = doc.add_paragraph(page_break());
 
     // Build the per-book context: built-in index terms + any book-specific ones.
@@ -1614,7 +1659,7 @@ pub fn render_book(
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
-    Ok(cur.into_inner())
+    enable_update_fields(cur.into_inner())
 }
 
 /// FHNW thesis front/back-matter slot a chapter belongs to, decided by its first
@@ -1792,7 +1837,11 @@ fn render_thesis_book(
                     ),
                 );
                 doc = doc.add_table_of_contents(
-                    TableOfContents::new().heading_styles_range(1, 3).auto(),
+                    TableOfContents::new()
+                        .heading_styles_range(1, 3)
+                        .hyperlink()
+                        .auto()
+                        .dirty(),
                 );
                 emitted = true;
             }
@@ -1812,7 +1861,7 @@ fn render_thesis_book(
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack thesis docx")?;
-    Ok(cur.into_inner())
+    enable_update_fields(cur.into_inner())
 }
 
 #[cfg(test)]
@@ -1833,6 +1882,27 @@ mod tests {
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         assert!(bytes.len() > 2000);
+    }
+
+    #[test]
+    fn docx_sets_update_fields_so_word_refreshes_toc() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "# Chapter One\n\nText.\n\n## Sub\n\nMore text.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut s = String::new();
+        zip.by_name("word/settings.xml")
+            .unwrap()
+            .read_to_string(&mut s)
+            .unwrap();
+        assert!(
+            s.contains(r#"<w:updateFields w:val="true"/>"#),
+            "settings.xml must enable update-fields-on-open; got: {s}"
+        );
     }
 
     #[test]
