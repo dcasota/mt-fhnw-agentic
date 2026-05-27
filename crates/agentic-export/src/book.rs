@@ -1426,6 +1426,7 @@ fn render_block(
                     Paragraph::new()
                         .align(AlignmentType::Center)
                         .line_spacing(LineSpacing::new().after(80))
+                        .keep_next(true) // keep the image on the same page as its caption
                         .add_run(Run::new().add_image(pic)),
                 );
                 // Caption with generous room after, so the next text isn't crammed.
@@ -1957,6 +1958,35 @@ mod tests {
         assert!(
             d.matches("keepNext").count() >= 2,
             "table caption + pre-table spacer must keep_next so the title stays with the table"
+        );
+    }
+
+    #[test]
+    fn figure_keeps_image_with_caption() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        image::RgbImage::new(8, 8)
+            .save(dir.path().join("f.png"))
+            .unwrap();
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "Intro.\n\n![A figure](f.png)\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], dir.path()).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains("SEQ Figure"),
+            "figure should render with a SEQ caption"
+        );
+        assert!(
+            d.contains("keepNext"),
+            "the image paragraph must keep_next so it stays with its caption"
         );
     }
 
