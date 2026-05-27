@@ -91,10 +91,9 @@ pub fn run(db_path: &Path, action: BookAction, lang: &str, json_out: bool) -> Re
     }
 }
 
-/// Finalize `.docx` files through Microsoft Word (the gold `finalize.ps1` port):
-/// update all fields + repaginate + save, so they open with no refresh prompt.
-fn finalize(path: &Path, pdf: bool, json_out: bool) -> Result<()> {
-    let docs: Vec<PathBuf> = if path.is_dir() {
+/// Collect `.docx` targets: a single file, or every `.docx` in a directory.
+fn collect_docx(path: &Path) -> Result<Vec<PathBuf>> {
+    if path.is_dir() {
         let mut v: Vec<PathBuf> = std::fs::read_dir(path)
             .with_context(|| format!("read dir {}", path.display()))?
             .filter_map(std::result::Result::ok)
@@ -105,21 +104,20 @@ fn finalize(path: &Path, pdf: bool, json_out: bool) -> Result<()> {
             })
             .collect();
         v.sort();
-        v
+        Ok(v)
     } else {
-        vec![path.to_path_buf()]
-    };
+        Ok(vec![path.to_path_buf()])
+    }
+}
+
+/// `book finalize` command: finalize the target(s) through Word. Explicit
+/// invocation, so a missing Word is reported as an error.
+fn finalize(path: &Path, pdf: bool, json_out: bool) -> Result<()> {
+    let docs = collect_docx(path)?;
     if docs.is_empty() {
         anyhow::bail!("no .docx found at {}", path.display());
     }
-    let mut results = Vec::new();
-    for d in &docs {
-        let r = finalize_one(d, pdf).with_context(|| format!("finalize {}", d.display()))?;
-        if !json_out {
-            println!("  + finalized {} ({r})", d.display());
-        }
-        results.push((d.display().to_string(), r));
-    }
+    let results = finalize_docs(&docs, pdf)?;
     if json_out {
         let arr: Vec<_> = results
             .iter()
@@ -127,53 +125,69 @@ fn finalize(path: &Path, pdf: bool, json_out: bool) -> Result<()> {
             .collect();
         println!("{}", serde_json::json!({"finalized": arr}));
     } else {
-        println!("Finalized {} document(s) via Microsoft Word.", docs.len());
+        for (p, r) in &results {
+            println!("  + finalized {p} ({r})");
+        }
+        println!(
+            "Finalized {} document(s) via Microsoft Word.",
+            results.len()
+        );
     }
     Ok(())
 }
 
-/// Drive Microsoft Word (COM, via PowerShell) to update fields + repaginate +
-/// save one `.docx`. Windows + Word only.
+/// Drive Microsoft Word (COM, via PowerShell) over all `docs` in ONE Word
+/// session — update every field class, repaginate (real page numbers), hide
+/// field codes, save — so each opens with no refresh prompt. Per-document
+/// errors are reported, not aborted. Mirrors `book_build/finalize.ps1`.
 #[cfg(windows)]
-fn finalize_one(docx: &Path, pdf: bool) -> Result<String> {
+fn finalize_docs(docs: &[PathBuf], pdf: bool) -> Result<Vec<(String, String)>> {
     use std::process::Command;
-    let abs = std::fs::canonicalize(docx).with_context(|| format!("resolve {}", docx.display()))?;
-    // Strip the Windows verbatim prefix so Word's COM Open accepts the path.
-    let abs = abs.to_string_lossy().replace(r"\\?\", "");
-    let q = abs.replace('\'', "''"); // single-quote escape for PowerShell
+    let mut items: Vec<String> = Vec::new();
+    for d in docs {
+        let abs = std::fs::canonicalize(d)
+            .with_context(|| format!("resolve {}", d.display()))?
+            .to_string_lossy()
+            .replace(r"\\?\", ""); // strip the verbatim prefix Word rejects
+        items.push(format!("'{}'", abs.replace('\'', "''"))); // single-quote escaped
+    }
+    let arr = items.join(","); // no trailing comma — PowerShell rejects @('x',)
     let pdf_block = if pdf {
-        let pdf_path = std::path::Path::new(&abs).with_extension("pdf");
-        format!(
-            "$d.SaveAs([ref]'{}', [ref]17)",
-            pdf_path.to_string_lossy().replace('\'', "''")
-        )
+        "if($pdf){ $d.SaveAs([ref]([System.IO.Path]::ChangeExtension($pth,'pdf')),[ref]17) }"
     } else {
-        String::new()
+        ""
     };
-    // Mirrors book_build/finalize.ps1: update every field class, repaginate so
-    // page numbers are real, hide field codes, save (cached results -> no prompt).
     let script = format!(
         r#"$ErrorActionPreference='Stop'
+$paths=@({arr})
+$pdf=${pdf}
 $w = New-Object -ComObject Word.Application
 $w.Visible=$false; $w.DisplayAlerts=0
 $w.Options.ConfirmConversions=$false; $w.Options.UpdateLinksAtOpen=$false
 try {{
-  $d = $w.Documents.Open('{q}', $false, $false, $false)
-  $d.Fields.Update() | Out-Null
-  foreach ($tof in $d.TablesOfFigures) {{ $tof.Update() }}
-  foreach ($toc in $d.TablesOfContents) {{ $toc.Update() }}
-  foreach ($ix in $d.Indexes) {{ $ix.Update() }}
-  try {{ $d.ActiveWindow.View.ShowFieldCodes=$false }} catch {{}}
-  $d.Repaginate()
-  $pages=$d.ComputeStatistics(2)
-  $d.Save()
-  {pdf_block}
-  $d.Close($false)
-  Write-Output "pages=$pages"
+  foreach ($pth in $paths) {{
+    try {{
+      $d = $w.Documents.Open($pth, $false, $false, $false)
+      $d.Fields.Update() | Out-Null
+      foreach ($tof in $d.TablesOfFigures) {{ $tof.Update() }}
+      foreach ($toc in $d.TablesOfContents) {{ $toc.Update() }}
+      foreach ($ix in $d.Indexes) {{ $ix.Update() }}
+      try {{ $d.ActiveWindow.View.ShowFieldCodes=$false }} catch {{}}
+      $d.Repaginate()
+      $pages=$d.ComputeStatistics(2)
+      $d.Save()
+      {pdf_block}
+      $d.Close($false)
+      Write-Output ("{{0}}`tpages={{1}}" -f $pth, $pages)
+    }} catch {{
+      Write-Output ("{{0}}`tERROR {{1}}" -f $pth, $_.Exception.Message)
+    }}
+  }}
 }} finally {{
   $w.Quit()
   [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
-}}"#
+}}"#,
+        pdf = if pdf { "true" } else { "false" }
     );
     let out = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -181,19 +195,25 @@ try {{
         .context("launch Word via powershell (is Microsoft Word installed?)")?;
     if !out.status.success() {
         anyhow::bail!(
-            "Word finalize failed: {}",
+            "Word finalize failed (is Microsoft Word installed?): {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(stdout
+        .lines()
+        .filter_map(|l| {
+            l.split_once('\t')
+                .map(|(p, r)| (p.to_string(), r.to_string()))
+        })
+        .collect())
 }
 
 #[cfg(not(windows))]
-fn finalize_one(_docx: &Path, _pdf: bool) -> Result<String> {
+fn finalize_docs(_docs: &[PathBuf], _pdf: bool) -> Result<Vec<(String, String)>> {
     anyhow::bail!(
-        "`book finalize` requires Microsoft Word and runs on Windows only; \
-         on other platforms the rendered .docx already carries updateFields so \
-         Word refreshes on open"
+        "Word finalize requires Microsoft Word on Windows; elsewhere the rendered \
+         .docx carries updateFields so Word refreshes on open"
     )
 }
 
@@ -214,6 +234,7 @@ fn build(
 
     let mut report = Vec::new();
     let mut built = 0usize;
+    let mut built_docs: Vec<PathBuf> = Vec::new();
     for spec in &manifest.books {
         if let Some(k) = only {
             if spec.key != k {
@@ -236,6 +257,7 @@ fn build(
         match result {
             Ok((figs, bytes)) => {
                 built += 1;
+                built_docs.push(out.join(format!("{}.docx", spec.key)));
                 report.push(serde_json::json!({
                     "key": spec.key, "chapters": spec.chapters.len(), "figures": figs, "docx_bytes": bytes
                 }));
@@ -256,6 +278,38 @@ fn build(
         out.join("_render_report.json"),
         serde_json::to_string_pretty(&serde_json::json!({ "books": report }))?,
     )?;
+    // Always finalize through Microsoft Word so the books open with no "update
+    // fields" prompt (TOC / List of Figures/Tables / Index populated, real page
+    // numbers). Generation itself never fails on this, but an unmet prerequisite
+    // (Word absent / non-Windows) is WARNED loudly to stderr — never silently
+    // skipped — because the resulting docx will then need a field refresh on open.
+    if !built_docs.is_empty() {
+        match finalize_docs(&built_docs, false) {
+            Ok(res) => {
+                let failed: Vec<_> = res.iter().filter(|(_, r)| r.starts_with("ERROR")).collect();
+                if !json_out {
+                    println!(
+                        "Finalized {}/{} book(s) via Microsoft Word.",
+                        res.len() - failed.len(),
+                        res.len()
+                    );
+                }
+                for (p, r) in failed {
+                    eprintln!(
+                        "WARNING: Word finalize failed for {p}: {r} — this book will need a field refresh on open."
+                    );
+                }
+            }
+            Err(e) => eprintln!(
+                "WARNING: prerequisite not met — Microsoft Word unavailable, so the {} \
+                 rendered book(s) were NOT finalized and WILL prompt to update fields \
+                 (TOC / lists / index) on open. Finalize on Windows with Word installed \
+                 (e.g. `agentic book finalize --path {}`). Cause: {e}",
+                built_docs.len(),
+                out.display()
+            ),
+        }
+    }
     if json_out {
         println!(
             "{}",
