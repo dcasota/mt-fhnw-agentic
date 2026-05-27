@@ -14,7 +14,8 @@ use docx_rs::{
     HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin, PageNum,
     PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty, Shading, Style,
     StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition, TableCellMargins,
-    TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType, WidthType,
+    TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType, VertAlignType,
+    WidthType,
 };
 
 use agentic_core::i18n::t;
@@ -459,15 +460,18 @@ fn run_of(r: &DocxRun) -> Run {
     run
 }
 
-/// A small bracketed reference-number run (bookkit `_superscript`), pointing
-/// into the chapter Sources box. docx-rs 0.4 has no public run vertical-align,
-/// so this is a small raised-looking `[n]` marker rather than a true superscript.
+/// A true superscript bracketed reference-number run (bookkit `_superscript`),
+/// pointing into the chapter Sources box. Uses `RunProperty::vert_align`
+/// (`<w:vertAlign w:val="superscript"/>`); `Run` has no fluent setter, but its
+/// `run_property` field is public.
 fn superscript(n: usize) -> Run {
-    Run::new()
-        .add_text(format!("\u{200a}[{n}]"))
+    let mut r = Run::new()
+        .add_text(format!("[{n}]"))
         .size(15)
         .color(ACCENT)
-        .fonts(body_fonts())
+        .fonts(body_fonts());
+    r.run_property = r.run_property.vert_align(VertAlignType::SuperScript);
+    r
 }
 
 /// Add a run sequence to a paragraph. Markdown links (`[label](url)`) render as
@@ -2065,6 +2069,28 @@ mod tests {
         let chrome =
             r#"<w:tr><w:trPr /><w:tc><w:tcPr><w:shd w:fill="1F3864" /></w:tcPr></w:tc></w:tr>"#;
         assert!(!mark_header_rows(chrome).contains("tblHeader"));
+    }
+
+    #[test]
+    fn source_reference_is_true_superscript() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        // A markdown link renders as label + a superscript source-ref number.
+        let md = "See the [spec](https://example.org) for details.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains(r#"<w:vertAlign w:val="superscript""#),
+            "the source-ref [n] must be a true superscript (w:vertAlign)"
+        );
     }
 
     #[test]
