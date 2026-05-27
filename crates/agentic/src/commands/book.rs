@@ -87,7 +87,114 @@ pub fn run(db_path: &Path, action: BookAction, lang: &str, json_out: bool) -> Re
             json_out,
         ),
         BookAction::Audit { current, previous } => audit(&current, previous.as_deref(), json_out),
+        BookAction::Finalize { path, pdf } => finalize(&path, pdf, json_out),
     }
+}
+
+/// Finalize `.docx` files through Microsoft Word (the gold `finalize.ps1` port):
+/// update all fields + repaginate + save, so they open with no refresh prompt.
+fn finalize(path: &Path, pdf: bool, json_out: bool) -> Result<()> {
+    let docs: Vec<PathBuf> = if path.is_dir() {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(path)
+            .with_context(|| format!("read dir {}", path.display()))?
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("docx"))
+            })
+            .collect();
+        v.sort();
+        v
+    } else {
+        vec![path.to_path_buf()]
+    };
+    if docs.is_empty() {
+        anyhow::bail!("no .docx found at {}", path.display());
+    }
+    let mut results = Vec::new();
+    for d in &docs {
+        let r = finalize_one(d, pdf).with_context(|| format!("finalize {}", d.display()))?;
+        if !json_out {
+            println!("  + finalized {} ({r})", d.display());
+        }
+        results.push((d.display().to_string(), r));
+    }
+    if json_out {
+        let arr: Vec<_> = results
+            .iter()
+            .map(|(p, r)| serde_json::json!({"docx": p, "result": r}))
+            .collect();
+        println!("{}", serde_json::json!({"finalized": arr}));
+    } else {
+        println!("Finalized {} document(s) via Microsoft Word.", docs.len());
+    }
+    Ok(())
+}
+
+/// Drive Microsoft Word (COM, via PowerShell) to update fields + repaginate +
+/// save one `.docx`. Windows + Word only.
+#[cfg(windows)]
+fn finalize_one(docx: &Path, pdf: bool) -> Result<String> {
+    use std::process::Command;
+    let abs = std::fs::canonicalize(docx).with_context(|| format!("resolve {}", docx.display()))?;
+    // Strip the Windows verbatim prefix so Word's COM Open accepts the path.
+    let abs = abs.to_string_lossy().replace(r"\\?\", "");
+    let q = abs.replace('\'', "''"); // single-quote escape for PowerShell
+    let pdf_block = if pdf {
+        let pdf_path = std::path::Path::new(&abs).with_extension("pdf");
+        format!(
+            "$d.SaveAs([ref]'{}', [ref]17)",
+            pdf_path.to_string_lossy().replace('\'', "''")
+        )
+    } else {
+        String::new()
+    };
+    // Mirrors book_build/finalize.ps1: update every field class, repaginate so
+    // page numbers are real, hide field codes, save (cached results -> no prompt).
+    let script = format!(
+        r#"$ErrorActionPreference='Stop'
+$w = New-Object -ComObject Word.Application
+$w.Visible=$false; $w.DisplayAlerts=0
+$w.Options.ConfirmConversions=$false; $w.Options.UpdateLinksAtOpen=$false
+try {{
+  $d = $w.Documents.Open('{q}', $false, $false, $false)
+  $d.Fields.Update() | Out-Null
+  foreach ($tof in $d.TablesOfFigures) {{ $tof.Update() }}
+  foreach ($toc in $d.TablesOfContents) {{ $toc.Update() }}
+  foreach ($ix in $d.Indexes) {{ $ix.Update() }}
+  try {{ $d.ActiveWindow.View.ShowFieldCodes=$false }} catch {{}}
+  $d.Repaginate()
+  $pages=$d.ComputeStatistics(2)
+  $d.Save()
+  {pdf_block}
+  $d.Close($false)
+  Write-Output "pages=$pages"
+}} finally {{
+  $w.Quit()
+  [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
+}}"#
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .context("launch Word via powershell (is Microsoft Word installed?)")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "Word finalize failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[cfg(not(windows))]
+fn finalize_one(_docx: &Path, _pdf: bool) -> Result<String> {
+    anyhow::bail!(
+        "`book finalize` requires Microsoft Word and runs on Windows only; \
+         on other platforms the rendered .docx already carries updateFields so \
+         Word refreshes on open"
+    )
 }
 
 fn build(

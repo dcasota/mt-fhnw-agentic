@@ -498,6 +498,19 @@ pub enum BookAction {
         #[arg(long)]
         previous: Option<PathBuf>,
     },
+    /// Finalize rendered `.docx` through Microsoft Word (Windows only): update
+    /// every field (TOC, List of Figures/Tables, Index), repaginate so page
+    /// numbers are real, and save — so the document opens with NO "update
+    /// fields" prompt. Ports the gold `book_build/finalize.ps1`. Requires Word;
+    /// errors clearly on non-Windows or when Word is absent.
+    Finalize {
+        /// A `.docx` file, or a directory whose `.docx` files are all finalized.
+        #[arg(long)]
+        path: PathBuf,
+        /// Also export a PDF next to each finalized `.docx`.
+        #[arg(long, default_value_t = false)]
+        pdf: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
