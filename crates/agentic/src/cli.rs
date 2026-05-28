@@ -314,6 +314,17 @@ pub enum Command {
         action: ProfileAction,
     },
 
+    /// Content translation (perception P-5). The chrome-only `--lang` flag
+    /// already exists on every command; this verb releases the held *content*
+    /// translation pipeline for an explicit operator-chosen scope. Gated by
+    /// `agentic authorize grant --action translate` (the runtime's
+    /// irreversible-action discipline; ADR-0047) because translation calls
+    /// out to an LLM provider and writes new content blobs.
+    Translate {
+        #[command(subcommand)]
+        action: TranslateAction,
+    },
+
     /// Source-merge utilities (codifies manual assembly steps). Currently:
     /// assemble the eleven dimension sources into one English compendium.
     Merge {
@@ -447,6 +458,30 @@ pub enum OrchestrateAction {
         /// Root directory for the docs gate.
         #[arg(long, default_value = ".")]
         root: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TranslateAction {
+    /// Translate a scope of the corpus into a target language. Held by
+    /// default; requires `agentic authorize grant --action translate`.
+    /// Use `--dry-run` to preview the scope and the provider that would be
+    /// used without making any LLM calls or writing any files.
+    Scope {
+        #[arg(long)]
+        project: String,
+        /// Target language tag (de, fr, it, rm, hi).
+        #[arg(long)]
+        target: String,
+        /// Scope: `front-matter` (smallest), `thesis`, or `corpus`.
+        #[arg(long, default_value = "front-matter")]
+        scope: String,
+        /// Provider to use; default = first configured cloud provider.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Skip the LLM calls and the writes; preview the plan only.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
