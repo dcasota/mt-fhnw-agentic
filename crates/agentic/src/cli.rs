@@ -881,6 +881,17 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// Undefined-term gate (per-user 2026-05-28): flag any acronym used in a
+    /// deliverable before it appears in the front-matter Acronyms and
+    /// Abbreviations table or is introduced parenthetically on the same line.
+    /// Advisory (WARN-only). Stop-list covers universal abbreviations.
+    UndefinedTerms {
+        #[arg(long)]
+        project: String,
+        /// Restrict to a path prefix in the working tree.
+        #[arg(long, default_value = "thesis/")]
+        prefix: String,
+    },
     /// Future-year temporal-contamination gate: any standalone 20xx year greater
     /// than --max-year in deliverable markdown or corpus years WARNs.
     Temporal {

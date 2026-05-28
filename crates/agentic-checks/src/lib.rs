@@ -37,6 +37,7 @@ pub mod self_check;
 pub mod sprint_gate;
 pub mod temporal_gate;
 pub mod tree_integrity;
+pub mod undefined_terms;
 pub mod writing_quality;
 
 use serde::{Deserialize, Serialize};

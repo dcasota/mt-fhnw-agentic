@@ -114,6 +114,10 @@ pub async fn run_report(
             agentic_checks::model_review_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::UndefinedTerms { project, prefix } => (
+            agentic_checks::undefined_terms::run(&conn, &project, &prefix)?,
+            Some(project),
+        ),
         CheckAction::Temporal { project, max_year } => (
             agentic_checks::temporal_gate::run(&conn, &project, max_year)?,
             Some(project),
