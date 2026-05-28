@@ -1912,7 +1912,17 @@ fn render_thesis_book(
         ),
     );
 
-    doc = title_page(doc, meta);
+    // Skip the engine-generated cover when the manifest already supplies an
+    // explicit `ThesisSlot::TitlePage` chapter (e.g. the FHNW formal title
+    // sheet `thesis/fhnw_00_title_page.md`). Otherwise two title-like pages
+    // would render back-to-back — the engine cover then the markdown chapter.
+    // Non-thesis books (no explicit title chapter) keep the engine cover.
+    let has_explicit_title = chapters
+        .iter()
+        .any(|(_label, md)| thesis_slot(md) == ThesisSlot::TitlePage);
+    if !has_explicit_title {
+        doc = title_page(doc, meta);
+    }
 
     let mut index_terms: Vec<String> = INDEX_TERMS.iter().map(|s| (*s).to_string()).collect();
     index_terms.extend(meta.index_terms.iter().cloned());
@@ -1928,8 +1938,10 @@ fn render_thesis_book(
     };
 
     // `emitted` tracks whether any flow content precedes the next item, so the
-    // first front-matter chapter does not get a redundant page break (the title
-    // page already ends with one).
+    // first front-matter chapter does not get a redundant page break. In both
+    // branches above (engine cover rendered, or explicit title chapter) the
+    // first chapter wants `page_break_before=false`: the engine cover ends
+    // with its own break, and an explicit title chapter is itself the cover.
     let mut emitted = false;
     for item in thesis_layout(chapters) {
         match item {
@@ -2433,6 +2445,71 @@ mod tests {
         let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
         assert_eq!(&bytes[..4], b"PK\x03\x04", "valid docx zip");
         assert!(bytes.len() > 3000, "non-trivial document");
+    }
+
+    #[test]
+    fn thesis_with_explicit_title_chapter_has_no_engine_cover() {
+        // Regression for the 2026-05-28 cascade output: the thesis profile was
+        // emitting BOTH the engine-generated `title_page(doc, meta)` cover AND
+        // the explicit `thesis/fhnw_00_title_page.md` chapter, producing two
+        // title-like pages back-to-back. The fix suppresses the engine cover
+        // when an explicit `ThesisSlot::TitlePage` chapter is supplied.
+        //
+        // The engine cover renders the literal `meta.subtitle` string in a
+        // dedicated centred run; the explicit FHNW title chapter never does.
+        // Inflate the docx ZIP, read `word/document.xml`, and assert the
+        // subtitle string is ABSENT — proving the engine cover was suppressed.
+        use std::io::Read;
+        let unique_subtitle = "ENGINE_COVER_SUBTITLE_SENTINEL_2026";
+        let meta = BookMeta {
+            title: "Governance and Leadership…".into(),
+            subtitle: unique_subtitle.into(),
+            author: "Daniel Casota".into(),
+            context: "MAS Cybersecurity, FHNW".into(),
+            thesis_profile: true,
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            !d.contains(unique_subtitle),
+            "engine cover should be suppressed when explicit title chapter exists \
+             (found subtitle sentinel in word/document.xml)"
+        );
+    }
+
+    #[test]
+    fn thesis_without_explicit_title_chapter_keeps_engine_cover() {
+        // The dedup is opt-in: a manifest WITHOUT an explicit TitlePage chapter
+        // still gets the engine-generated cover (so legacy thesis-profile books
+        // are not regressed). Use a sentinel subtitle to prove the cover ran.
+        use std::io::Read;
+        let unique_subtitle = "ENGINE_COVER_SUBTITLE_SENTINEL_2026";
+        let meta = BookMeta {
+            title: "Legacy Thesis".into(),
+            subtitle: unique_subtitle.into(),
+            thesis_profile: true,
+            ..Default::default()
+        };
+        let chapters: Vec<(String, String)> =
+            vec![("intro".into(), "# Introduction\n\nBody text.\n".into())];
+        let bytes = render_book(&meta, &chapters, Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains(unique_subtitle),
+            "engine cover must still render when no explicit title chapter \
+             (subtitle sentinel missing from word/document.xml)"
+        );
     }
 
     #[test]

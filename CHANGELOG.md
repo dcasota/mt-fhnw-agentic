@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] — 2026-05-28
+
+### Fixed — bookkit-C gate scope, FHNW title-page dedup, structural HITL pause
+
+Closes the 4 root causes the 2026-05-28 cascade audit identified: a 91-page
+master_thesis.docx + two title-like pages + heavy bold density shipped
+through a cleanly-PASSing gate suite because the gates were measuring the
+wrong artefact. Every fix is opt-in or backwards-compatible — no existing
+gate invocation changes behaviour.
+
+- **F-R3 title-page dedup (`book.rs`)**: in `render_thesis_book`, the
+  engine-generated `title_page(doc, meta)` cover is now suppressed when
+  the manifest's chapter list already contains a chapter classified as
+  `ThesisSlot::TitlePage` (i.e. the FHNW formal title sheet
+  `thesis/fhnw_00_title_page.md`). Non-thesis books and thesis books
+  without an explicit title chapter keep the engine cover. Two regression
+  tests in `agentic-export` introspect the rendered docx XML.
+- **F-R1/R2 manifest-aware gate scope**: `check page-boundary` and
+  `check bookkit` accept new opt-in args `--paths-from-manifest <path>
+  --book-key <key>`. When supplied the gate audits exactly the chapter
+  list of that book in the manifest — fixing the mixed-prefix blind spot
+  where the master-thesis book composes from both `thesis/` and
+  `out/sources/` but a single `--prefix` scan only saw one. Default
+  invocations (no manifest args) match the previous prefix-only
+  behaviour exactly. New `Scope` enum + `run_scoped` in
+  `page_boundary_gate` and `bookkit_gate`; 3 new unit tests across both
+  gates.
+- **F-R1b calibrated words-per-page**: `check page-boundary --words-per-page
+  <N>` (default 500 = legacy raw-manuscript convention). Empirical FHNW
+  Word density measured at 278.9 wpp (25,381 words / 91 pages); the
+  cascade thesis-profile invocation passes 280. The old 500 default
+  would estimate 51 pages for a 91-page docx (≈ 1.8× under-count).
+  Unit test asserts the 280-wpp rate flips a borderline estimate.
+- **F-R4 `--thesis-strict` HITL pause (`cascade.rs`)**: new opt-in flag
+  on `cascade run`. When set, a `PAGE_OVER` / `BOLD_OVERUSE` /
+  `NON_ENGLISH` / `HEADING_DEPTH` finding from the thesis-profile gate
+  run halts the cascade with a clearly-marked `[HITL PAUSE]` block
+  BEFORE phase 7 (SEAL), and the process exits non-zero. Default
+  (advisory mode) preserved — single failing gate continues to seal as
+  before, returning exit 0. Two regression tests cover the gate-args
+  wiring + the structural-category list.
+- **Cascade rule-matrix wires thesis-profile scope**: the cascade's
+  `push_audit_gates` now passes `--paths-from-manifest` +
+  `--book-key=<thesis_key>` (+ `--words-per-page=280` for page_boundary)
+  when invoking page-boundary and bookkit, so the cascade's gate run
+  matches what the rendered master_thesis.docx actually contains.
+
+### Verified — root-cause closure (2026-05-28)
+
+End-to-end measurement on the master_thesis.docx snapshot rebuilt with
+v0.1.10 (`agentic book build --only master_thesis`):
+
+| Gate (scoped invocation) | Pre-fix verdict | Post-fix verdict | Real state |
+|---|---|---|---|
+| `page-boundary` (manifest-scoped, 280 wpp) | PASS — ≈44 pages | **WARN — ≈91 pages > 60** | docx = 90 pages |
+| `bookkit` (manifest-scoped) | PASS — 0 bold | **WARN — 5 BOLD_OVERUSE** | confirmed |
+| Title-page paragraph block | 19 engine-cover paragraphs THEN `Heading 1: Title Page` | **`Heading 1: Title Page` is paragraph 1** | one title page |
+| `cascade run --thesis-strict` | (no pause existed) | **`[HITL PAUSE]` fires; exit 1; refuses to seal** | working |
+| `cascade run` (default) | exit 0 | **exit 0** (unchanged) | no regression |
+
+Also fixed in v0.1.10: the `deliverable` gate's 7 findings in the
+2026-05-28 cascade-audit docs (3 German-abbreviation residues, 2
+HTML-comment markers, 2 unsourced number-of-days estimates) via in-place
+content edits to `out/sources/cascade_audit/01_report.md` and
+`02_plan_todo.md`. Gate now PASSes with 0 findings.
+
 ## [0.1.9] — 2026-05-28
 
 ### Added — six perception-derived commands + one schema migration

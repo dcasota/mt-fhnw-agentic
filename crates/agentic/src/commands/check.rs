@@ -98,10 +98,29 @@ pub async fn run_report(
             };
             (agentic_checks::i18n_gate::run(target), Some(project))
         }
-        CheckAction::Bookkit { project, prefix } => (
-            agentic_checks::bookkit_gate::run(&conn, &project, &prefix)?,
-            Some(project),
-        ),
+        CheckAction::Bookkit {
+            project,
+            prefix,
+            paths_from_manifest,
+            book_key,
+        } => {
+            let report = match (paths_from_manifest, book_key) {
+                (Some(manifest_path), Some(key)) => {
+                    let paths = load_manifest_paths(&conn, &project, &manifest_path, &key)?;
+                    let paths_ref: Vec<&str> = paths.iter().map(String::as_str).collect();
+                    agentic_checks::bookkit_gate::run_scoped(
+                        &conn,
+                        &project,
+                        agentic_checks::bookkit_gate::Scope::Paths {
+                            book_key: &key,
+                            paths: &paths_ref,
+                        },
+                    )?
+                }
+                _ => agentic_checks::bookkit_gate::run(&conn, &project, &prefix)?,
+            };
+            (report, Some(project))
+        }
         CheckAction::Prisma { project, prefix } => (
             agentic_checks::prisma_gate::run(&conn, &project, &prefix)?,
             Some(project),
@@ -183,10 +202,35 @@ pub async fn run_report(
             project,
             prefix,
             max_pages,
-        } => (
-            agentic_checks::page_boundary_gate::run(&conn, &project, &prefix, max_pages)?,
-            Some(project),
-        ),
+            words_per_page,
+            paths_from_manifest,
+            book_key,
+        } => {
+            let report = match (paths_from_manifest, book_key) {
+                (Some(manifest_path), Some(key)) => {
+                    let paths = load_manifest_paths(&conn, &project, &manifest_path, &key)?;
+                    let paths_ref: Vec<&str> = paths.iter().map(String::as_str).collect();
+                    agentic_checks::page_boundary_gate::run_scoped(
+                        &conn,
+                        &project,
+                        agentic_checks::page_boundary_gate::Scope::Paths {
+                            book_key: &key,
+                            paths: &paths_ref,
+                        },
+                        max_pages,
+                        words_per_page,
+                    )?
+                }
+                _ => agentic_checks::page_boundary_gate::run_scoped(
+                    &conn,
+                    &project,
+                    agentic_checks::page_boundary_gate::Scope::Prefix(&prefix),
+                    max_pages,
+                    words_per_page,
+                )?,
+            };
+            (report, Some(project))
+        }
         CheckAction::Tree {
             project,
             root,
@@ -266,4 +310,44 @@ fn severity_label(s: &agentic_checks::Severity) -> &'static str {
         agentic_checks::Severity::Error => "ERROR",
         agentic_checks::Severity::Blocking => "BLOCKING",
     }
+}
+
+/// Read a bookkit manifest from the project's content store and return the
+/// ordered chapter path list for `book_key`. Used by the scoped variants of
+/// `check page-boundary` and `check bookkit` so the gate measures exactly
+/// what the rendered book composes.
+///
+/// The manifest path is the DB path (the same one the book engine reads),
+/// resolved by the project worktree — NOT a filesystem path.
+fn load_manifest_paths(
+    conn: &rusqlite::Connection,
+    project: &str,
+    manifest_path: &Path,
+    book_key: &str,
+) -> Result<Vec<String>> {
+    let manifest_db_path = manifest_path.to_string_lossy().replace('\\', "/");
+    let blob = agentic_core::worktree::read_at(conn, project, &manifest_db_path)?;
+    let text = String::from_utf8(blob.content)?;
+    let json: serde_json::Value = serde_json::from_str(&text)?;
+    let books = json
+        .get("books")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("manifest has no `books` array"))?;
+    for b in books {
+        if b.get("key").and_then(|v| v.as_str()) == Some(book_key) {
+            let chapters = b
+                .get("chapters")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("book '{book_key}' has no `chapters` array"))?;
+            return chapters
+                .iter()
+                .map(|c| {
+                    c.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| anyhow::anyhow!("chapter is not a string"))
+                })
+                .collect();
+        }
+    }
+    anyhow::bail!("book key '{book_key}' not found in manifest {manifest_db_path}")
 }

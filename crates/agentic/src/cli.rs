@@ -389,6 +389,16 @@ pub enum CascadeAction {
         /// Root directory the DB paths / sub-sessions are relative to.
         #[arg(long, default_value = ".")]
         root: std::path::PathBuf,
+        /// Bookkit C (FHNW master-thesis) structural-rule HITL pause.
+        ///
+        /// When set, the cascade STOPS before the seal step (phase 7) if the
+        /// thesis-profile run of `page_boundary` or `bookkit` reports any of:
+        /// `PAGE_OVER`, `BOLD_OVERUSE`, `NON_ENGLISH`, `HEADING_DEPTH`. A
+        /// clearly-marked `[HITL PAUSE]` block is printed and the cascade
+        /// exits non-zero. Default `--thesis-strict=false` preserves the
+        /// existing advisory-only behaviour.
+        #[arg(long)]
+        thesis_strict: bool,
     },
 }
 
@@ -1020,12 +1030,27 @@ pub enum CheckAction {
     /// bold is allowed only as a short leading label (RULE 1), and body prose
     /// must be English (RULE 2, conservative deny-list). Reports violations
     /// with `<path>:<line>` locations plus per-rule totals.
+    ///
+    /// Scope is `--prefix` by default. When `--paths-from-manifest` + `--book-key`
+    /// are supplied the gate measures the exact chapter list of that book in
+    /// the manifest (fixes ADR-0045 bookkit-C scope: the thesis profile
+    /// composes from mixed prefixes, so a single-prefix scan misses chapters).
     Bookkit {
         #[arg(long)]
         project: String,
-        /// Restrict the audit to a path prefix.
+        /// Restrict the audit to a path prefix. Ignored when
+        /// `--paths-from-manifest` + `--book-key` are supplied.
         #[arg(long, default_value = agentic_core::paths::SOURCES_PREFIX)]
         prefix: String,
+        /// Optional bookkit manifest path; when supplied with `--book-key`
+        /// the gate audits the exact chapter list of that book instead of
+        /// every file under `--prefix`.
+        #[arg(long, requires = "book_key")]
+        paths_from_manifest: Option<std::path::PathBuf>,
+        /// Bookkit manifest key (e.g. `master_thesis`) selecting which book's
+        /// chapter list to audit. Requires `--paths-from-manifest`.
+        #[arg(long, requires = "paths_from_manifest")]
+        book_key: Option<String>,
     },
     /// PRISMA claim→source coverage (ADR-0020/0026): every in-text citation key
     /// must map to a literature_corpus reference. Unmapped keys WARN; an INFO
@@ -1102,18 +1127,41 @@ pub enum CheckAction {
         project: String,
     },
     /// Three-tier body-length gate (ADR-0035): estimates pages from word count
-    /// (~500 words/page) under --prefix; over --max-pages WARNs, else INFO.
+    /// under `--prefix`; over `--max-pages` WARNs, else INFO.
+    ///
+    /// `--words-per-page` calibrates the heuristic (default 500, ~1 manuscript
+    /// page). For rendered FHNW Word output the empirical density is ~280
+    /// words/page (TOC, LoF, LoT, declarations, bibliography lines).
+    ///
+    /// When `--paths-from-manifest` + `--book-key` are supplied the gate
+    /// counts only the chapters listed for that book in the manifest, so the
+    /// estimate matches what the rendered .docx actually contains.
     PageBoundary {
         #[arg(long)]
         project: String,
         /// Restrict the word-count to a path prefix. Defaults to the FHNW
         /// master-thesis body (ADR-0045); the superseded dimensional draft lives
-        /// under `thesis-draft-v5/` and is not the gated body.
+        /// under `thesis-draft-v5/` and is not the gated body. Ignored when
+        /// `--paths-from-manifest` + `--book-key` are supplied.
         #[arg(long, default_value = "thesis/")]
         prefix: String,
         /// Maximum allowed estimated pages.
         #[arg(long, default_value_t = 60)]
         max_pages: usize,
+        /// Words-per-page heuristic. Default 500 (raw manuscript). FHNW Word
+        /// thesis density is empirically ~280 — passing 280 here matches the
+        /// rendered .docx page count.
+        #[arg(long, default_value_t = 500)]
+        words_per_page: usize,
+        /// Optional bookkit manifest path; when supplied with `--book-key`
+        /// the gate counts the exact chapter list of that book instead of
+        /// every file under `--prefix`.
+        #[arg(long, requires = "book_key")]
+        paths_from_manifest: Option<std::path::PathBuf>,
+        /// Bookkit manifest key (e.g. `master_thesis`) selecting which book's
+        /// chapter list to count. Requires `--paths-from-manifest`.
+        #[arg(long, requires = "paths_from_manifest")]
+        book_key: Option<String>,
     },
     /// ARS 7-mode integrity scan (ADR-0044): hallucinated results, method
     /// fabrication, shortcuts, impl-bug admissions, frame-lock, unverified

@@ -48,6 +48,10 @@ struct CascadeOpts {
     force_full: bool,
     dry_run: bool,
     root: String,
+    /// Bookkit C structural-rule HITL: when true, a PAGE_OVER /
+    /// BOLD_OVERUSE / NON_ENGLISH / HEADING_DEPTH finding from the
+    /// thesis-profile gate run halts the cascade before phase 7 (seal).
+    thesis_strict: bool,
 }
 
 /// Phases whose steps are checkpointed/skippable on `--resume` (the expensive
@@ -457,6 +461,14 @@ fn push_build_book(steps: &mut Vec<Step>, opts: &CascadeOpts) {
 /// `gate_suite` is `universal + per-profile additions`, resolved once in
 /// `run_cascade` from `specs/rule-matrix.json` (or the default matrix). Each
 /// gate records its own verdict.
+///
+/// Thesis-profile scope wiring (2026-05-28): `page-boundary` and `bookkit`
+/// are upgraded with `--paths-from-manifest` + `--book-key=<thesis_key>` so
+/// they measure the exact chapter list the master-thesis book composes
+/// (mixed `thesis/` + `out/sources/` prefixes). `page-boundary` additionally
+/// passes `--words-per-page=280` — the empirical FHNW Word render density.
+/// Both args are NEW opt-ins on the gates; non-thesis cascades pass nothing
+/// extra and the gates fall back to their legacy `--prefix` behaviour.
 fn push_audit_gates(
     steps: &mut Vec<Step>,
     opts: &CascadeOpts,
@@ -471,10 +483,76 @@ fn push_audit_gates(
                 args.push(opts.root.clone());
             }
             "contamination" => args.push("--offline".into()),
+            "page-boundary" => {
+                args.push("--paths-from-manifest".into());
+                args.push(opts.manifest.clone());
+                args.push("--book-key".into());
+                args.push(opts.thesis_key.clone());
+                args.push("--words-per-page".into());
+                args.push("280".into());
+            }
+            "bookkit" => {
+                args.push("--paths-from-manifest".into());
+                args.push(opts.manifest.clone());
+                args.push("--book-key".into());
+                args.push(opts.thesis_key.clone());
+            }
             _ => {}
         }
         steps.push(Step::gate(6, format!("check {sub}"), args, cp));
     }
+}
+
+/// Bookkit-C structural-rule categories that the `--thesis-strict` HITL
+/// pause treats as cascade-stoppers (FHNW master-thesis structure must hold
+/// before the seal step; see ADR-0045 and the 2026-05-28 root-cause report).
+const STRICT_STRUCTURAL_CATEGORIES: &[&str] =
+    &["PAGE_OVER", "BOLD_OVERUSE", "NON_ENGLISH", "HEADING_DEPTH"];
+
+/// Inspect the latest `audit_verdicts` rows for the bookkit-C gates and return
+/// the structural categories that fired. Empty = clean; non-empty triggers
+/// the [HITL PAUSE] block in `--thesis-strict` mode.
+fn strict_structural_violations(
+    db_path: &Path,
+    project: &str,
+) -> Vec<(&'static str, &'static str, String)> {
+    let mut hits = Vec::new();
+    let conn = match agentic_core::db::open(db_path) {
+        Ok(c) => c,
+        Err(_) => return hits,
+    };
+    for checkpoint in ["page_boundary", "bookkit"] {
+        let row: Result<String, _> = conn.query_row(
+            "SELECT findings_json FROM audit_verdicts \
+             WHERE project_id = ?1 AND checkpoint = ?2 \
+             ORDER BY id DESC LIMIT 1",
+            rusqlite::params![project, checkpoint],
+            |r| r.get::<_, String>(0),
+        );
+        let Ok(json_text) = row else { continue };
+        let Ok(findings): Result<Vec<serde_json::Value>, _> = serde_json::from_str(&json_text)
+        else {
+            continue;
+        };
+        for f in findings {
+            let category = f
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if let Some(matched) = STRICT_STRUCTURAL_CATEGORIES
+                .iter()
+                .find(|c| **c == category)
+            {
+                let location = f
+                    .get("location")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_string();
+                hits.push((checkpoint, *matched, location));
+            }
+        }
+    }
+    hits
 }
 
 /// 7. SEAL — sign every commit then compile the signed audit report.
@@ -524,6 +602,7 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
             force_full,
             dry_run,
             root,
+            thesis_strict,
         } => {
             // Snapshot-by-default (ADR-0035): when --out is omitted, render into
             // an immutable timestamped snapshot dir rather than the live out/.
@@ -547,6 +626,7 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
                 force_full,
                 dry_run,
                 root: root.to_string_lossy().to_string(),
+                thesis_strict,
             };
             run_cascade(db_path, &opts, json_out)
         }
@@ -580,6 +660,11 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
     let mut rows: Vec<(u8, String, String)> = Vec::new();
     let mut last_phase = 0u8;
     let mut any_fail = false;
+    // Set only when --thesis-strict fires its HITL pause. Used to surface a
+    // non-zero exit code so CI / wrapper scripts can distinguish a clean
+    // cascade-with-advisory-WARNs from a structural-rule break that REFUSED
+    // to seal.
+    let mut strict_hitl_fired = false;
 
     // Checkpoint/resume (ADR-0047 R3): a content fingerprint scopes the
     // checkpoints; `--force-full` clears them; `--resume` skips expensive steps
@@ -590,6 +675,36 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
     }
 
     for step in &plan {
+        // --thesis-strict HITL pause: when the phase transitions OUT of the
+        // gate phase (6 → 7), inspect the bookkit-C structural findings just
+        // recorded. Any PAGE_OVER / BOLD_OVERUSE / NON_ENGLISH / HEADING_DEPTH
+        // halts the cascade before the seal step. Default off — preserves the
+        // existing advisory-only behaviour.
+        if opts.thesis_strict && last_phase == 6 && step.phase == 7 && !opts.dry_run {
+            let violations = strict_structural_violations(db_path, &opts.project);
+            if !violations.is_empty() {
+                if !json_out {
+                    println!(
+                        "\n  \u{2716} [HITL PAUSE] --thesis-strict: bookkit-C structural-rule \
+                         violation(s) detected — refusing to seal.\n"
+                    );
+                    println!("  The following findings must be cleared before phase 7 (SEAL):");
+                    for (checkpoint, category, location) in &violations {
+                        println!("    [{checkpoint:<14}] [{category:<14}] {location}");
+                    }
+                    println!(
+                        "\n  Resolve, re-run the cascade (without --thesis-strict to bypass), \
+                         OR run `agentic check {{page-boundary,bookkit}} \
+                         --paths-from-manifest <m> --book-key <k>` directly to triage."
+                    );
+                }
+                rows.push((7, "thesis-strict HITL pause".into(), "FAIL".into()));
+                any_fail = true;
+                strict_hitl_fired = true;
+                break;
+            }
+        }
+
         // Print the phase banner once per phase boundary.
         if step.phase != last_phase && !json_out {
             println!("\n[cascade {}/7] {}", step.phase, phase_title(step.phase));
@@ -692,6 +807,13 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
             println!("\n  note: one or more steps reported FAIL (not aborted; review above).");
         }
     }
+    // Non-zero exit only for the --thesis-strict HITL pause; advisory FAIL
+    // verdicts on individual gates remain Ok(()) (existing convention) so a
+    // single failing gate does not break the wrapper scripts that depend on
+    // the cascade always returning successfully when it finished.
+    if strict_hitl_fired {
+        anyhow::bail!("cascade refused to seal — --thesis-strict HITL pause fired");
+    }
     Ok(())
 }
 
@@ -739,6 +861,7 @@ mod tests {
             force_full: false,
             dry_run,
             root: ".".into(),
+            thesis_strict: false,
         }
     }
 
@@ -903,5 +1026,58 @@ mod tests {
             .find(|s| s.label == "check contamination")
             .unwrap();
         assert!(contam.args.contains(&"--offline".to_string()));
+    }
+
+    #[test]
+    fn thesis_profile_gates_receive_manifest_scope_args() {
+        // Regression for the 2026-05-28 scope mismatch: the thesis-profile
+        // page_boundary and bookkit gates must be invoked with
+        // --paths-from-manifest + --book-key=<thesis_key> so they measure
+        // exactly the chapter list of the rendered master_thesis.docx.
+        // page_boundary additionally passes --words-per-page=280 (the
+        // empirical FHNW Word render density). Other gates get no extra args.
+        let plan = build_plan(&opts(true, false, false), &dims(), false, &suite());
+        let pb = plan
+            .iter()
+            .find(|s| s.label == "check page-boundary")
+            .expect("page-boundary present in gate suite");
+        assert!(pb.args.contains(&"--paths-from-manifest".to_string()));
+        assert!(pb.args.contains(&"out/book_manifest.json".to_string()));
+        assert!(pb.args.contains(&"--book-key".to_string()));
+        assert!(pb.args.contains(&"master_thesis".to_string()));
+        assert!(pb.args.contains(&"--words-per-page".to_string()));
+        assert!(pb.args.contains(&"280".to_string()));
+
+        let bk = plan
+            .iter()
+            .find(|s| s.label == "check bookkit")
+            .expect("bookkit present in gate suite");
+        assert!(bk.args.contains(&"--paths-from-manifest".to_string()));
+        assert!(bk.args.contains(&"--book-key".to_string()));
+        assert!(bk.args.contains(&"master_thesis".to_string()));
+        // bookkit must NOT receive --words-per-page (it has no such concept).
+        assert!(!bk.args.contains(&"--words-per-page".to_string()));
+
+        // Other gates (e.g. citations) must NOT receive the manifest args.
+        if let Some(cit) = plan.iter().find(|s| s.label == "check citations") {
+            assert!(!cit.args.contains(&"--paths-from-manifest".to_string()));
+            assert!(!cit.args.contains(&"--book-key".to_string()));
+        }
+    }
+
+    #[test]
+    fn strict_structural_violations_recognises_categories() {
+        // Unit-test the parser side of `strict_structural_violations` by
+        // checking the category list is exactly the four bookkit-C structural
+        // rules — adding a fifth here without updating the gate is a guard
+        // against silent scope drift.
+        let expected = ["PAGE_OVER", "BOLD_OVERUSE", "NON_ENGLISH", "HEADING_DEPTH"];
+        assert_eq!(STRICT_STRUCTURAL_CATEGORIES.len(), expected.len());
+        for cat in expected {
+            assert!(
+                STRICT_STRUCTURAL_CATEGORIES.contains(&cat),
+                "missing structural category: {cat}"
+            );
+        }
     }
 }

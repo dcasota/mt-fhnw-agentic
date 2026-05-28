@@ -221,15 +221,45 @@ pub fn heading_depth_violations(text: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// Where to source the audit files from.
+#[derive(Debug, Clone, Copy)]
+pub enum Scope<'a> {
+    /// Scan every `*.md` whose path starts with `prefix` (the legacy default).
+    Prefix(&'a str),
+    /// Scan only the chapter list of one bookkit manifest entry.
+    Paths {
+        /// Manifest key, surfaced in the audit message for traceability.
+        book_key: &'a str,
+        /// The chapter path list, in manifest order.
+        paths: &'a [&'a str],
+    },
+}
+
 /// Run the bookkit gate over a project's deliverable markdown (`prefix`).
 pub fn run(conn: &Connection, project: &str, prefix: &str) -> Result<CheckReport> {
+    run_scoped(conn, project, Scope::Prefix(prefix))
+}
+
+/// Scoped variant used by the cascade thesis-profile invocation.
+///
+/// `Scope::Prefix` matches the legacy behaviour. `Scope::Paths` audits
+/// exactly the chapter list a bookkit manifest entry composes — fixing the
+/// mixed-prefix-scope blind spot where the master-thesis book draws from
+/// both `thesis/` and `out/sources/` but the gate only sees one.
+pub fn run_scoped(conn: &Connection, project: &str, scope: Scope<'_>) -> Result<CheckReport> {
     let mut findings = Vec::new();
     let mut total_bold = 0usize;
     let mut total_non_en = 0usize;
     let mut total_heading_depth = 0usize;
     let mut distinct_tokens: BTreeSet<String> = BTreeSet::new();
 
-    let entries = worktree::list(conn, project, prefix)?;
+    let entries: Vec<(String, String)> = match scope {
+        Scope::Prefix(prefix) => worktree::list(conn, project, prefix)?,
+        Scope::Paths { book_key: _, paths } => paths
+            .iter()
+            .map(|p| ((*p).to_string(), String::new()))
+            .collect(),
+    };
     for (path, _sha) in entries.iter().filter(|(p, _)| {
         std::path::Path::new(p)
             .extension()
@@ -427,5 +457,83 @@ mod tests {
         assert_eq!(non_english_tokens(fenced).len(), 0);
         let url = "see https://example.com/und/oder for details\n";
         assert_eq!(non_english_tokens(url).len(), 0);
+    }
+
+    #[test]
+    fn scoped_paths_only_audits_listed_files() {
+        // Regression for the 2026-05-28 cascade: the bookkit gate was scanning
+        // only `out/sources/` by default, so a master-thesis book composed
+        // from `thesis/...` chapters showed 0 bold violations even when its
+        // title page had 5. The scoped variant audits exactly the manifest's
+        // chapter list, so the title-page bolds surface.
+        use crate::bookkit_gate::{Scope, run as run_legacy, run_scoped as run_scoped_fn};
+        use agentic_core::{
+            db::open_in_memory,
+            project::{ProjectKind, create as create_project},
+            worktree,
+        };
+        let conn = open_in_memory().unwrap();
+        let pid = create_project(&conn, "T", ProjectKind::Thesis, "en", None).unwrap();
+        // Thesis chapter with one mid-prose bold violation.
+        worktree::put_at(
+            &conn,
+            &pid,
+            "thesis/fhnw_00_title_page.md",
+            b"# Title Page\n\nText with **a bold mid-prose** inside.\n",
+            "text/markdown",
+            Some("en"),
+            "u",
+            "init",
+        )
+        .unwrap();
+        // Out-of-scope content under the legacy prefix — must NOT be flagged
+        // by the scoped scan.
+        worktree::put_at(
+            &conn,
+            &pid,
+            "out/sources/unrelated.md",
+            b"# Other\n\nMid-prose **bold** here too.\n",
+            "text/markdown",
+            Some("en"),
+            "u",
+            "init",
+        )
+        .unwrap();
+
+        // Legacy prefix scan over `out/sources/` finds the unrelated one
+        // and misses the thesis one.
+        let legacy = run_legacy(&conn, &pid, "out/sources/").unwrap();
+        let legacy_bold = legacy
+            .findings
+            .iter()
+            .filter(|f| f.category == "BOLD_OVERUSE")
+            .count();
+        assert_eq!(legacy_bold, 1, "prefix scan sees only the unrelated file");
+
+        // Scoped scan over only the thesis chapter sees the thesis bold
+        // and ignores the unrelated one.
+        let paths = ["thesis/fhnw_00_title_page.md"];
+        let scoped = run_scoped_fn(
+            &conn,
+            &pid,
+            Scope::Paths {
+                book_key: "master_thesis",
+                paths: &paths,
+            },
+        )
+        .unwrap();
+        let scoped_bold = scoped
+            .findings
+            .iter()
+            .filter(|f| f.category == "BOLD_OVERUSE")
+            .count();
+        assert_eq!(scoped_bold, 1, "scoped scan sees only the thesis file");
+        assert!(
+            scoped
+                .findings
+                .iter()
+                .any(|f| f.location.as_deref() == Some("thesis/fhnw_00_title_page.md:3")),
+            "scoped scan must locate the violation in the thesis chapter"
+        );
     }
 }
