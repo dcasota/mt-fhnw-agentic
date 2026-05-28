@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] — 2026-05-28
+
+### Added — six perception-derived commands + one schema migration
+
+Implements the six tool-improvement opportunities from the operator's
+Governance-Perception document (P-1 through P-6):
+
+- **P-2 `agentic audit profile`** — per-section audit verdict view:
+  joins the latest `audit_verdicts` per gate × the path → section
+  classifier × the static gate → ADR map; markdown/JSON; thesis-only
+  gates listed only under master_thesis. Module
+  `agentic_core::audit_profile` (`Section` enum + `classify_path` +
+  `gate_adrs` + `compute` + `render_markdown`). 3 unit tests.
+- **P-4 `agentic rank summary`** — per-section ADR-0046 acceptance:
+  walks `claim_audit_results`, classifies by path, counts placements
+  (thesis_main/thesis_appendix/lowrankings/other/none), tiers
+  (Critical/High/Medium), and model_review (accept/revise/exclude,
+  latest-wins per path). Module `agentic_core::rank_summary`. 1 unit
+  test.
+- **P-3 `agentic synthesize cross-stream`** — LLM proposes draft
+  cross-stream findings from the runtime's current accept-tier
+  model_review set; writes to `out/sources/synthesis/candidates_<ts>.md`;
+  never auto-promoted. `--dry-run` previews the prompt without LLM
+  calls. 3 unit tests.
+- **P-1 `agentic profile {put|get|list|resolve}`** — first-class named
+  profile bundles in a new passport section. Module
+  `agentic_core::profile` (`Profile` struct + 4 functions); migration
+  0014 extends `passport_entries.section` CHECK to include `profiles`
+  (rebuilds the table with `PRAGMA foreign_keys=OFF`, idempotent
+  re-runs). `NEWEST_SCHEMA_VERSION` 13 → 14. 4 unit tests.
+- **P-5 `agentic translate scope`** — authorise-gated content
+  translation surface. `--dry-run` previews the path scope; real run
+  refuses without `agentic authorize grant --action translate`
+  (ADR-0047 R7). Execution loop staged for the next iteration; the
+  authorise-then-execute discipline is in place now. 3 unit tests.
+- **P-6 manifest rename** — `ai_audit_bom` → `ai_audit_bom_book` to
+  distinguish the (book about the audit) from the live signed
+  `audit_report.md` (the actual AIBOM per ADR-0023).
+
+All 14 new unit tests green; 5 CLI surfaces smoke-tested live against
+the real DB.
+
 ## [0.1.8] — 2026-05-28
 
 ### Added — `deliverable` gate detects German management-tradition `IST` / `SOLL`
