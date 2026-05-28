@@ -35,63 +35,281 @@ use crate::{CheckReport, Finding, Severity};
 /// stop-list moves a token out of the WARN set, so we keep it short.
 const STOP_LIST: &[&str] = &[
     // jurisdictions / sovereigns / city-states
-    "EU", "US", "USA", "UK", "UAE", "EEA", "FR", "DE", "CH", "IT", "JP", "CN",
-    "ASEAN", "GCC", "NATO", "OECD",
+    "EU",
+    "US",
+    "USA",
+    "UK",
+    "UAE",
+    "EEA",
+    "FR",
+    "DE",
+    "CH",
+    "IT",
+    "JP",
+    "CN",
+    "ASEAN",
+    "GCC",
+    "NATO",
+    "OECD",
     // research / requirement identifiers (RQ1, REQ12, R26, P1..P9, FR-CXX)
-    "RQ", "REQ", "FR", "RR", "PR", "PT", "FAQ", "FRD", "PRD", "RRD", "REQs", "FRs",
+    "RQ",
+    "REQ",
+    "FR",
+    "RR",
+    "PR",
+    "PT",
+    "FAQ",
+    "FRD",
+    "PRD",
+    "RRD",
+    "REQs",
+    "FRs",
     // common engineering shorthand seen in any tech text
-    "RAM", "ROM", "GB", "MB", "KB", "TB", "USB", "PDF", "CSV", "JSON", "YAML", "XML",
-    "URL", "URI", "GUI", "CLI", "SQL", "GPU", "CPU", "TPU", "NPU", "SSD", "HDD", "FPGA",
-    "OS", "IT", "DB", "CD", "VM", "ID", "OK", "ALL", "NA", "TODO", "FIXME", "DRY", "KISS",
-    "AMD", "ARM", "ASIC", "RISC", "X86", "X64", "AVX", "SIMD", "DMA", "PCIe", "NVMe",
-    "ISA", "ABI", "MVP", "POC", "MVR", "SDK", "SaaS", "PaaS", "IaaS", "MaaS",
-    "SAST", "DAST", "IAST", "SCA", "WAF", "IDS", "IPS", "SIEM", "SOC", "MTTR", "MTBF",
+    "RAM",
+    "ROM",
+    "GB",
+    "MB",
+    "KB",
+    "TB",
+    "USB",
+    "PDF",
+    "CSV",
+    "JSON",
+    "YAML",
+    "XML",
+    "URL",
+    "URI",
+    "GUI",
+    "CLI",
+    "SQL",
+    "GPU",
+    "CPU",
+    "TPU",
+    "NPU",
+    "SSD",
+    "HDD",
+    "FPGA",
+    "OS",
+    "IT",
+    "DB",
+    "CD",
+    "VM",
+    "ID",
+    "OK",
+    "ALL",
+    "NA",
+    "TODO",
+    "FIXME",
+    "DRY",
+    "KISS",
+    "AMD",
+    "ARM",
+    "ASIC",
+    "RISC",
+    "X86",
+    "X64",
+    "AVX",
+    "SIMD",
+    "DMA",
+    "PCIe",
+    "NVMe",
+    "ISA",
+    "ABI",
+    "MVP",
+    "POC",
+    "MVR",
+    "SDK",
+    "SaaS",
+    "PaaS",
+    "IaaS",
+    "MaaS",
+    "SAST",
+    "DAST",
+    "IAST",
+    "SCA",
+    "WAF",
+    "IDS",
+    "IPS",
+    "SIEM",
+    "SOC",
+    "MTTR",
+    "MTBF",
     // universal AI / org shorthand
-    "AI", "ML", "NLP", "GPT", "BERT", "API", "LSTM", "RNN", "CNN", "DNN",
+    "AI",
+    "ML",
+    "NLP",
+    "GPT",
+    "BERT",
+    "API",
+    "LSTM",
+    "RNN",
+    "CNN",
+    "DNN",
     // common standards / file shorthand carried as proper nouns
-    "ISO", "IEC", "NIST", "MITRE", "IEEE", "RFC", "WG", "ITU", "IETF", "W3C", "ICANN",
-    "ANSI", "ETSI", "BSI", "ENISA", "CISA", "CERT", "SHA", "HMAC", "AES", "ECC", "RSA",
-    "TLS", "SSL", "MTLS", "HTTPS", "HTTP", "DNS", "DHCP", "NTP", "SSH", "VPN",
+    "ISO",
+    "IEC",
+    "NIST",
+    "MITRE",
+    "IEEE",
+    "RFC",
+    "WG",
+    "ITU",
+    "IETF",
+    "W3C",
+    "ICANN",
+    "ANSI",
+    "ETSI",
+    "BSI",
+    "ENISA",
+    "CISA",
+    "CERT",
+    "SHA",
+    "HMAC",
+    "AES",
+    "ECC",
+    "RSA",
+    "TLS",
+    "SSL",
+    "MTLS",
+    "HTTPS",
+    "HTTP",
+    "DNS",
+    "DHCP",
+    "NTP",
+    "SSH",
+    "VPN",
     // bill-of-materials family (SBOM/CBOM/QBOM/AIBOM/HBOM) are covered by stripping
     // bare-letter suffixes, but a few full forms appear standalone
-    "BOM", "SBOM", "CBOM", "QBOM", "HBOM", "AIBOM",
+    "BOM",
+    "SBOM",
+    "CBOM",
+    "QBOM",
+    "HBOM",
+    "AIBOM",
     // version / model shorthand
-    "LTS", "GA", "EOL", "RC", "RT", "TM",
+    "LTS",
+    "GA",
+    "EOL",
+    "RC",
+    "RT",
+    "TM",
     // hash / encoding
-    "BLAKE3", "B3SUM", "SHA-256", "SHA256", "MD5", "BASE64", "ASCII", "UTF8",
+    "BLAKE3",
+    "B3SUM",
+    "SHA-256",
+    "SHA256",
+    "MD5",
+    "BASE64",
+    "ASCII",
+    "UTF8",
     // section / number scaffolding
-    "TOC", "N", "X", "Y", "Z", "I", "II", "III", "IV",
+    "TOC",
+    "N",
+    "X",
+    "Y",
+    "Z",
+    "I",
+    "II",
+    "III",
+    "IV",
     // common conjunctions & filler that match the regex
-    "AND", "OR", "NOT", "ANY", "TBD", "VS", "ETC",
+    "AND",
+    "OR",
+    "NOT",
+    "ANY",
+    "TBD",
+    "VS",
+    "ETC",
     // VDI / desktop landscape names + popular distros
-    "BOSS", "RHEL", "SUSE", "GRUB",
+    "BOSS",
+    "RHEL",
+    "SUSE",
+    "GRUB",
     // common universal business and engineering shorthand seen in the thesis
-    "ROI", "SLA", "SLO", "SKU", "P&L", "RACI", "RPM", "JDK", "LOC", "MOK",
-    "PKI", "PMC", "NVD", "NSX", "NXP", "IBM", "DA", "EN", "FAIL", "PASS",
-    "GPL", "GSMA", "XSS", "USENIX", "ZHAW", "OWASP", "ICANN", "GitLab",
+    "ROI",
+    "SLA",
+    "SLO",
+    "SKU",
+    "P&L",
+    "RACI",
+    "RPM",
+    "JDK",
+    "LOC",
+    "MOK",
+    "PKI",
+    "PMC",
+    "NVD",
+    "NSX",
+    "NXP",
+    "IBM",
+    "DA",
+    "EN",
+    "FAIL",
+    "PASS",
+    "GPL",
+    "GSMA",
+    "XSS",
+    "USENIX",
+    "ZHAW",
+    "OWASP",
+    "ICANN",
+    "GitLab",
     // research-method labels that look like acronyms
-    "CAS", "CI", "CD", "IR", "PQ", "PCI", "DSS", "DSA", "EN", "GOVERN",
-    "RMM", "MAPE", "K", "ATLAS", "OS",
+    "CAS",
+    "CI",
+    "CD",
+    "IR",
+    "PQ",
+    "PCI",
+    "DSS",
+    "DSA",
+    "EN",
+    "GOVERN",
+    "RMM",
+    "MAPE",
+    "K",
+    "ATLAS",
+    "OS",
     // German-method shorthand used in FHNW MAS thesis tradition
-    "IST", "SOLL", "SCS", "FADP",
+    "IST",
+    "SOLL",
+    "SCS",
+    "FADP",
     // common solver / algorithm names that are de-facto proper nouns
-    "QUBO", "CRYSTALS", "Kyber", "Dilithium", "Falcon", "SPHINCS",
-    "CP-SAT", "SAT",
+    "QUBO",
+    "CRYSTALS",
+    "Kyber",
+    "Dilithium",
+    "Falcon",
+    "SPHINCS",
+    "CP-SAT",
+    "SAT",
     // hardware-arch + boot scheme proper nouns
-    "HAB", "XNU", "QPU",
+    "HAB",
+    "XNU",
+    "QPU",
     // sovereignty programme names
-    "IPCEI", "CISPE", "O-RAN", "SWE-RL", "SNP",
+    "IPCEI",
+    "CISPE",
+    "O-RAN",
+    "SWE-RL",
+    "SNP",
     // VMware product family
-    "VCF", "Tanzu",
+    "VCF",
+    "Tanzu",
     // SWOT itself (the methodology name; not just SWOT cell IDs which
     // is_internal_id already covers), plus a few SBOM-family file formats
-    "SWOT", "SPDX", "CycloneDX",
+    "SWOT",
+    "SPDX",
+    "CycloneDX",
     // Bare hardware-family fragments seen post-prefix-strip: i.MX → MX
     "MX",
     // Compound HR-style shorthand from the leadership chapter
-    "HR", "L&D",
+    "HR",
+    "L&D",
     // Adversarial-ML and confident-loop labels seen in security chapter
-    "AML", "CLAI",
+    "AML",
+    "CLAI",
     // CAS programme name (CAS ALIT — the predecessor CAS-level instrument)
     "ALIT",
     // Hyper-quality-architect role seen in the leadership chapter
@@ -123,10 +341,10 @@ fn is_internal_id(tok: &str) -> bool {
     }
     // Bare campaign/project IDs: `C01`, `C01-P2`, `C05/C06/`, `P1` ... `P9`
     let bare = tok.trim_end_matches(|c: char| c == '/' || c == '-' || c == '.');
-    if bare
-        .strip_prefix('C')
-        .is_some_and(|r| r.chars().all(|c| c.is_ascii_digit() || c == '-' || c == 'P'))
-        && bare.starts_with('C')
+    if bare.strip_prefix('C').is_some_and(|r| {
+        r.chars()
+            .all(|c| c.is_ascii_digit() || c == '-' || c == 'P')
+    }) && bare.starts_with('C')
         && bare.len() >= 2
     {
         return true;
@@ -179,9 +397,7 @@ fn is_internal_id(tok: &str) -> bool {
         // Compound campaign-ref like `C5/C7` — every part is a `C<digits>`
         // internal-id stub.
         let is_campaign = |s: &str| {
-            s.starts_with('C')
-                && s.len() >= 2
-                && s[1..].chars().all(|c| c.is_ascii_digit())
+            s.starts_with('C') && s.len() >= 2 && s[1..].chars().all(|c| c.is_ascii_digit())
         };
         if parts.iter().all(|p| is_campaign(p)) {
             return true;
@@ -254,8 +470,10 @@ fn parse_acronym_table(md: &str) -> HashSet<String> {
         }
         // a header separator looks like `|---|---|`
         let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
-        if cells.iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch.is_whitespace()))
-            && cells.len() >= 2
+        if cells.iter().all(|c| {
+            c.chars()
+                .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+        }) && cells.len() >= 2
         {
             in_body = header_seen;
             continue;
@@ -290,7 +508,10 @@ fn parenthetical_intros(line: &str, re: &Regex) -> Vec<String> {
     // begins with a capital letter and is followed immediately by `(ACR)`.
     // Allow zero space-separated extra words so `Belief-Desire-Intention (BDI)`
     // matches alongside `Vehicle Routing Problem (VRP)`.
-    let p = Regex::new(r"\b([A-Z][\w/\-&]*(?:\s+[A-Za-z][\w/\-&]*){0,8})\s*\(([A-Z][A-Z0-9&/\-]{1,8})\)").unwrap();
+    let p = Regex::new(
+        r"\b([A-Z][\w/\-&]*(?:\s+[A-Za-z][\w/\-&]*){0,8})\s*\(([A-Z][A-Z0-9&/\-]{1,8})\)",
+    )
+    .unwrap();
     for cap in p.captures_iter(line) {
         if let Some(m) = cap.get(2) {
             // Sanity: the acronym must still look like an acronym (re).
@@ -371,8 +592,10 @@ pub fn run(conn: &Connection, project: &str, prefix: &str) -> Result<CheckReport
                     continue;
                 }
                 // 3. Strip a trailing digit-tail (e.g. `RQ1` → `RQ`).
-                let alpha_head: String =
-                    tok.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+                let alpha_head: String = tok
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .collect();
                 if !alpha_head.is_empty()
                     && (stop.contains(alpha_head.as_str()) || defined.contains(&alpha_head))
                 {
@@ -381,7 +604,10 @@ pub fn run(conn: &Connection, project: &str, prefix: &str) -> Result<CheckReport
                 // 4. Peel a `-NNN` numeric or `/X` variant tail
                 //    (`AES-128` → `AES`, `ISO/IEC` → `ISO`).
                 let base = base_acronym(tok);
-                if !base.is_empty() && base != tok && (stop.contains(base.as_str()) || defined.contains(&base)) {
+                if !base.is_empty()
+                    && base != tok
+                    && (stop.contains(base.as_str()) || defined.contains(&base))
+                {
                     continue;
                 }
                 // 5. Skip purely fragment-looking tokens (token ends in a

@@ -220,9 +220,7 @@ mod tests {
         let per_path: Vec<_> = report
             .findings
             .iter()
-            .filter(|f| {
-                f.category == "MODEL_REVIEW_EXCLUDE" || f.category == "MODEL_REVIEW_REVISE"
-            })
+            .filter(|f| f.category == "MODEL_REVIEW_EXCLUDE" || f.category == "MODEL_REVIEW_REVISE")
             .collect();
         assert_eq!(per_path.len(), 0, "latest is accept; no exclude/revise row");
         // SUMMARY counts unique paths, not raw entries.

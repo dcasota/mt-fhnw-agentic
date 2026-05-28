@@ -1998,9 +1998,8 @@ fn render_thesis_book(
                             .fonts(body_fonts()),
                     ),
                 );
-                doc = doc.add_paragraph(
-                    Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)),
-                );
+                doc =
+                    doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)));
             }
         }
     }
@@ -2281,9 +2280,15 @@ mod tests {
     /// chapters, two appendices, then the bibliography.
     fn master_thesis_chapters() -> Vec<(String, String)> {
         [
-            ("tp", "# Title Page\n\nGovernance and Leadership… — Master Thesis Submission.\n"),
+            (
+                "tp",
+                "# Title Page\n\nGovernance and Leadership… — Master Thesis Submission.\n",
+            ),
             ("do", "# Declaration of Originality\n\nI hereby declare…\n"),
-            ("cd", "# Compliance Declaration for Open-Source Photon OS\n\nI hereby declare…\n"),
+            (
+                "cd",
+                "# Compliance Declaration for Open-Source Photon OS\n\nI hereby declare…\n",
+            ),
             ("mgmt", "# Management Summary\n\nThe one-page summary.\n"),
             (
                 "acro",
@@ -2336,22 +2341,52 @@ mod tests {
         assert_eq!(layout, expected);
 
         // Explicit guards for the user's structural invariants.
-        let tp = layout.iter().position(|i| *i == ThesisItem::Chapter(0)).unwrap();
-        let ms = layout.iter().position(|i| *i == ThesisItem::Chapter(3)).unwrap();
+        let tp = layout
+            .iter()
+            .position(|i| *i == ThesisItem::Chapter(0))
+            .unwrap();
+        let ms = layout
+            .iter()
+            .position(|i| *i == ThesisItem::Chapter(3))
+            .unwrap();
         let toc = layout.iter().position(|i| *i == ThesisItem::Toc).unwrap();
-        let acro = layout.iter().position(|i| *i == ThesisItem::Chapter(4)).unwrap();
-        let body1 = layout.iter().position(|i| *i == ThesisItem::Chapter(5)).unwrap();
-        let appx = layout.iter().position(|i| *i == ThesisItem::Chapter(12)).unwrap();
-        let lof = layout.iter().position(|i| *i == ThesisItem::ListFigures).unwrap();
-        let bib = layout.iter().position(|i| *i == ThesisItem::Chapter(13)).unwrap();
+        let acro = layout
+            .iter()
+            .position(|i| *i == ThesisItem::Chapter(4))
+            .unwrap();
+        let body1 = layout
+            .iter()
+            .position(|i| *i == ThesisItem::Chapter(5))
+            .unwrap();
+        let appx = layout
+            .iter()
+            .position(|i| *i == ThesisItem::Chapter(12))
+            .unwrap();
+        let lof = layout
+            .iter()
+            .position(|i| *i == ThesisItem::ListFigures)
+            .unwrap();
+        let bib = layout
+            .iter()
+            .position(|i| *i == ThesisItem::Chapter(13))
+            .unwrap();
         let idx = layout.iter().position(|i| *i == ThesisItem::Index).unwrap();
         assert!(tp < ms, "Title page must precede Management Summary");
         assert!(ms < toc, "Management Summary must precede TOC");
         assert!(toc < acro, "TOC must precede Acronyms");
         assert!(acro < body1, "Acronyms must precede numbered body");
-        assert!(appx < lof, "Appendix must precede back-matter list of figures");
-        assert!(lof < bib, "List of figures/tables must precede Bibliography");
-        assert!(bib < idx, "Bibliography must precede the back-of-book Index");
+        assert!(
+            appx < lof,
+            "Appendix must precede back-matter list of figures"
+        );
+        assert!(
+            lof < bib,
+            "List of figures/tables must precede Bibliography"
+        );
+        assert!(
+            bib < idx,
+            "Bibliography must precede the back-of-book Index"
+        );
     }
 
     #[test]
