@@ -200,7 +200,11 @@ fn first_h1(md: &str) -> Option<String> {
 
 /// Front/back-matter titles for the THESIS profile (ADR-0045). Unlike the book
 /// profile, "Introduction"/"Conclusion"/etc. are NOT here — they are numbered
-/// chapters; only true front/back-matter stays unnumbered.
+/// chapters; only true front/back-matter stays unnumbered. The declarations
+/// (originality + Open-Source Photon OS compliance) and the title-page
+/// supplement (lecturer / supervisors / publication choice / signature) are
+/// front-matter required by the FHNW MAS submission and must not get
+/// numbered chapter prefixes.
 const THESIS_UNNUMBERED: &[&str] = &[
     "management summary",
     "executive summary",
@@ -217,6 +221,10 @@ const THESIS_UNNUMBERED: &[&str] = &[
     "bibliography",
     "references",
     "index",
+    "title page",
+    "declaration of originality",
+    "compliance declaration",
+    "compliance declaration for open-source photon os",
 ];
 
 /// Whether a chapter is numbered: numbered unless its first H1 is a known
@@ -1729,9 +1737,20 @@ pub fn render_book(
 
 /// FHNW thesis front/back-matter slot a chapter belongs to, decided by its first
 /// H1 (`specs/overrides/fhnw-mas/thesis-structure.md`). `Body` = numbered ch. 1-7.
+///
+/// The three opening slots (`TitlePage`, `DeclarationOriginality`,
+/// `ComplianceDeclaration`) come from the FHNW MAS proposal envelope which
+/// the master-thesis submission re-asserts (dated for the submission), per
+/// user requirement 2026-05-28.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 enum ThesisSlot {
+    TitlePage,
+    DeclarationOriginality,
+    ComplianceDeclaration,
     MgmtSummary,
+    /// Legacy "Declaration of Authorship / Ehrenwörtliche Erklärung" slot.
+    /// Kept for backwards-compatibility; emitted late (after Bibliography)
+    /// only if a manifest still ships such a chapter.
     Declaration,
     Acronyms,
     Bibliography,
@@ -1748,13 +1767,25 @@ enum ThesisItem {
     Toc,
     ListFigures,
     ListTables,
+    /// Back-of-book Index (XE / INDEX field). Always emitted last so the
+    /// reader-facing terms appear in the standard FHNW closing position.
+    Index,
 }
 
 /// Classify a chapter by its first H1 into an FHNW front/back-matter slot.
 fn thesis_slot(md: &str) -> ThesisSlot {
     let h1 = first_h1(md).unwrap_or_default().to_lowercase();
     let h = h1.trim();
-    if h.contains("management summary") || h.contains("executive summary") {
+    // The proposal envelope re-asserted in the submission (must precede the
+    // management summary) — checked BEFORE the legacy declaration branch
+    // so "declaration of originality" does not collide with "declaration".
+    if h == "title page" || h.starts_with("title page") {
+        ThesisSlot::TitlePage
+    } else if h.contains("declaration of originality") || h.contains("originality") {
+        ThesisSlot::DeclarationOriginality
+    } else if h.contains("compliance declaration") || h.contains("photon os") {
+        ThesisSlot::ComplianceDeclaration
+    } else if h.contains("management summary") || h.contains("executive summary") {
         ThesisSlot::MgmtSummary
     } else if h.contains("ehrenwörtliche erklärung")
         || h.contains("eidesstattliche")
@@ -1781,13 +1812,21 @@ fn thesis_slot(md: &str) -> ThesisSlot {
     }
 }
 
-/// Compute the FHNW-mandated emission order (pure; unit-tested separately):
-///   Management Summary → Declaration → Table of Contents → List of Figures →
-///   List of Tables → Acronyms → numbered body (1-7) → Bibliography →
-///   Tools/AI disclosure → Appendix.
+/// Compute the FHNW-mandated emission order (pure; unit-tested separately).
+///
+/// Per the user-supplied master-thesis structure (2026-05-28):
+///   Title page → Declaration of Originality → Compliance Declaration for
+///   Open-Source Photon OS → Management Summary → Table of Contents →
+///   Acronyms → numbered body (1-7) → Appendix → Table of Figures →
+///   Table of Tables → Bibliography → Index.
+///
+/// Legacy chapters (Declaration of Authorship, AI Tools) are appended after
+/// Bibliography if a manifest still ships them — they no longer have a
+/// reserved front-matter slot in the new sequence.
+///
 /// Order within each slot follows the input (manifest) order. Slots with no
-/// chapters simply contribute nothing; the TOC and the figure/table lists are
-/// always emitted (matching the book engine's "always present" chrome).
+/// chapters simply contribute nothing; the engine-generated chrome (TOC, list
+/// of figures, list of tables, index) is always emitted.
 fn thesis_layout(chapters: &[(String, String)]) -> Vec<ThesisItem> {
     let mut by_slot: std::collections::HashMap<ThesisSlot, Vec<usize>> =
         std::collections::HashMap::new();
@@ -1803,16 +1842,27 @@ fn thesis_layout(chapters: &[(String, String)]) -> Vec<ThesisItem> {
             .collect()
     };
     let mut out = Vec::new();
+    // Front matter envelope (proposal re-asserted at submission).
+    out.extend(take(ThesisSlot::TitlePage));
+    out.extend(take(ThesisSlot::DeclarationOriginality));
+    out.extend(take(ThesisSlot::ComplianceDeclaration));
+    // Management summary then TOC (user wants TOC right after Mgmt Summary).
     out.extend(take(ThesisSlot::MgmtSummary));
-    out.extend(take(ThesisSlot::Declaration));
     out.push(ThesisItem::Toc);
+    // Acronyms is the last item before numbered body chapters.
+    out.extend(take(ThesisSlot::Acronyms));
+    // Numbered body chapters 1-7 in manifest order.
+    out.extend(take(ThesisSlot::Body));
+    // Appendix BEFORE the back-of-book lists, matching the user's structure.
+    out.extend(take(ThesisSlot::Appendix));
+    // Back-of-book lists.
     out.push(ThesisItem::ListFigures);
     out.push(ThesisItem::ListTables);
-    out.extend(take(ThesisSlot::Acronyms));
-    out.extend(take(ThesisSlot::Body));
     out.extend(take(ThesisSlot::Bibliography));
+    // Legacy fallback slots (no longer have a reserved position).
+    out.extend(take(ThesisSlot::Declaration));
     out.extend(take(ThesisSlot::AiTools));
-    out.extend(take(ThesisSlot::Appendix));
+    out.push(ThesisItem::Index);
     out
 }
 
@@ -1920,6 +1970,37 @@ fn render_thesis_book(
                 for p in list_of("Table", t(&meta.lang, "list_of_tables")) {
                     doc = doc.add_paragraph(p);
                 }
+            }
+            ThesisItem::Index => {
+                // Back-of-book Index: the INDEX field, filled from XE entries
+                // on field update. Heading is "Index" so the thesis profile
+                // closes with the same standard structural element as a book.
+                doc = doc.add_paragraph(page_break());
+                doc = doc.add_paragraph(
+                    Paragraph::new().style("Heading1").add_run(
+                        Run::new()
+                            .add_text("Index")
+                            .bold()
+                            .size(32)
+                            .color(NAVY)
+                            .fonts(head_fonts()),
+                    ),
+                );
+                doc = doc.add_paragraph(
+                    Paragraph::new().add_run(
+                        Run::new()
+                            .add_text(
+                                "Right-click and choose \u{201c}Update Field\u{201d} to build the index.",
+                            )
+                            .italic()
+                            .size(18)
+                            .color(GREY)
+                            .fonts(body_fonts()),
+                    ),
+                );
+                doc = doc.add_paragraph(
+                    Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)),
+                );
             }
         }
     }
@@ -2200,6 +2281,9 @@ mod tests {
     /// chapters, two appendices, then the bibliography.
     fn master_thesis_chapters() -> Vec<(String, String)> {
         [
+            ("tp", "# Title Page\n\nGovernance and Leadership… — Master Thesis Submission.\n"),
+            ("do", "# Declaration of Originality\n\nI hereby declare…\n"),
+            ("cd", "# Compliance Declaration for Open-Source Photon OS\n\nI hereby declare…\n"),
             ("mgmt", "# Management Summary\n\nThe one-page summary.\n"),
             (
                 "acro",
@@ -2213,7 +2297,6 @@ mod tests {
             ("c6", "# Conclusion\n\nFindings.\n"),
             ("c7", "# Personal Reflection\n\nLessons learned.\n"),
             ("apx1", "# Appendix: Research Prompts\n\nPrompts.\n"),
-            ("apx2", "# Appendix A — Transformation Plan\n\nPlan.\n"),
             ("bib", "# Bibliography\n\nDoe, J. (2026).\n"),
         ]
         .into_iter()
@@ -2222,46 +2305,66 @@ mod tests {
     }
 
     #[test]
-    fn thesis_layout_follows_fhnw_front_back_matter_order() {
-        // The FHNW order (thesis-structure.md): Management Summary → Table of
-        // Contents → List of Figures → List of Tables → Acronyms → numbered body
-        // (1-7) → Bibliography → Appendix. (No Declaration / Tools chapters in
-        // this manifest, so those slots contribute nothing.)
+    fn thesis_layout_follows_user_supplied_fhnw_order() {
+        // User-supplied FHNW MAS master-thesis structure (2026-05-28):
+        //   Title page → Declaration of Originality → Compliance Declaration
+        //   for Open-Source Photon OS → Management Summary → Table of Contents
+        //   → Acronyms → numbered body (1-7) → Appendix → Table of Figures →
+        //   Table of Tables → Bibliography → Index.
         let chapters = master_thesis_chapters();
         let layout = thesis_layout(&chapters);
         let expected = vec![
-            ThesisItem::Chapter(0),  // Management Summary
-            ThesisItem::Toc,         // Table of Contents (BEFORE body — the fix)
-            ThesisItem::ListFigures, // front-matter, after the TOC
-            ThesisItem::ListTables,
-            ThesisItem::Chapter(1),  // Acronyms (last front-matter item)
-            ThesisItem::Chapter(2),  // 1 Introduction
-            ThesisItem::Chapter(3),  // 2 Theory
-            ThesisItem::Chapter(4),  // 3 Current-State Analysis
-            ThesisItem::Chapter(5),  // 4 Empirical Study
-            ThesisItem::Chapter(6),  // 5 Solution
-            ThesisItem::Chapter(7),  // 6 Conclusion
-            ThesisItem::Chapter(8),  // 7 Personal Reflection
-            ThesisItem::Chapter(11), // Bibliography (back matter, before Appendix)
-            ThesisItem::Chapter(9),  // Appendix: Research Prompts
-            ThesisItem::Chapter(10), // Appendix A
+            ThesisItem::Chapter(0),  // Title page
+            ThesisItem::Chapter(1),  // Declaration of Originality
+            ThesisItem::Chapter(2),  // Compliance Declaration for Open-Source Photon OS
+            ThesisItem::Chapter(3),  // Management Summary
+            ThesisItem::Toc,         // Table of Contents (right after Mgmt Summary)
+            ThesisItem::Chapter(4),  // Acronyms (last front-matter item)
+            ThesisItem::Chapter(5),  // 1 Introduction
+            ThesisItem::Chapter(6),  // 2 Theory
+            ThesisItem::Chapter(7),  // 3 Current-State Analysis
+            ThesisItem::Chapter(8),  // 4 Empirical Study
+            ThesisItem::Chapter(9),  // 5 Solution
+            ThesisItem::Chapter(10), // 6 Conclusion
+            ThesisItem::Chapter(11), // 7 Personal Reflection
+            ThesisItem::Chapter(12), // Appendix: Research Prompts
+            ThesisItem::ListFigures, // back-matter list
+            ThesisItem::ListTables,  // back-matter list
+            ThesisItem::Chapter(13), // Bibliography
+            ThesisItem::Index,       // engine-emitted back-of-book Index (last)
         ];
         assert_eq!(layout, expected);
 
-        // Explicit guard for the original bug: Management Summary precedes the TOC.
-        let ms = layout
-            .iter()
-            .position(|i| *i == ThesisItem::Chapter(0))
-            .unwrap();
+        // Explicit guards for the user's structural invariants.
+        let tp = layout.iter().position(|i| *i == ThesisItem::Chapter(0)).unwrap();
+        let ms = layout.iter().position(|i| *i == ThesisItem::Chapter(3)).unwrap();
         let toc = layout.iter().position(|i| *i == ThesisItem::Toc).unwrap();
-        assert!(
-            ms < toc,
-            "Management Summary must come before the Table of Contents"
-        );
+        let acro = layout.iter().position(|i| *i == ThesisItem::Chapter(4)).unwrap();
+        let body1 = layout.iter().position(|i| *i == ThesisItem::Chapter(5)).unwrap();
+        let appx = layout.iter().position(|i| *i == ThesisItem::Chapter(12)).unwrap();
+        let lof = layout.iter().position(|i| *i == ThesisItem::ListFigures).unwrap();
+        let bib = layout.iter().position(|i| *i == ThesisItem::Chapter(13)).unwrap();
+        let idx = layout.iter().position(|i| *i == ThesisItem::Index).unwrap();
+        assert!(tp < ms, "Title page must precede Management Summary");
+        assert!(ms < toc, "Management Summary must precede TOC");
+        assert!(toc < acro, "TOC must precede Acronyms");
+        assert!(acro < body1, "Acronyms must precede numbered body");
+        assert!(appx < lof, "Appendix must precede back-matter list of figures");
+        assert!(lof < bib, "List of figures/tables must precede Bibliography");
+        assert!(bib < idx, "Bibliography must precede the back-of-book Index");
     }
 
     #[test]
     fn thesis_slot_classification() {
+        assert_eq!(thesis_slot("# Title Page\n"), ThesisSlot::TitlePage);
+        assert_eq!(
+            thesis_slot("# Declaration of Originality\n"),
+            ThesisSlot::DeclarationOriginality
+        );
+        assert_eq!(
+            thesis_slot("# Compliance Declaration for Open-Source Photon OS\n"),
+            ThesisSlot::ComplianceDeclaration
+        );
         assert_eq!(
             thesis_slot("# Management Summary\n"),
             ThesisSlot::MgmtSummary
