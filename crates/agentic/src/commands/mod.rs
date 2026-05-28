@@ -30,6 +30,7 @@ mod provider;
 mod rank;
 mod review;
 mod risk;
+mod synthesize;
 mod verify;
 
 use anyhow::Result;
@@ -58,6 +59,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Gen { action } => generate::run(action, args.json),
         Command::Risk { action } => risk::run(action, args.json),
         Command::Rank { action } => rank::run(&args.db, action, args.json),
+        Command::Synthesize { action } => synthesize::run(&args.db, action, args.json).await,
         Command::Orchestrate { action } => orchestrate::run(&args.db, action, args.json),
         Command::Merge { action } => merge::run(&args.db, action, args.json),
         Command::Cascade { action } => cascade::run(&args.db, action, args.json),

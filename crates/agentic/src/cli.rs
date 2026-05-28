@@ -296,6 +296,16 @@ pub enum Command {
         action: RankAction,
     },
 
+    /// Cross-stream synthesis (perception P-3): an LLM proposes draft
+    /// cross-dimension findings from the Critical+High dimension findings
+    /// and the column-max campaign findings the runtime already accepted.
+    /// Writes a *candidate* file under `out/sources/synthesis/`;
+    /// never auto-promotes to the student-notes companion or to the thesis.
+    Synthesize {
+        #[command(subcommand)]
+        action: SynthesizeAction,
+    },
+
     /// Source-merge utilities (codifies manual assembly steps). Currently:
     /// assemble the eleven dimension sources into one English compendium.
     Merge {
@@ -429,6 +439,36 @@ pub enum OrchestrateAction {
         /// Root directory for the docs gate.
         #[arg(long, default_value = ".")]
         root: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SynthesizeAction {
+    /// Compose a prompt from the runtime's current acceptance set and ask a
+    /// configured LLM to propose draft cross-stream findings. Output goes to
+    /// `out/sources/synthesis/candidates_<ts>.md`; never promoted to a
+    /// canonical deliverable. Use `--dry-run` to preview the prompt without
+    /// calling any provider.
+    CrossStream {
+        #[arg(long)]
+        project: String,
+        /// Provider to use (default: first configured cloud provider).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model id (e.g. grok-4.3).
+        #[arg(long)]
+        model: Option<String>,
+        /// Maximum number of accept-tier review findings to include in the
+        /// prompt (0 = all).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Skip the LLM call; print the prompt + a candidate skeleton.
+        #[arg(long)]
+        dry_run: bool,
+        /// Output path; if omitted, writes to
+        /// `out/sources/synthesis/candidates_<ts>.md` in the working tree.
+        #[arg(long)]
+        to: Option<PathBuf>,
     },
 }
 
