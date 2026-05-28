@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] — 2026-05-28
+
+### Added — `deliverable` gate detects German management-tradition `IST` / `SOLL`
+
+- New case-SENSITIVE `DE_ABBREV` regex (alongside the existing case-insensitive
+  `DE` word-list) flags the all-caps forms `IST`, `SOLL`, `IST/SOLL`,
+  `SOLL/IST` and the canonical title-cased compounds `IST-Analyse`,
+  `Soll-Zustand`, `Ist-Zustand`, `Soll-Ist`. Lowercase English `is` / `soll`
+  is NOT flagged — adding them case-insensitively would cascade the
+  false-positive rate. The gloss-exemption rule is honored (`actual (IST)`
+  passes); the directive message tells the author to use the English
+  `actual / target` terminology.
+
+### Fixed — `deliverable` whitelist for `CAR-IST-NNN` compound identifiers
+
+- The `IST/SOLL` rule above initially produced 168 false positives because
+  the `\b` word boundary treats `-` as a boundary, so `CAR-IST-001` matched
+  bare `IST`. The fix skips the finding when the char immediately before
+  the match is `-` (the token is the middle segment of a compound ID), or
+  when bare `IST` is followed by `-<digit>` (a CAR-id continuation).
+  Live-verified: corpus IST/SOLL count dropped from 212 to 44 (the 44
+  remaining are genuine German abbreviations that warrant content edits,
+  not gate false-positives). Two regression tests added.
+
+### Fixed — CI rustfmt
+
+- `cargo fmt --all` normalisation across the three files touched in
+  v0.1.7 (`model_review_gate.rs`, `undefined_terms.rs`, `book.rs`); the
+  v0.1.7 main pushes failed the rustfmt CI step but the release pipeline
+  (which does not gate on fmt) shipped clean.
+
 ## [0.1.7] — 2026-05-28
 
 ### Fixed — `check model-review` per-path dedupe (display)
