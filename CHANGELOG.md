@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] — 2026-05-28
+
+### Fixed — v0.1.11 follow-up: `secrets` context can't be used in job `if:`
+
+v0.1.11 attempted the if-gate fix with `if: ${{ secrets.CRATES_IO_TOKEN != '' }}`
+at job level. That is **not actually supported** — GitHub Actions masks the
+`secrets` context before expression evaluation, so the workflow file failed
+validation and the entire release.yml run aborted in 0 s with "This run
+likely failed because of a workflow file issue". (No release artifact was
+produced for v0.1.11; the tag was pushed but the workflow never built
+anything. v0.1.11 is a dangling tag with no Release page.)
+
+The documented working pattern is a **preflight job** that probes the
+secret as a step-level env var, decides presence in a `[ -n "$TOKEN" ]`
+shell test, and emits a job output the downstream job gates on. This
+release ships that pattern:
+
+```yaml
+check-crates-token:
+  needs: release
+  if: ${{ needs.release.result == 'success' }}
+  runs-on: ubuntu-latest
+  outputs:
+    have_token: ${{ steps.check.outputs.have_token }}
+  steps:
+    - id: check
+      env:
+        TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+      run: |
+        if [ -n "$TOKEN" ]; then
+          echo "have_token=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "have_token=false" >> "$GITHUB_OUTPUT"
+        fi
+
+publish-crate:
+  needs: [release, check-crates-token]
+  if: ${{ needs.release.result == 'success' && needs.check-crates-token.outputs.have_token == 'true' }}
+```
+
+The two hardenings from v0.1.11 stay: `continue-on-error: true` is removed
+from every `cargo publish` step, and the `-p agentic` step is dropped (the
+bare crate name is owned by another account on crates.io).
+
 ## [0.1.11] — 2026-05-28
 
 ### Fixed — release workflow: honest "Skipped" when crates.io token is unset
