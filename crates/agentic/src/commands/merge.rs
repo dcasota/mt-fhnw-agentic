@@ -87,6 +87,21 @@ fn merge_dimensions(
         .collect();
     dims.sort_by_key(|(n, _)| *n);
 
+    // ADR-0049 ph3 — drop dimensions held out by a model_review "exclude" verdict
+    // (append-only: a later "accept" review re-includes them).
+    let excluded = agentic_core::review::excluded_paths(conn, project).unwrap_or_default();
+    let held: Vec<String> = dims
+        .iter()
+        .filter(|(_, p)| excluded.contains(p))
+        .map(|(_, p)| p.clone())
+        .collect();
+    if !held.is_empty() {
+        dims.retain(|(_, p)| !excluded.contains(p));
+        for p in &held {
+            eprintln!("    ~ merge held by review: {p}");
+        }
+    }
+
     if dims.is_empty() {
         anyhow::bail!("no Dimension_NN_*.md sources found under prefix '{prefix}'");
     }

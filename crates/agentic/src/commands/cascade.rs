@@ -204,6 +204,7 @@ fn build_plan(
     let mut steps = Vec::new();
     push_boot_gate(&mut steps, opts);
     push_inbox_intake(&mut steps, opts, inbox_has_items);
+    push_review(&mut steps, opts);
     push_regenerate(&mut steps, opts, dim_paths);
     push_merge(&mut steps, opts);
     push_build_book(&mut steps, opts);
@@ -279,6 +280,25 @@ fn push_inbox_intake(steps: &mut Vec<Step>, opts: &CascadeOpts, inbox_has_items:
             "--prefix".into(),
             "inbox".into(),
         ],
+    ));
+}
+
+/// 2b. MODEL REVIEW (ADR-0049 ph3) — a second model reviews every deliverable
+/// + the rankings, writing verdicts that the downstream merge/build adopt:
+/// `exclude` paths are held out of the mainline (append-only, auditable; a
+/// later `accept` re-includes). Failure (e.g. no chat provider) is reported by
+/// the orchestrator and the cascade continues — generation is never blocked on
+/// model availability (consistent with the Word-finalize policy).
+fn push_review(steps: &mut Vec<Step>, opts: &CascadeOpts) {
+    let p = &opts.project;
+    if opts.dry_run {
+        steps.push(Step::note(2, "model review — skipped (dry-run)"));
+        return;
+    }
+    steps.push(Step::run(
+        2,
+        "review run",
+        vec!["review".into(), "run".into(), "--project".into(), p.clone()],
     ));
 }
 

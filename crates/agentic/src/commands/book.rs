@@ -232,6 +232,11 @@ fn build(
     let manifest: Manifest = serde_json::from_str(&text).context("parsing manifest JSON")?;
     std::fs::create_dir_all(out)?;
 
+    // Honor model-review exclusions (ADR-0049 ph3): a chapter whose current
+    // model_review verdict is "exclude" is held out of the mainline build.
+    // Append-only — a later "accept" review supersedes and re-includes it.
+    let excluded = agentic_core::review::excluded_paths(&conn, project).unwrap_or_default();
+
     let mut report = Vec::new();
     let mut built = 0usize;
     let mut built_docs: Vec<PathBuf> = Vec::new();
@@ -252,18 +257,25 @@ fn build(
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work)?;
 
-        let result = build_one(&conn, project, spec, &work, out, lang);
+        let result = build_one(&conn, project, spec, &work, out, lang, &excluded);
         let _ = std::fs::remove_dir_all(&work); // always clean this step's scratch
         match result {
-            Ok((figs, bytes)) => {
+            Ok((figs, bytes, held)) => {
                 built += 1;
                 built_docs.push(out.join(format!("{}.docx", spec.key)));
+                let included = spec.chapters.len() - held.len();
                 report.push(serde_json::json!({
-                    "key": spec.key, "chapters": spec.chapters.len(), "figures": figs, "docx_bytes": bytes
+                    "key": spec.key, "chapters": included, "held_by_review": held,
+                    "figures": figs, "docx_bytes": bytes
                 }));
                 if !json_out {
+                    let held_note = if held.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} held by review", held.len())
+                    };
                     println!(
-                        "  + {}.docx  ({} figures, {} chapters)",
+                        "  + {}.docx  ({} figures, {included}/{} chapters{held_note})",
                         spec.key,
                         figs,
                         spec.chapters.len()
@@ -331,7 +343,8 @@ fn build_one(
     work: &Path,
     out: &Path,
     lang: &str,
-) -> Result<(usize, u64)> {
+    excluded: &std::collections::HashSet<String>,
+) -> Result<(usize, u64, Vec<String>)> {
     // Pre-render the three admonition icons (gen_icons port) into the work dir
     // so the book renderer can embed icon_{tip,note,warning}.png in callouts.
     for kind in ["tip", "note", "warning"] {
@@ -354,7 +367,14 @@ fn build_one(
     }
     let mut chapters: Vec<(String, String)> = Vec::new();
     let mut figs = 0usize;
+    let mut held: Vec<String> = Vec::new();
     for ch in &spec.chapters {
+        // ADR-0049 ph3 — skip chapters held out by a model_review "exclude" verdict.
+        if excluded.contains(ch) {
+            held.push(ch.clone());
+            eprintln!("    ~ held by review: {ch}");
+            continue;
+        }
         let Ok(blob) = worktree::read_at(conn, project, ch) else {
             eprintln!("    ! missing chapter {ch}");
             continue;
@@ -402,7 +422,7 @@ fn build_one(
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));
     std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
-    Ok((figs, bytes.len() as u64))
+    Ok((figs, bytes.len() as u64, held))
 }
 
 // ---- render-quality audit (compare current vs previous iteration) ----

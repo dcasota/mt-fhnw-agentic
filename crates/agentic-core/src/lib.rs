@@ -22,6 +22,7 @@ pub mod passport;
 pub mod paths;
 pub mod profiles;
 pub mod project;
+pub mod review;
 pub mod signing;
 pub mod tombstone;
 pub mod worktree;
