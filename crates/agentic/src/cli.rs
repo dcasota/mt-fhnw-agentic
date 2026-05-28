@@ -1113,6 +1113,10 @@ pub enum ReviewAction {
         /// Review at most N documents (0 = all). Useful for a scoped pass.
         #[arg(long, default_value_t = 0)]
         limit: usize,
+        /// Re-review every document, even when the content blob hasn't changed
+        /// since the last review (default: skip unchanged for an input-delta pass).
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 }
 

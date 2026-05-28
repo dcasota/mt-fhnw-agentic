@@ -85,6 +85,7 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
         provider,
         model,
         limit,
+        force,
     } = action;
     let conn = agentic_core::db::open(db_path)?;
 
@@ -120,12 +121,13 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
     let reviewed_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let mut tally: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
 
-    // Build a (path -> latest entry id) map from prior model_reviews so each new
-    // verdict SUPERSEDES the previous one for the same path — latest-wins on
-    // adoption, no stale "exclude" left behind after a later "accept". Same for
-    // the rankings-scope review.
+    // Build a (path -> latest (id, blob_sha)) map from prior model_reviews so
+    // each new verdict SUPERSEDES the previous one for the same path AND we can
+    // skip an unchanged doc (input-delta gating) — latest-wins on adoption, no
+    // wasted LLM call when nothing changed.
     let prior_entries = passport::current(&conn, &project, Section::ClaimAuditResults)?;
-    let mut prior_path: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut prior_path: std::collections::HashMap<String, (i64, String)> =
+        std::collections::HashMap::new();
     let mut prior_rankings: Option<i64> = None;
     for e in &prior_entries {
         let Ok(v) = serde_json::from_str::<Value>(&e.payload_json) else {
@@ -140,15 +142,34 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
                 prior_rankings = Some(e.id);
             }
         } else if let Some(p) = v.get("path").and_then(Value::as_str) {
-            let cur = prior_path.get(p).copied().unwrap_or(0);
+            let sha = v
+                .get("blob_sha")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let cur = prior_path.get(p).map(|(id, _)| *id).unwrap_or(0);
             if e.id > cur {
-                prior_path.insert(p.to_string(), e.id);
+                prior_path.insert(p.to_string(), (e.id, sha));
             }
         }
     }
+    let mut unchanged = 0usize;
 
     for (path, sha) in &docs {
         let class = class_of(path);
+        // Input-delta gating: skip docs whose content blob hasn't changed since
+        // the last review. --force re-reviews everything regardless.
+        if !force {
+            if let Some((_, prior_sha)) = prior_path.get(path) {
+                if prior_sha == sha {
+                    unchanged += 1;
+                    if !json_out {
+                        println!("  · [{class}] {path} → unchanged (skipped)");
+                    }
+                    continue;
+                }
+            }
+        }
         let blob = worktree::read_at(&conn, &project, path)?;
         let text = String::from_utf8_lossy(&blob.content);
         // Bound the prompt: review the leading content (cost/token control).
@@ -215,12 +236,30 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
             Section::ClaimAuditResults,
             &payload.to_string(),
             head.as_deref(),
-            prior_path.get(path).copied(),
+            prior_path.get(path).map(|(id, _)| *id),
         )?;
         *tally.entry(assessment.clone()).or_default() += 1;
         if !json_out {
             println!("  + [{class}] {path} → {assessment}");
         }
+    }
+
+    // If nothing changed (no per-doc reviews actually ran), the rankings are
+    // the same as last time — skip the rankings-scope LLM call too.
+    let reviewed_now = tally.values().sum::<usize>();
+    if reviewed_now == 0 && !force {
+        if !json_out {
+            println!(
+                "No documents changed since the last review ({unchanged} unchanged) — \
+                 rankings review skipped. Use --force to re-review."
+            );
+        } else {
+            println!(
+                "{}",
+                json!({"reviewed": 0, "unchanged": unchanged, "provider": kind.as_str(), "model": model})
+            );
+        }
+        return Ok(());
     }
 
     // Review the rankings as a whole: feed the per-document assessments back to
@@ -275,12 +314,17 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
     if json_out {
         println!(
             "{}",
-            json!({"reviewed": docs.len(), "provider": kind.as_str(), "model": model, "verdicts": tally})
+            json!({"reviewed": reviewed_now, "unchanged": unchanged, "total": docs.len(),
+                   "provider": kind.as_str(), "model": model, "verdicts": tally})
         );
     } else {
+        let unchanged_note = if unchanged > 0 {
+            format!(" ({unchanged} unchanged, skipped)")
+        } else {
+            String::new()
+        };
         println!(
-            "Reviewed {} deliverable(s) + rankings via {} ({model}): {}",
-            docs.len(),
+            "Reviewed {reviewed_now} deliverable(s) + rankings via {} ({model}): {}{unchanged_note}",
             kind.as_str(),
             summary.join(", ")
         );
