@@ -16,6 +16,19 @@ static DE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+// German management-tradition abbreviations IST / SOLL and their compounds.
+// Detected case-SENSITIVELY in all-caps form (and the canonical title-cased
+// compound Ist-Analyse / Soll-Zustand) so lowercase English "is" / "soll"
+// elsewhere does not get flagged — those would explode the false-positive
+// rate (`-i` and ADR-0037 conservative-list rule). The bare lowercase
+// German forms are NOT detected here; rely on the wider DE word-list for
+// the legitimate full-word forms.
+static DE_ABBREV: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(IST|SOLL|IST/SOLL|SOLL/IST|IST-Analyse|SOLL-Zustand|Ist-Analyse|Soll-Zustand|Ist-Zustand|Soll-Ist)\b",
+    )
+    .unwrap()
+});
 static CROSSREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"out/[\w./-]+\.docx").unwrap());
 static MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<!--.*?-->").unwrap());
 static CELLCODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[DHI][-·.][NEC]\b").unwrap());
@@ -107,6 +120,26 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
                 out.push(err(
                     "NON_ENGLISH_TEXT",
                     format!("L{i}: German term '{}'", m.as_str()),
+                    here(),
+                ));
+            }
+        }
+        // German management-tradition abbreviations (IST / SOLL) — case-sensitive
+        // to avoid matching lowercase English "is" / "soll". Also exempted when
+        // glossed parenthetically (e.g. `actual (IST)` is fine).
+        if let Some(m) = DE_ABBREV.find(ln) {
+            let glossed = ln[..m.start()]
+                .chars()
+                .rev()
+                .take(2)
+                .any(|c| c == '*' || c == '(');
+            if !glossed {
+                out.push(err(
+                    "NON_ENGLISH_TEXT",
+                    format!(
+                        "L{i}: German management-tradition abbreviation '{}' — use English (actual/target)",
+                        m.as_str()
+                    ),
                     here(),
                 ));
             }
@@ -228,6 +261,46 @@ mod tests {
         assert!(cats.contains(&"CROSS_REFERENCE"));
         assert!(cats.contains(&"INTERNAL_MARKER"));
         assert!(cats.contains(&"CRYPTIC_LABEL"));
+    }
+
+    #[test]
+    fn catches_german_management_abbreviation_ist_soll() {
+        // C18 regression: bookkit gate now detects IST / SOLL / IST-Analyse /
+        // Soll-Zustand case-sensitively (lowercase English `is` / `soll` is NOT
+        // flagged). User-supplied requirement 2026-05-28.
+        let md = "| Dimension | Measured IST | Target (SOLL) | Gap |\n";
+        let fs = findings_for("x.md", md);
+        let count = fs
+            .iter()
+            .filter(|f| f.category == "NON_ENGLISH_TEXT")
+            .count();
+        assert!(
+            count >= 1,
+            "must flag IST or SOLL (got {} non-English findings: {:?})",
+            count,
+            fs.iter()
+                .filter(|f| f.category == "NON_ENGLISH_TEXT")
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+        // SOLL appears parenthetically as `(SOLL)` — the gloss-exemption rule
+        // should silence it. So the remaining flag should be IST (or
+        // Ist-Analyse / SOLL-Zustand). Verify at least one mentions IST.
+        assert!(
+            fs.iter()
+                .any(|f| f.category == "NON_ENGLISH_TEXT" && f.message.contains("IST")),
+            "expected IST to be flagged; got: {:?}",
+            fs.iter()
+                .filter(|f| f.category == "NON_ENGLISH_TEXT")
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+        // And lowercase English `is` must NOT be flagged.
+        let prose = findings_for("x.md", "The system is robust.\n");
+        assert!(
+            !prose.iter().any(|f| f.category == "NON_ENGLISH_TEXT"),
+            "lowercase English 'is' must not be flagged as German IST"
+        );
     }
 
     #[test]
