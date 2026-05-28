@@ -287,6 +287,15 @@ pub enum Command {
         action: OrchestrateAction,
     },
 
+    /// Ranking summary (perception P-4): aggregate ADR-0046 acceptance per
+    /// section. Walks `claim_audit_results` ranking-kind entries, classifies
+    /// each by section, and counts Critical / High / Medium tiers + the
+    /// LowRankings holdouts. Markdown / JSON output.
+    Rank {
+        #[command(subcommand)]
+        action: RankAction,
+    },
+
     /// Source-merge utilities (codifies manual assembly steps). Currently:
     /// assemble the eleven dimension sources into one English compendium.
     Merge {
@@ -420,6 +429,24 @@ pub enum OrchestrateAction {
         /// Root directory for the docs gate.
         #[arg(long, default_value = ".")]
         root: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RankAction {
+    /// One-screen summary of ADR-0046 acceptance per section. Reads
+    /// `claim_audit_results`; classifies each by content path; counts
+    /// placements (thesis_main / thesis_appendix / lowrankings / other);
+    /// notes the model_review accept/revise/exclude split per section.
+    Summary {
+        #[arg(long)]
+        project: String,
+        /// Restrict to one section slug.
+        #[arg(long)]
+        section: Option<String>,
+        /// Output path; if omitted, prints to stdout.
+        #[arg(long)]
+        to: Option<PathBuf>,
     },
 }
 

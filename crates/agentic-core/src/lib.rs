@@ -23,6 +23,7 @@ pub mod passport;
 pub mod paths;
 pub mod profiles;
 pub mod project;
+pub mod rank_summary;
 pub mod review;
 pub mod signing;
 pub mod tombstone;
