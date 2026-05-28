@@ -208,8 +208,23 @@ pub async fn run_report(
         } => {
             let report = match (paths_from_manifest, book_key) {
                 (Some(manifest_path), Some(key)) => {
-                    let paths = load_manifest_paths(&conn, &project, &manifest_path, &key)?;
-                    let paths_ref: Vec<&str> = paths.iter().map(String::as_str).collect();
+                    let all_paths = load_manifest_paths(&conn, &project, &manifest_path, &key)?;
+                    // ADR-0050 §3 (G3): the FHNW 60-page cap applies to the
+                    // *body* only. Filter the manifest paths down to numbered
+                    // body chapters when measuring the thesis profile; for
+                    // every other manifest key, keep the full path list (the
+                    // bookkit-C body-cap rule does not apply to campaigns or
+                    // dimensions).
+                    let filtered: Vec<String> = if key == "master_thesis" {
+                        all_paths
+                            .iter()
+                            .filter(|p| is_thesis_body_chapter(p))
+                            .cloned()
+                            .collect()
+                    } else {
+                        all_paths.clone()
+                    };
+                    let paths_ref: Vec<&str> = filtered.iter().map(String::as_str).collect();
                     agentic_checks::page_boundary_gate::run_scoped(
                         &conn,
                         &project,
@@ -309,6 +324,82 @@ fn severity_label(s: &agentic_checks::Severity) -> &'static str {
         agentic_checks::Severity::Warn => "WARN",
         agentic_checks::Severity::Error => "ERROR",
         agentic_checks::Severity::Blocking => "BLOCKING",
+    }
+}
+
+/// Is `path` a numbered FHNW master-thesis BODY chapter
+/// (`thesis/fhnw_<N>_*.md` with N ∈ 1..=9)?
+///
+/// ADR-0050 §3 (G3): the FHNW 60-page cap covers body chapters only.
+/// Front-matter (title page, declarations, management summary, acronyms)
+/// and back-matter (appendix, list of figures/tables, bibliography,
+/// AI-tools disclosure) do NOT count toward the cap. The numbered-body
+/// pattern is the conventional FHNW-thesis chapter prefix (1 Introduction,
+/// 2 Theory, …, 7 Personal Reflection); chapters 0 / 00 are reserved for
+/// FHNW front-matter (title / decls / mgmt-summary) and chapter 99 for
+/// back-matter (AI-tools disclosure, etc.).
+///
+/// Used by `check page-boundary` when invoked with
+/// `--paths-from-manifest --book-key master_thesis`. Other books keep
+/// the full path list (the FHNW body-cap rule is thesis-specific).
+fn is_thesis_body_chapter(path: &str) -> bool {
+    // Match `thesis/fhnw_<N>_…` where N is a SINGLE non-zero digit.
+    // Multi-digit (e.g. `fhnw_00_`, `fhnw_99_`) and zero (`fhnw_0_`) are
+    // not body chapters.
+    let Some(stem) = path.strip_prefix("thesis/fhnw_") else {
+        return false;
+    };
+    let mut chars = stem.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let Some(second) = chars.next() else {
+        return false;
+    };
+    matches!(first, '1'..='9') && second == '_'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_thesis_body_chapter;
+
+    #[test]
+    fn body_chapter_recognition_covers_FHNW_pattern() {
+        // Numbered body 1..=7 (current thesis) — all true.
+        for n in 1..=9 {
+            assert!(is_thesis_body_chapter(&format!(
+                "thesis/fhnw_{n}_anything.md"
+            )));
+        }
+        // Front-matter (00 / 0) — all false.
+        assert!(!is_thesis_body_chapter("thesis/fhnw_00_title_page.md"));
+        assert!(!is_thesis_body_chapter(
+            "thesis/fhnw_00_declaration_of_originality.md"
+        ));
+        assert!(!is_thesis_body_chapter(
+            "thesis/fhnw_00_compliance_declaration_photon_os.md"
+        ));
+        assert!(!is_thesis_body_chapter(
+            "thesis/fhnw_0_management_summary.md"
+        ));
+        // Back-matter (99) — false.
+        assert!(!is_thesis_body_chapter(
+            "thesis/fhnw_99_ai_tools_disclosure.md"
+        ));
+        // Other prefixes — false.
+        assert!(!is_thesis_body_chapter(
+            "out/sources/frontmatter/acronyms.md"
+        ));
+        assert!(!is_thesis_body_chapter(
+            "out/sources/Dimensions_bibliography_EN.md"
+        ));
+        assert!(!is_thesis_body_chapter(
+            "out/sources/frontmatter/appendix_research_prompts.md"
+        ));
+        // Edge cases.
+        assert!(!is_thesis_body_chapter("thesis/fhnw_"));
+        assert!(!is_thesis_body_chapter(""));
+        assert!(!is_thesis_body_chapter("random.md"));
     }
 }
 

@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] — 2026-05-28
+
+### Added — ADR-0050: FHNW-compliant master-thesis typography + back-matter
+
+Closes the "spec is silent, code defaults badly" gap surfaced by the
+2026-05-28 cascade audit. ADR-0045 defined Bookkit C's structure but
+left typography, caption format, page-cap scope, and mandatory FHNW
+back-matter undefined; the book engine inherited the generic Designer
+aesthetic (Georgia 11pt body + Calibri NAVY headings + grey captions)
+by default, which does not match the FHNW MAS proposal docx
+(Arial 10pt body + Arial 14pt bold black headings + Times New Roman 9pt
+black captions). ADR-0050 codifies the override; this release ships it.
+
+- **TypographyProfile enum (BookMeta)**: `Designer` (default) keeps the
+  current Georgia/Calibri/navy aesthetic for every non-thesis book.
+  `FhnwProposalParity` switches body/headings/captions/bullets to
+  Arial/Arial/Times-New-Roman black per the FHNW proposal docx
+  2025-12-29. Opt-in via the manifest's `thesis_typography` field;
+  zero regression for the 17 non-thesis books.
+- **CaptionFormat enum (BookMeta)**: `Period` (default) → "Figure 1.";
+  `Colon` → "Figure 1:" (FHNW convention, per
+  `figure-caption-rules.md`).
+- **PageNumbering enum (BookMeta)**: `Arabic` (default) and
+  `FhnwRomanThenArabic` for academic Roman-front-matter / Arabic-body
+  convention. **NOTE**: the FHNW variant is declared but not yet wired
+  to docx output — `docx-rs 0.4.20::PageNumType` exposes `start` and
+  `chap_style` but not `fmt`, so the library cannot emit
+  `<w:pgNumType w:fmt="lowerRoman"/>`. v0.1.13 keeps Arabic-only;
+  upstream PR / XML-post-processing / Word-COM finalize enhancement
+  are the three resolution paths (tracked as backlog in ADR-0050 §2).
+- **page_boundary gate**: when invoked with `--paths-from-manifest
+  --book-key master_thesis`, the gate now filters down to numbered
+  body chapters (`thesis/fhnw_[1-9]_*.md`), excluding title page,
+  declarations, management summary, acronyms, appendix, bibliography,
+  index, AI-tools disclosure. The FHNW 60-page cap applies to body
+  only (ADR-0050 §3); previously the cap measured the full document.
+- **AI-tools disclosure chapter**: new
+  `thesis/fhnw_99_ai_tools_disclosure.md` (back-matter), wired into
+  the existing `ThesisSlot::AiTools` slot. Honest disclosure of every
+  AI/translation/editing tool used during thesis preparation per FHNW
+  MAS regulations.
+- **manifest update**: `master_thesis` entry adds
+  `thesis_typography: "fhnw-proposal-parity"`,
+  `caption_format: "colon"`, and the AI-tools disclosure chapter
+  (chapter count 14 → 15).
+
+### Verified — typography parity end-to-end (2026-05-28)
+
+Word-COM measurement on rebuilt `master_thesis.docx`:
+
+| Element | v0.1.10 (Designer) | v0.1.13 (FHNW) | Proposal target |
+|---|---|---|---|
+| Chapter heading | Calibri 22pt navy | **Arial 14pt bold black** | Arial 14pt bold black |
+| Body prose | Georgia 11pt | **Arial 10pt black** | Arial 10pt black |
+| Caption | Georgia 9pt cyan-sentinel | **"Figure 1:" not italic, black** | Times Roman 9pt black |
+| Pages | 91 | **87** | n/a |
+| Title-page paragraphs | 19 then H1 | H1 paragraph 1 (no engine cover) | n/a |
+| Designer profile (other 17 books) | Georgia + NAVY | Georgia + NAVY (unchanged) | n/a (no regression) |
+
+Three new regression tests in `agentic-export`:
+- `fhnw_typography_profile_emits_arial_body_and_black_headings`
+- `designer_typography_profile_keeps_navy_and_georgia` (no-regression guard)
+- `caption_format_colon_emits_colon_separator`
+
+One new test in `agentic/commands::check`:
+- `body_chapter_recognition_covers_FHNW_pattern` — guards the
+  `is_thesis_body_chapter` filter for ADR-0050 §3.
+
+Workspace: **345/345 tests pass; 0 regressions**.
+
+### Known minor cosmetic gap (deferred)
+
+The acronyms chapter `out/sources/frontmatter/acronyms.md` renders its
+acronym table in Georgia 9.5pt because table cells use their own
+character formatting path that wasn't branched in v0.1.13. The chapter
+*headings* (Acronyms title) and surrounding body prose ARE Arial 10pt
+black; only the inner table cells remain Georgia. Not a blocker for
+submission; addressed in a follow-up release.
+
 ## [0.1.12] — 2026-05-28
 
 ### Fixed — v0.1.11 follow-up: `secrets` context can't be used in job `if:`

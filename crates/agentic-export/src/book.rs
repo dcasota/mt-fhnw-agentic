@@ -96,6 +96,49 @@ fn col_count(header: &[String], rows: &[Vec<String>]) -> usize {
         .max(1)
 }
 
+/// Typography profile for the rendered docx (ADR-0050).
+///
+/// `Designer` is the historical bookkit aesthetic — Georgia body, Calibri
+/// navy headings (`#1F3864` H1/H2 / `#2E4A7A` H3/H4), grey captions — used
+/// by every non-thesis book (campaigns, dimensions, handbook, …).
+/// `FhnwProposalParity` matches the FHNW master-thesis proposal docx
+/// verbatim: Arial 10pt body, Arial 12–14pt bold black headings, Times
+/// New Roman 9pt black captions, no accent colours. Selected by the
+/// `master_thesis` book in the manifest; defaults to `Designer` so every
+/// other book is unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypographyProfile {
+    #[default]
+    Designer,
+    FhnwProposalParity,
+}
+
+/// Page-numbering style (ADR-0050 §2).
+///
+/// `Arabic` (historical default) numbers every page 1, 2, 3, … from the
+/// start. `FhnwRomanThenArabic` uses lowercase Roman (i, ii, iii, …) for
+/// front-matter (title page through acronyms) and switches to Arabic 1
+/// at the first body chapter — the academic-thesis convention FHNW
+/// follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PageNumbering {
+    #[default]
+    Arabic,
+    FhnwRomanThenArabic,
+}
+
+/// Caption label format (ADR-0050 §1; figure-caption-rules.md).
+///
+/// `Period` (historical default) renders "Figure 1. <caption>".
+/// `Colon` renders "Figure 1: <caption>" (English) or "Abbildung 1:
+/// <caption>" (German), matching the FHNW MAS Beschriftungsformat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptionFormat {
+    #[default]
+    Period,
+    Colon,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BookMeta {
     pub title: String,
@@ -131,6 +174,18 @@ pub struct BookMeta {
     /// Localises only engine-generated chrome (labels, caption prefixes,
     /// list/section headings); chapter content is untouched.
     pub lang: String,
+    /// Typography profile (ADR-0050). `Designer` (default) preserves the
+    /// historical Georgia/Calibri/navy palette for every non-thesis book.
+    /// `FhnwProposalParity` switches body/headings/captions to Arial/Arial/
+    /// TimesNewRoman black for FHNW master-thesis parity.
+    pub thesis_typography: TypographyProfile,
+    /// Page-numbering scheme (ADR-0050 §2). `Arabic` (default) numbers
+    /// every page 1, 2, 3, …; `FhnwRomanThenArabic` uses Roman for
+    /// front-matter and restarts at Arabic 1 at chapter 1.
+    pub page_numbering: PageNumbering,
+    /// Caption label format (ADR-0050 §1). `Period` (default) → "Figure 1.";
+    /// `Colon` → "Figure 1:" (English) or "Abbildung 1:" (German).
+    pub caption_format: CaptionFormat,
 }
 
 /// Per-book render state threaded through `render_block`: running figure / table
@@ -148,6 +203,11 @@ struct Ctx<'a> {
     index_terms: Vec<String>,
     /// (label, url) links seen in the current chapter, de-duped by URL.
     links: Vec<(String, String)>,
+    /// Typography profile (ADR-0050). Designer for non-thesis books;
+    /// FhnwProposalParity for the master-thesis profile.
+    typography: TypographyProfile,
+    /// Caption label format (ADR-0050 §1; figure-caption-rules.md).
+    caption_format: CaptionFormat,
 }
 
 impl Ctx<'_> {
@@ -250,6 +310,133 @@ fn body_fonts() -> RunFonts {
 }
 fn head_fonts() -> RunFonts {
     RunFonts::new().ascii(HEADF).hi_ansi(HEADF)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-0050 typography branches.
+//
+// Every place that previously read `BODY`, `HEADF`, `NAVY`, `GREY`, `ACCENT`,
+// `RULE` or `body_fonts()`/`head_fonts()` directly now routes through one of
+// these getters with a `TypographyProfile`. `Designer` returns the historical
+// values byte-for-byte (zero regression for the 17 non-thesis books).
+// `FhnwProposalParity` returns the Arial / Times New Roman / black values
+// measured from the FHNW proposal docx 2025-12-29.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Arial — FHNW proposal body & heading face.
+const FHNW_BODY: &str = "Arial";
+/// Times New Roman — FHNW proposal caption face.
+const FHNW_CAPTION: &str = "Times New Roman";
+/// Pure black — every FHNW proposal text colour.
+const FHNW_BLACK: &str = "000000";
+
+/// Body run-fonts for the active typography profile.
+fn body_fonts_for(p: TypographyProfile) -> RunFonts {
+    match p {
+        TypographyProfile::Designer => body_fonts(),
+        TypographyProfile::FhnwProposalParity => {
+            RunFonts::new().ascii(FHNW_BODY).hi_ansi(FHNW_BODY)
+        }
+    }
+}
+
+/// Heading run-fonts for the active typography profile.
+fn head_fonts_for(p: TypographyProfile) -> RunFonts {
+    match p {
+        TypographyProfile::Designer => head_fonts(),
+        TypographyProfile::FhnwProposalParity => {
+            RunFonts::new().ascii(FHNW_BODY).hi_ansi(FHNW_BODY)
+        }
+    }
+}
+
+/// Caption run-fonts (Times New Roman for FHNW; Georgia for Designer).
+fn caption_fonts_for(p: TypographyProfile) -> RunFonts {
+    match p {
+        TypographyProfile::Designer => body_fonts(),
+        TypographyProfile::FhnwProposalParity => {
+            RunFonts::new().ascii(FHNW_CAPTION).hi_ansi(FHNW_CAPTION)
+        }
+    }
+}
+
+/// Default body text colour ("000000" for both — both palettes ship black
+/// running prose; the divergence is in the *accent* colours below).
+fn body_color_for(_p: TypographyProfile) -> &'static str {
+    "000000"
+}
+
+/// Primary heading colour. Designer = NAVY; FHNW = pure black.
+fn heading_color_for(p: TypographyProfile) -> &'static str {
+    match p {
+        TypographyProfile::Designer => NAVY,
+        TypographyProfile::FhnwProposalParity => FHNW_BLACK,
+    }
+}
+
+/// Sub-heading (H3/H4) colour. Designer = HEAD2; FHNW = pure black.
+fn subheading_color_for(p: TypographyProfile) -> &'static str {
+    match p {
+        TypographyProfile::Designer => HEAD2,
+        TypographyProfile::FhnwProposalParity => FHNW_BLACK,
+    }
+}
+
+/// Caption text colour. Designer = GREY; FHNW = pure black.
+fn caption_color_for(p: TypographyProfile) -> &'static str {
+    match p {
+        TypographyProfile::Designer => GREY,
+        TypographyProfile::FhnwProposalParity => FHNW_BLACK,
+    }
+}
+
+/// "Accent" colour used on the title-page rule and small flourishes.
+/// Designer = ACCENT (blue); FHNW = pure black (no accent).
+fn accent_color_for(p: TypographyProfile) -> &'static str {
+    match p {
+        TypographyProfile::Designer => ACCENT,
+        TypographyProfile::FhnwProposalParity => FHNW_BLACK,
+    }
+}
+
+/// Secondary subtitle / imprint colour. Designer = GREY; FHNW = black.
+fn subtitle_color_for(p: TypographyProfile) -> &'static str {
+    match p {
+        TypographyProfile::Designer => GREY,
+        TypographyProfile::FhnwProposalParity => FHNW_BLACK,
+    }
+}
+
+/// Heading size (half-points) for level N (1..=4) under the active profile.
+/// Designer keeps the existing 44/32/26/23 ladder (= 22/16/13/11.5 pt);
+/// FHNW uses 28/28/28/28 (= 14/14/14/14 pt — flat as in the proposal).
+fn heading_size_hp(p: TypographyProfile, level: u8) -> usize {
+    match (p, level) {
+        (TypographyProfile::Designer, 1) => 44,
+        (TypographyProfile::Designer, 2) => 32,
+        (TypographyProfile::Designer, 3) => 26,
+        (TypographyProfile::Designer, _) => 23,
+        // FHNW proposal: H1-H4 all 14pt = 28 half-points. Bold for H1/H2/H4,
+        // regular for H3 (matches proposal Word inspection 2026-05-28).
+        (TypographyProfile::FhnwProposalParity, _) => 28,
+    }
+}
+
+/// Body default size (half-points) under the active profile.
+/// Designer: 22 (= 11 pt). FHNW: 20 (= 10 pt — proposal body).
+fn body_size_hp(p: TypographyProfile) -> usize {
+    match p {
+        TypographyProfile::Designer => 22,
+        TypographyProfile::FhnwProposalParity => 20,
+    }
+}
+
+/// Caption label format (Period vs Colon, ADR-0050 §1).
+fn caption_separator_for(p: CaptionFormat) -> &'static str {
+    match p {
+        CaptionFormat::Period => ".",
+        CaptionFormat::Colon => ":",
+    }
 }
 
 fn page_break() -> Paragraph {
@@ -425,13 +612,24 @@ fn disclaimer_page(mut doc: Docx, m: &BookMeta) -> Docx {
     doc.add_paragraph(page_break())
 }
 
-fn heading_para(level: u8, text: &str, page_break_before: bool) -> Paragraph {
-    let (size, color) = match level {
-        1 => (44, NAVY),
-        2 => (32, NAVY),
-        3 => (26, HEAD2),
-        _ => (23, HEAD2),
+fn heading_para(
+    level: u8,
+    text: &str,
+    page_break_before: bool,
+    typography: TypographyProfile,
+) -> Paragraph {
+    let size = heading_size_hp(typography, level);
+    let color = if level <= 2 {
+        heading_color_for(typography)
+    } else {
+        subheading_color_for(typography)
     };
+    // FHNW H3 is regular (not bold) per the proposal docx 2025-12-29; all
+    // other heading levels remain bold under both profiles.
+    let bold = !matches!(
+        (typography, level),
+        (TypographyProfile::FhnwProposalParity, 3)
+    );
     let mut p = Paragraph::new()
         .style(&format!("Heading{}", level.min(4)))
         .line_spacing(
@@ -442,22 +640,26 @@ fn heading_para(level: u8, text: &str, page_break_before: bool) -> Paragraph {
     if page_break_before {
         p = p.add_run(Run::new().add_break(BreakType::Page));
     }
-    p.add_run(
-        Run::new()
-            .add_text(text)
-            .bold()
-            .size(size)
-            .color(color)
-            .fonts(head_fonts()),
-    )
+    let mut run = Run::new()
+        .add_text(text)
+        .size(size)
+        .color(color)
+        .fonts(head_fonts_for(typography));
+    if bold {
+        run = run.bold();
+    }
+    p.add_run(run)
 }
 
-fn run_of(r: &DocxRun) -> Run {
-    let mut run = Run::new().add_text(&r.text).size(22);
+fn run_of(r: &DocxRun, typography: TypographyProfile) -> Run {
+    let mut run = Run::new()
+        .add_text(&r.text)
+        .size(body_size_hp(typography))
+        .color(body_color_for(typography));
     run = if r.code {
         run.fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO))
     } else {
-        run.fonts(body_fonts())
+        run.fonts(body_fonts_for(typography))
     };
     if r.bold {
         run = run.bold();
@@ -486,7 +688,12 @@ fn superscript(n: usize) -> Run {
 /// the label plus a superscript reference number and are registered in the
 /// chapter's link registry (bookkit `add_inline` + `_register_link`); the URLs
 /// then appear in the end-of-chapter Sources & QR-codes box.
-fn add_runs(mut p: Paragraph, runs: &[DocxRun], links: &mut Vec<(String, String)>) -> Paragraph {
+fn add_runs(
+    mut p: Paragraph,
+    runs: &[DocxRun],
+    links: &mut Vec<(String, String)>,
+    typography: TypographyProfile,
+) -> Paragraph {
     for r in runs {
         if let Some(url) = &r.link {
             // Register (de-dupe by URL) and emit label + superscript number.
@@ -499,22 +706,31 @@ fn add_runs(mut p: Paragraph, runs: &[DocxRun], links: &mut Vec<(String, String)
             };
             let mut label = Run::new()
                 .add_text(&r.text)
-                .size(22)
-                .color(ACCENT)
-                .fonts(body_fonts());
+                .size(body_size_hp(typography))
+                .color(accent_color_for(typography))
+                .fonts(body_fonts_for(typography));
             if r.bold {
                 label = label.bold();
             }
             p = p.add_run(label).add_run(superscript(n));
         } else {
-            p = p.add_run(run_of(r));
+            p = p.add_run(run_of(r, typography));
         }
     }
     p
 }
 
-fn para_of(runs: &[DocxRun], links: &mut Vec<(String, String)>) -> Paragraph {
-    add_runs(Paragraph::new().line_spacing(body_spacing()), runs, links)
+fn para_of(
+    runs: &[DocxRun],
+    links: &mut Vec<(String, String)>,
+    typography: TypographyProfile,
+) -> Paragraph {
+    add_runs(
+        Paragraph::new().line_spacing(body_spacing()),
+        runs,
+        links,
+        typography,
+    )
 }
 
 /// Parse PNG width/height from the IHDR chunk (bytes 16..24, big-endian).
@@ -1176,7 +1392,7 @@ fn index_marks(
 
 /// A "List of Figures"/"List of Tables" section: a heading + a `TOC \c` field
 /// that Word fills from the caption SEQ fields.
-fn list_of(seq: &str, heading: &str) -> [Paragraph; 2] {
+fn list_of(seq: &str, heading: &str, typography: TypographyProfile) -> [Paragraph; 2] {
     [
         Paragraph::new()
             .style("Heading1")
@@ -1189,9 +1405,9 @@ fn list_of(seq: &str, heading: &str) -> [Paragraph; 2] {
                 Run::new()
                     .add_text(heading)
                     .bold()
-                    .size(32)
-                    .color(NAVY)
-                    .fonts(head_fonts()),
+                    .size(heading_size_hp(typography, 2))
+                    .color(heading_color_for(typography))
+                    .fonts(head_fonts_for(typography)),
             ),
         Paragraph::new().add_run(field_run(&format!("TOC \\h \\z \\c \"{seq}\""), "", true)),
     ]
@@ -1337,10 +1553,15 @@ fn render_block(
             } else {
                 text.clone()
             };
-            doc.add_paragraph(heading_para(*level, &shown, chapter_start && *level <= 2))
+            doc.add_paragraph(heading_para(
+                *level,
+                &shown,
+                chapter_start && *level <= 2,
+                ctx.typography,
+            ))
         }
         DocxBlock::Paragraph(runs) => {
-            let mut p = para_of(runs, &mut ctx.links);
+            let mut p = para_of(runs, &mut ctx.links, ctx.typography);
             let text: String = runs.iter().map(|r| r.text.as_str()).collect();
             for xe in index_marks(&text, &ctx.index_terms, &mut ctx.idx_seen) {
                 p = p.add_run(xe);
@@ -1351,24 +1572,24 @@ fn render_block(
             let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
                 Run::new()
                     .add_text("•  ")
-                    .size(22)
-                    .color(NAVY)
+                    .size(body_size_hp(ctx.typography))
+                    .color(heading_color_for(ctx.typography))
                     .bold()
-                    .fonts(body_fonts()),
+                    .fonts(body_fonts_for(ctx.typography)),
             );
-            p = add_runs(p, runs, &mut ctx.links);
+            p = add_runs(p, runs, &mut ctx.links, ctx.typography);
             doc.add_paragraph(p)
         }
         DocxBlock::OrderedItem { number, runs } => {
             let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
                 Run::new()
                     .add_text(format!("{number}.  "))
-                    .size(22)
-                    .color(NAVY)
+                    .size(body_size_hp(ctx.typography))
+                    .color(heading_color_for(ctx.typography))
                     .bold()
-                    .fonts(body_fonts()),
+                    .fonts(body_fonts_for(ctx.typography)),
             );
-            p = add_runs(p, runs, &mut ctx.links);
+            p = add_runs(p, runs, &mut ctx.links, ctx.typography);
             doc.add_paragraph(p)
         }
         DocxBlock::CodeBlock { lang, body } => match lang.as_str() {
@@ -1423,16 +1644,25 @@ fn render_block(
             // when present, follows the number; an untitled table is still
             // numbered and listed.
             ctx.tblno += 1;
-            let cap_style = |t: &str| {
-                Run::new()
+            let typography = ctx.typography;
+            let caption_format = ctx.caption_format;
+            // ADR-0050: Designer keeps the italic-grey-Georgia caption; FHNW
+            // uses upright-black-Times New Roman per proposal docx.
+            let italic_caption = !matches!(typography, TypographyProfile::FhnwProposalParity);
+            let cap_style = move |t: &str| {
+                let mut run = Run::new()
                     .add_text(t.to_string())
-                    .italic()
                     .size(18)
-                    .color(GREY)
-                    .fonts(body_fonts())
+                    .color(caption_color_for(typography))
+                    .fonts(caption_fonts_for(typography));
+                if italic_caption {
+                    run = run.italic();
+                }
+                run
             };
+            let sep = caption_separator_for(caption_format);
             let title = match caption {
-                Some(cap) => format!(". {cap}"),
+                Some(cap) => format!("{sep} {cap}"),
                 None => String::new(),
             };
             doc = doc.add_paragraph(
@@ -1493,14 +1723,21 @@ fn render_block(
                 );
                 // Caption with generous room after, so the next text isn't crammed.
                 // Caption with a SEQ field so a List of Figures can collect it.
-                let cap_style = |t: &str| {
-                    Run::new()
+                let typography = ctx.typography;
+                let caption_format = ctx.caption_format;
+                let italic_caption = !matches!(typography, TypographyProfile::FhnwProposalParity);
+                let cap_style = move |t: &str| {
+                    let mut run = Run::new()
                         .add_text(t.to_string())
-                        .italic()
                         .size(18)
-                        .color(GREY)
-                        .fonts(body_fonts())
+                        .color(caption_color_for(typography))
+                        .fonts(caption_fonts_for(typography));
+                    if italic_caption {
+                        run = run.italic();
+                    }
+                    run
                 };
+                let sep = caption_separator_for(caption_format);
                 doc.add_paragraph(
                     Paragraph::new()
                         .align(AlignmentType::Center)
@@ -1511,7 +1748,7 @@ fn render_block(
                             &format!("{}", ctx.figno),
                             false,
                         ))
-                        .add_run(cap_style(&format!(". {caption}"))),
+                        .add_run(cap_style(&format!("{sep} {caption}"))),
                 )
             } else {
                 doc.add_paragraph(
@@ -1681,6 +1918,8 @@ pub fn render_book(
         idx_seen: std::collections::HashSet::new(),
         index_terms,
         links: Vec::new(),
+        typography: meta.thesis_typography,
+        caption_format: meta.caption_format,
     };
 
     for (ci, (_label, md)) in chapters.iter().enumerate() {
@@ -1699,10 +1938,18 @@ pub fn render_book(
     doc = doc.add_paragraph(page_break());
     // `seq` (SEQ field name) stays English/stable for numbering; only the
     // visible heading is localised.
-    for p in list_of("Figure", t(&meta.lang, "list_of_figures")) {
+    for p in list_of(
+        "Figure",
+        t(&meta.lang, "list_of_figures"),
+        meta.thesis_typography,
+    ) {
         doc = doc.add_paragraph(p);
     }
-    for p in list_of("Table", t(&meta.lang, "list_of_tables")) {
+    for p in list_of(
+        "Table",
+        t(&meta.lang, "list_of_tables"),
+        meta.thesis_typography,
+    ) {
         doc = doc.add_paragraph(p);
     }
 
@@ -1935,6 +2182,8 @@ fn render_thesis_book(
         idx_seen: std::collections::HashSet::new(),
         index_terms,
         links: Vec::new(),
+        typography: meta.thesis_typography,
+        caption_format: meta.caption_format,
     };
 
     // `emitted` tracks whether any flow content precedes the next item, so the
@@ -1958,9 +2207,9 @@ fn render_thesis_book(
                         Run::new()
                             .add_text("Contents")
                             .bold()
-                            .size(44)
-                            .color(NAVY)
-                            .fonts(head_fonts()),
+                            .size(heading_size_hp(ctx.typography, 1))
+                            .color(heading_color_for(ctx.typography))
+                            .fonts(head_fonts_for(ctx.typography)),
                     ),
                 );
                 doc = doc.add_table_of_contents(
@@ -1974,12 +2223,12 @@ fn render_thesis_book(
             }
             ThesisItem::ListFigures => {
                 doc = doc.add_paragraph(page_break());
-                for p in list_of("Figure", t(&meta.lang, "list_of_figures")) {
+                for p in list_of("Figure", t(&meta.lang, "list_of_figures"), ctx.typography) {
                     doc = doc.add_paragraph(p);
                 }
             }
             ThesisItem::ListTables => {
-                for p in list_of("Table", t(&meta.lang, "list_of_tables")) {
+                for p in list_of("Table", t(&meta.lang, "list_of_tables"), ctx.typography) {
                     doc = doc.add_paragraph(p);
                 }
             }
@@ -1993,9 +2242,9 @@ fn render_thesis_book(
                         Run::new()
                             .add_text("Index")
                             .bold()
-                            .size(32)
-                            .color(NAVY)
-                            .fonts(head_fonts()),
+                            .size(heading_size_hp(ctx.typography, 2))
+                            .color(heading_color_for(ctx.typography))
+                            .fonts(head_fonts_for(ctx.typography)),
                     ),
                 );
                 doc = doc.add_paragraph(
@@ -2006,8 +2255,8 @@ fn render_thesis_book(
                             )
                             .italic()
                             .size(18)
-                            .color(GREY)
-                            .fonts(body_fonts()),
+                            .color(subtitle_color_for(ctx.typography))
+                            .fonts(body_fonts_for(ctx.typography)),
                     ),
                 );
                 doc =
@@ -2509,6 +2758,126 @@ mod tests {
             d.contains(unique_subtitle),
             "engine cover must still render when no explicit title chapter \
              (subtitle sentinel missing from word/document.xml)"
+        );
+    }
+
+    #[test]
+    fn fhnw_typography_profile_emits_arial_body_and_black_headings() {
+        // ADR-0050 regression: with thesis_typography = FhnwProposalParity
+        // the rendered docx body uses Arial, headings use Arial bold, and
+        // no NAVY accent colour appears anywhere in the document XML.
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Governance and Leadership…".into(),
+            subtitle: "FHNW MAS Cybersecurity — Master's Thesis".into(),
+            author: "Daniel Casota".into(),
+            context: "MAS Cybersecurity, FHNW".into(),
+            thesis_profile: true,
+            thesis_typography: TypographyProfile::FhnwProposalParity,
+            caption_format: CaptionFormat::Colon,
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        // Body / heading font is Arial — appears as ASCII attribute on at
+        // least one run-fonts element.
+        assert!(
+            d.contains("w:ascii=\"Arial\"") || d.contains("ascii=\"Arial\""),
+            "FHNW profile must emit Arial font in run-fonts (word/document.xml)"
+        );
+        // Heading colour for FHNW is pure black; NAVY (`1F3864`) must NOT
+        // appear in the document. (NAVY is the Designer-profile heading
+        // accent; the FHNW profile uses `000000` for every heading.)
+        assert!(
+            !d.contains("\"1F3864\""),
+            "FHNW profile must not emit the Designer NAVY colour anywhere"
+        );
+        // No HEAD2 lighter-blue either.
+        assert!(
+            !d.contains("\"2E4A7A\""),
+            "FHNW profile must not emit the Designer HEAD2 colour anywhere"
+        );
+    }
+
+    #[test]
+    fn designer_typography_profile_keeps_navy_and_georgia() {
+        // ADR-0050 regression for the OTHER side: with the default
+        // TypographyProfile::Designer the engine still emits Georgia +
+        // NAVY (so the 17 non-thesis books are unaffected by the FHNW
+        // typography branch).
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Merged Dimensions".into(),
+            // thesis_typography defaults to Designer
+            ..Default::default()
+        };
+        let bytes = render_book(
+            &meta,
+            &[(
+                "c1".into(),
+                "# Dimension 01 — Agile Leadership\n\nText.\n".into(),
+            )],
+            Path::new("."),
+        )
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains("Georgia") || d.contains("Calibri"),
+            "Designer profile must keep the historical Georgia/Calibri fonts"
+        );
+        assert!(
+            d.contains("1F3864") || d.contains("2E4A7A"),
+            "Designer profile must keep at least one NAVY/HEAD2 colour"
+        );
+    }
+
+    #[test]
+    fn caption_format_colon_emits_colon_separator() {
+        // ADR-0050 §1: with CaptionFormat::Colon, a table caption renders
+        // as "Table 1: <caption>" instead of "Table 1. <caption>". The
+        // table-caption fold logic recognises a paragraph immediately
+        // before a table (matching `fold_table_captions`); we use that
+        // pattern here so the engine emits a real caption.
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            caption_format: CaptionFormat::Colon,
+            ..Default::default()
+        };
+        // A caption paragraph starting with "Table:" immediately preceding
+        // a table is folded into a captioned-table block by
+        // `fold_table_captions`. The folded caption is then rendered by
+        // the caption code path that honours `CaptionFormat`.
+        let md = "# C\n\nTable: MyUniqueColonCaption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let bytes = render_book(&meta, &[("c1".into(), md.to_string())], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        // The separator ": " appears in front of the caption text under
+        // CaptionFormat::Colon — the only place this exact pattern shows
+        // up is the caption renderer.
+        assert!(
+            d.contains(": MyUniqueColonCaption"),
+            "CaptionFormat::Colon must emit \": <caption>\" in the caption run"
+        );
+        // The period separator must NOT appear in front of the caption
+        // text under Colon mode.
+        assert!(
+            !d.contains(". MyUniqueColonCaption"),
+            "Period separator should not appear when CaptionFormat::Colon is set"
         );
     }
 

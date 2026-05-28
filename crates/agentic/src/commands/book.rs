@@ -61,6 +61,16 @@ struct BookSpec {
     /// image references resolve. Opt-in: books without it are unaffected.
     #[serde(default)]
     assets: Option<String>,
+    /// Typography profile (ADR-0050). "designer" (default) keeps the
+    /// Georgia/Calibri/navy aesthetic for every non-thesis book.
+    /// "fhnw-proposal-parity" switches body/headings/captions to
+    /// Arial/Arial/Times-New-Roman black for FHNW master-thesis parity.
+    #[serde(default)]
+    thesis_typography: Option<String>,
+    /// Caption format (ADR-0050 §1). "period" (default) → "Figure 1.";
+    /// "colon" → "Figure 1:" (English) / "Abbildung 1:" (German).
+    #[serde(default)]
+    caption_format: Option<String>,
     chapters: Vec<String>,
 }
 
@@ -388,6 +398,17 @@ fn build_one(
         figs += n;
         chapters.push((ch.clone(), resolved));
     }
+    // ADR-0050: parse the manifest's typography / caption-format strings into
+    // the typed enums; unknown values fall back to defaults (zero regression
+    // for every manifest authored before v0.1.13).
+    let thesis_typography = match spec.thesis_typography.as_deref() {
+        Some("fhnw-proposal-parity") => agentic_export::book::TypographyProfile::FhnwProposalParity,
+        _ => agentic_export::book::TypographyProfile::Designer,
+    };
+    let caption_format = match spec.caption_format.as_deref() {
+        Some("colon") => agentic_export::book::CaptionFormat::Colon,
+        _ => agentic_export::book::CaptionFormat::Period,
+    };
     let meta = BookMeta {
         title: spec.title.clone(),
         subtitle: spec.subtitle.clone(),
@@ -418,6 +439,9 @@ fn build_one(
                 lang.to_string()
             }
         }),
+        thesis_typography,
+        page_numbering: agentic_export::book::PageNumbering::default(),
+        caption_format,
     };
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));
