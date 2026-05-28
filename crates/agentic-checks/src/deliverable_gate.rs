@@ -126,14 +126,33 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
         }
         // German management-tradition abbreviations (IST / SOLL) — case-sensitive
         // to avoid matching lowercase English "is" / "soll". Also exempted when
-        // glossed parenthetically (e.g. `actual (IST)` is fine).
+        // glossed parenthetically (e.g. `actual (IST)` is fine), and when the
+        // token is preceded immediately by `-` (which means it is the middle
+        // segment of a compound identifier like `CAR-IST-001`, not the
+        // standalone German abbreviation). The follow-character is checked
+        // symmetrically for `IST-Analyse` — if the match is the bare `IST` and
+        // the next char is `-` that introduces a non-management compound
+        // (e.g. `IST-001` as a CAR id continuation), skip it too.
         if let Some(m) = DE_ABBREV.find(ln) {
+            let pre_char = ln[..m.start()].chars().last();
+            let post_char = ln[m.end()..].chars().next();
             let glossed = ln[..m.start()]
                 .chars()
                 .rev()
                 .take(2)
                 .any(|c| c == '*' || c == '(');
-            if !glossed {
+            let inside_compound_id = matches!(pre_char, Some('-')); // `CAR-IST-…`
+            // Bare `IST` followed by `-<digits>` is a CAR-id continuation, not
+            // the German abbreviation. We rely on the regex's anchors: the
+            // long forms (`IST-Analyse`, `Soll-Zustand`, …) are alternations
+            // in DE_ABBREV themselves and will not match the bare-IST branch.
+            let id_continuation = m.as_str() == "IST"
+                && matches!(post_char, Some('-'))
+                && ln[m.end()..]
+                    .chars()
+                    .nth(1)
+                    .is_some_and(|c| c.is_ascii_digit());
+            if !glossed && !inside_compound_id && !id_continuation {
                 out.push(err(
                     "NON_ENGLISH_TEXT",
                     format!(
@@ -300,6 +319,22 @@ mod tests {
         assert!(
             !prose.iter().any(|f| f.category == "NON_ENGLISH_TEXT"),
             "lowercase English 'is' must not be flagged as German IST"
+        );
+        // CAR-IST-NNN, CAR-SOLL-NNN are project-internal IDs, not German
+        // abbreviations. The `-` before IST signals a compound identifier.
+        let ids = findings_for(
+            "x.md",
+            "See CAR-IST-001 and CAR-IST-003 for the gap analysis.\n",
+        );
+        assert!(
+            !ids.iter().any(|f| f.category == "NON_ENGLISH_TEXT"),
+            "CAR-IST-NNN identifiers must not be flagged as German IST"
+        );
+        // Bare `IST` followed by `-<digit>` is a CAR-id continuation
+        let cont = findings_for("x.md", "Reference IST-001 in the table.\n");
+        assert!(
+            !cont.iter().any(|f| f.category == "NON_ENGLISH_TEXT"),
+            "IST-<digits> identifier suffix must not be flagged"
         );
     }
 
