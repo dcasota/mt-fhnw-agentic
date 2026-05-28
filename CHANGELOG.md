@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] — 2026-05-28
+
+### Fixed — release workflow: honest "Skipped" when crates.io token is unset
+
+The `publish-crate` job in `.github/workflows/release.yml` has been silently
+green since v0.1.5: each `cargo publish --token  -p <crate>` line errored
+with `error: a value is required for '--token <TOKEN>' but none was supplied`
+(empty token), and every step was annotated `continue-on-error: true`, so
+the job reported ✓ in the Actions UI while publishing nothing. crates.io
+versions for every workspace crate are still stuck at their pre-2025-09
+state (`agentic-core 0.1.4` from 2025-08-29).
+
+Three changes turn the silent failure into honest signal:
+
+- **Job-level `if:` gate** — `if: ${{ needs.release.result == 'success' &&
+  secrets.CRATES_IO_TOKEN != '' }}`. When the token is unset (the current
+  state), the job is **skipped** (grey pill in the UI) rather than running
+  to a misleading ✓. When the token is set, the job runs; a real publish
+  failure is now visible.
+- **`continue-on-error: true` removed** from every `cargo publish` step.
+  Re-publishing an already-published version is *supposed* to fail —
+  that should surface visibly during a re-run, not be masked.
+- **`-p agentic` step dropped** — the bare crate name `agentic` on
+  crates.io is owned by a different account (`agentic 0.0.4`, 2025-06),
+  so even with a valid token that step would always fail with "crate
+  name already in use". Workspace's `agentic` binary still ships on
+  GitHub Releases as `agentic-v0.1.11-<target>.{tar.gz,zip}` — the
+  intended distribution channel for end users.
+
+No Rust code touched. One workflow file changed.
+
 ## [0.1.10] — 2026-05-28
 
 ### Fixed — bookkit-C gate scope, FHNW title-page dedup, structural HITL pause

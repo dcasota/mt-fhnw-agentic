@@ -192,14 +192,32 @@ jobs:
 
   publish-crate:
     # Bottom-up: each tier waits on its dependencies to exist on crates.io.
-    # `continue-on-error: true` lets a re-publish (where the version already
-    # exists) succeed for the rest of the run; a hard failure on a leaf
-    # crate is still surfaced by the binary-release path having already
-    # succeeded above.
+    #
+    # Skip the whole job when `CRATES_IO_TOKEN` is unset (or empty). This
+    # gives an honest "Skipped" pill in the Actions UI instead of the
+    # silently-green job that ran from v0.1.5 through v0.1.10 — every
+    # `cargo publish --token  -p <crate>` errored with "a value is required
+    # for '--token <TOKEN>' but none was supplied" and was swallowed by the
+    # then-`continue-on-error: true` flag. With the token present the job
+    # runs and a real publish failure (broken Cargo.toml, network, taken
+    # crate name) now surfaces as a red ✗ rather than being masked.
+    #
+    # Two further hardenings against silent failure:
+    #   1. `continue-on-error: true` removed from every publish step
+    #      (re-publishing the same version is *expected* to fail; that
+    #      should surface visibly during a re-run, not be masked).
+    #   2. The `-p agentic` step is dropped — the bare crate name `agentic`
+    #      on crates.io is owned by a different account (`agentic 0.0.4`,
+    #      2025-06), so that step would always fail with "crate name
+    #      already in use". If we ever rename this workspace's binary crate
+    #      to a unique name (e.g. `mt-fhnw-agentic`), add a step for it.
     name: publish to crates.io
     needs: release
-    # Only attempt crates.io publish if the binary release succeeded.
-    if: ${{ needs.release.result == 'success' }}
+    # Job runs only when (a) the binary release succeeded AND (b) the
+    # CRATES_IO_TOKEN secret is set. Job-level `if:` has documented access
+    # to the `secrets` context (step-level had a runner-version limit, no
+    # longer relevant here).
+    if: ${{ needs.release.result == 'success' && secrets.CRATES_IO_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -213,24 +231,13 @@ jobs:
 
       # Tier 0 — no internal deps.
       - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic-core
-        continue-on-error: true
       - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic-resources
-        continue-on-error: true
 
       # Tier 1 — depend on core only.
       - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic-providers
-        continue-on-error: true
       - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic-tui
-        continue-on-error: true
 
       # Tier 2 — depend on core + providers.
       - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic-checks
-        continue-on-error: true
       - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic-import
-        continue-on-error: true
       - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic-export
-        continue-on-error: true
-
-      # Tier 3 — top-level binary crate.
-      - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} -p agentic
-        continue-on-error: true
