@@ -20,8 +20,22 @@ use agentic_core::worktree;
 
 use crate::{CheckReport, Finding, Severity};
 
-/// Locator-anchor keys an ARS claim-audit result should carry.
-const ANCHOR_KEYS: &[&str] = &["quote", "page", "section", "paragraph", "locator", "anchor"];
+/// Locator-anchor keys an ARS claim-audit result should carry. `path` is
+/// included because a per-document review (ADR-0049 `kind=model_review`)
+/// is inherently anchored by the path of the deliverable it judged — the
+/// document itself is the locator — and so its `path` field satisfies the
+/// re-checkability requirement without needing a redundant `section` or
+/// `quote` field.
+const ANCHOR_KEYS: &[&str] = &[
+    "quote",
+    "page",
+    "section",
+    "paragraph",
+    "locator",
+    "anchor",
+    "path",
+    "chapter",
+];
 
 /// Does a claim-audit result carry at least one non-empty locator anchor?
 #[must_use]
@@ -89,6 +103,16 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
         let Ok(v) = serde_json::from_str::<Value>(&e.payload_json) else {
             continue;
         };
+        // A rankings-scope model_review (ADR-0049, `kind=model_review` with
+        // `scope=rankings`) evaluates the ranking set as a whole rather than
+        // one document, so it has no path/section to anchor to by design.
+        // Skip such entries — they are structurally not re-checkable against
+        // a document locator.
+        if v.get("kind").and_then(Value::as_str) == Some("model_review")
+            && v.get("scope").and_then(Value::as_str) == Some("rankings")
+        {
+            continue;
+        }
         if !has_locator_anchor(&v) {
             unanchored += 1;
         }
@@ -150,5 +174,31 @@ mod tests {
         assert!(has_locator_anchor(&with));
         assert!(!has_locator_anchor(&without));
         assert!(!has_locator_anchor(&empty));
+    }
+
+    #[test]
+    fn model_review_path_satisfies_anchor() {
+        // ADR-0049 model_review entries are inherently anchored by the path
+        // of the deliverable they judged. Verifying this so the 195
+        // per-document Grok / Opus verdicts in the corpus stop being flagged
+        // as unanchored — they all carry `path` but none carry the older
+        // `quote / section / paragraph` keys.
+        let review = serde_json::json!({
+            "kind": "model_review",
+            "path": "out/sources/projects/PT-C02-1_rbac_nhi_role_model_EN.md",
+            "assessment": "accept",
+            "reviewer": "claude-opus-4-7"
+        });
+        assert!(has_locator_anchor(&review));
+    }
+
+    #[test]
+    fn chapter_satisfies_anchor() {
+        // Older claim_audit_results emitted from the dimension pipeline
+        // carry `chapter: "2.6"` (no `section`). Treat the chapter ref as
+        // an anchor — it is the same locator semantics under a different
+        // key name.
+        let car = serde_json::json!({"kind":"ranking","chapter":"2.6","claim":"x"});
+        assert!(has_locator_anchor(&car));
     }
 }
