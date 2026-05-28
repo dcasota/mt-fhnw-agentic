@@ -24,6 +24,13 @@ pub enum Section {
     /// one verified source, so the deliverable gate resolves the number against
     /// a record instead of a regex.
     VerifiedFacts,
+    /// First-class named profile bundles (perception P-1): reusable
+    /// configuration sets the operator can attach to one or more sections
+    /// (dimensions, campaigns, etc.). One JSON payload per entry; latest
+    /// entry per `name` wins. Read with `profile::get / list`; write with
+    /// `profile::put` (which under the hood is `passport::append` to this
+    /// section).
+    Profiles,
 }
 
 impl Section {
@@ -37,6 +44,7 @@ impl Section {
             Self::ResetLedger => "reset_ledger",
             Self::ComplianceReports => "compliance_reports",
             Self::VerifiedFacts => "verified_facts",
+            Self::Profiles => "profiles",
         }
     }
 }
@@ -53,6 +61,7 @@ impl std::str::FromStr for Section {
             "reset_ledger" => Ok(Self::ResetLedger),
             "compliance_reports" => Ok(Self::ComplianceReports),
             "verified_facts" => Ok(Self::VerifiedFacts),
+            "profiles" => Ok(Self::Profiles),
             other => Err(Error::InvalidInput(format!(
                 "unknown passport section: {other}"
             ))),

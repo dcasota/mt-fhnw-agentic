@@ -306,6 +306,14 @@ pub enum Command {
         action: SynthesizeAction,
     },
 
+    /// First-class named profile bundles (perception P-1): reusable JSON
+    /// configuration sets the operator can attach to one or more sections.
+    /// Stored in the passport (`profiles` section); latest-wins per name.
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
+
     /// Source-merge utilities (codifies manual assembly steps). Currently:
     /// assemble the eleven dimension sources into one English compendium.
     Merge {
@@ -439,6 +447,49 @@ pub enum OrchestrateAction {
         /// Root directory for the docs gate.
         #[arg(long, default_value = ".")]
         root: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProfileAction {
+    /// Create or update a named profile. `--attach` may be repeated; the
+    /// profile JSON-body comes from `--settings` (a JSON string) or from
+    /// `--settings-file` (a file path). The pair is mutually exclusive.
+    Put {
+        #[arg(long)]
+        project: String,
+        /// Profile name (slug-like, e.g. `fhnw-mas-thesis-c`).
+        #[arg(long)]
+        name: String,
+        /// Section slug to attach to; may be repeated.
+        #[arg(long = "attach")]
+        attach: Vec<String>,
+        /// Inline JSON settings bundle.
+        #[arg(long, conflicts_with = "settings_file")]
+        settings: Option<String>,
+        /// Path to a JSON file with the settings bundle.
+        #[arg(long)]
+        settings_file: Option<PathBuf>,
+    },
+    /// Read the latest profile by name.
+    Get {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        name: String,
+    },
+    /// List every live profile (one row per unique name).
+    List {
+        #[arg(long)]
+        project: String,
+    },
+    /// Resolve the profile attached to a section slug (latest-id wins when
+    /// multiple profiles claim the same section).
+    Resolve {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        section: String,
     },
 }
 

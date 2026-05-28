@@ -21,6 +21,7 @@ pub mod journal;
 pub mod orchestrate;
 pub mod passport;
 pub mod paths;
+pub mod profile;
 pub mod profiles;
 pub mod project;
 pub mod rank_summary;

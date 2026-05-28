@@ -13,7 +13,7 @@ use tracing::{debug, info};
 use crate::{Error, Result};
 
 /// Newest schema version known to this build.
-pub const NEWEST_SCHEMA_VERSION: u32 = 13;
+pub const NEWEST_SCHEMA_VERSION: u32 = 14;
 
 /// `CREATE TABLE IF NOT EXISTS` for tables that must exist even when a live DB
 /// predates the migration that introduces them. The migration runner only
@@ -102,6 +102,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         13,
         "0013_cascade_checkpoints",
         include_str!("../migrations/0013_cascade_checkpoints.sql"),
+    ),
+    (
+        14,
+        "0014_passport_profiles",
+        include_str!("../migrations/0014_passport_profiles.sql"),
     ),
 ];
 

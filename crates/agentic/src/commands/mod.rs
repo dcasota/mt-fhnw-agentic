@@ -24,6 +24,7 @@ mod normalize;
 mod orchestrate;
 mod passport;
 mod prisma;
+mod profile;
 mod project;
 mod promote;
 mod provider;
@@ -60,6 +61,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Risk { action } => risk::run(action, args.json),
         Command::Rank { action } => rank::run(&args.db, action, args.json),
         Command::Synthesize { action } => synthesize::run(&args.db, action, args.json).await,
+        Command::Profile { action } => profile::run(&args.db, action, args.json),
         Command::Orchestrate { action } => orchestrate::run(&args.db, action, args.json),
         Command::Merge { action } => merge::run(&args.db, action, args.json),
         Command::Cascade { action } => cascade::run(&args.db, action, args.json),
