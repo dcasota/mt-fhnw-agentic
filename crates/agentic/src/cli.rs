@@ -680,6 +680,23 @@ pub enum AuditAction {
         #[arg(long)]
         to: Option<PathBuf>,
     },
+    /// Per-section verdict report (ADR-0023 + ADR-0046 + perception P-2):
+    /// joins the latest `audit_verdicts` per gate × the path → section
+    /// classifier × the static gate → ADR map, and emits one row per section
+    /// with verdict, finding count, and the ADRs the gates enforce. Markdown
+    /// by default; `--json` for machine-readable.
+    Profile {
+        #[arg(long)]
+        project: String,
+        /// Restrict to a single section (dimensions, campaigns, projects,
+        /// student_notes, master_thesis, agentic_handbook, audit, norms,
+        /// frontmatter, other).
+        #[arg(long)]
+        section: Option<String>,
+        /// Output path. If omitted, writes to stdout.
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

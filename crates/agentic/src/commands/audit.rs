@@ -212,6 +212,42 @@ pub fn run(db_path: &Path, action: AuditAction, json_out: bool) -> Result<()> {
                 }
             }
         }
+
+        AuditAction::Profile {
+            project,
+            section,
+            to,
+        } => {
+            let all = agentic_core::audit_profile::compute(&conn, &project)?;
+            // Optional --section filter; warn if the slug is unknown.
+            let filtered: Vec<_> = if let Some(ref sl) = section {
+                match agentic_core::audit_profile::Section::from_slug(sl) {
+                    Some(want) => all.into_iter().filter(|p| p.section == want).collect(),
+                    None => {
+                        anyhow::bail!(
+                            "unknown section '{sl}'; valid: dimensions, campaigns, projects, student_notes, master_thesis, agentic_handbook, audit, norms, frontmatter, other"
+                        )
+                    }
+                }
+            } else {
+                all
+            };
+            let body = if json_out {
+                serde_json::to_string_pretty(&filtered)?
+            } else {
+                agentic_core::audit_profile::render_markdown(&filtered)
+            };
+            match to {
+                Some(path) => {
+                    std::fs::write(&path, body.as_bytes())
+                        .with_context(|| format!("writing {}", path.display()))?;
+                    println!("Wrote audit profile to {}", path.display());
+                }
+                None => {
+                    std::io::stdout().write_all(body.as_bytes())?;
+                }
+            }
+        }
     }
     Ok(())
 }

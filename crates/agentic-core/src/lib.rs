@@ -8,6 +8,7 @@
 #![allow(clippy::missing_errors_doc, clippy::module_name_repetitions)]
 
 pub mod audit;
+pub mod audit_profile;
 pub mod authz;
 pub mod content;
 pub mod db;
