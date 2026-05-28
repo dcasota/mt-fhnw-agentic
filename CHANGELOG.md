@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] — 2026-05-28
+
+### Fixed — `check model-review` per-path dedupe (display)
+
+- The gate iterated `passport::current` directly, which can keep two live
+  entries for one path when an orphan legacy verdict (nothing's `replaces`
+  pointed at it) coexists with a fresh chain that ends in a newer override.
+  The display then double-listed the path and the SUMMARY counted entries,
+  not unique paths. The gate now mirrors `agentic_core::review::excluded_paths`
+  latest-wins-per-path logic: one row per path, SUMMARY counts unique paths,
+  and the per-path emit order is sorted for deterministic output. The
+  rankings-scope review is unchanged (path-less; reported as before).
+  Regression test `orphan_legacy_verdict_is_deduped_by_latest_wins` locks it.
+
 ## [0.1.6] — 2026-05-27
 
 ### Fixed — gate precision (cascade triage, reduce-only)
