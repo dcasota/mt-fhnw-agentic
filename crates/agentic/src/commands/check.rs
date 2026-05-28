@@ -110,6 +110,10 @@ pub async fn run_report(
             agentic_checks::cross_model_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::ModelReview { project } => (
+            agentic_checks::model_review_gate::run(&conn, &project)?,
+            Some(project),
+        ),
         CheckAction::Temporal { project, max_year } => (
             agentic_checks::temporal_gate::run(&conn, &project, max_year)?,
             Some(project),

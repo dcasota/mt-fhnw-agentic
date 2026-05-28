@@ -874,6 +874,13 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// Model-review verdicts (ADR-0049): surface the `agentic review run`
+    /// document/ranking verdicts; an `exclude` recommendation WARNs (advisory —
+    /// adoption is decided downstream).
+    ModelReview {
+        #[arg(long)]
+        project: String,
+    },
     /// Future-year temporal-contamination gate: any standalone 20xx year greater
     /// than --max-year in deliverable markdown or corpus years WARNs.
     Temporal {

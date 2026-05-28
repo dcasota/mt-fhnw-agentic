@@ -26,6 +26,7 @@ pub mod freshness_gate;
 pub mod ground_truth_gate;
 pub mod i18n_gate;
 pub mod integrity_gate;
+pub mod model_review_gate;
 pub mod normalize;
 pub mod page_boundary_gate;
 pub mod predatory_gate;
