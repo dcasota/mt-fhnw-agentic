@@ -14,27 +14,39 @@ use std::collections::HashSet;
 
 use crate::passport::{self, Section};
 
-/// Paths whose CURRENT model_review assessment is "exclude". A path is included
-/// once and only once per call; superseded entries are ignored by
-/// `passport::current`, so a later "accept" review naturally re-includes the
-/// document.
+/// Paths whose CURRENT model_review assessment is "exclude". If a path has
+/// multiple current entries (legacy data before supersede was enforced), only
+/// the latest by entry id is consulted — latest-wins, so an old "exclude"
+/// cannot persist after a newer "accept". A later "accept" review naturally
+/// re-includes the document via passport supersede.
 pub fn excluded_paths(conn: &Connection, project: &str) -> Result<HashSet<String>> {
-    let mut out = HashSet::new();
-    for e in passport::current(conn, project, Section::ClaimAuditResults)? {
+    let entries = passport::current(conn, project, Section::ClaimAuditResults)?;
+    // Per-path, keep the highest-id current entry's assessment.
+    let mut latest: std::collections::HashMap<String, (i64, String)> =
+        std::collections::HashMap::new();
+    for e in entries {
         let Ok(v) = serde_json::from_str::<Value>(&e.payload_json) else {
             continue;
         };
         if v.get("kind").and_then(Value::as_str) != Some("model_review") {
             continue;
         }
-        if v.get("assessment").and_then(Value::as_str) != Some("exclude") {
-            continue;
-        }
-        if let Some(p) = v.get("path").and_then(Value::as_str) {
-            out.insert(p.to_string());
+        let Some(path) = v.get("path").and_then(Value::as_str) else {
+            continue; // skip scope=rankings entries (no path)
+        };
+        let assessment = v
+            .get("assessment")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let cur = latest.get(path).map(|(id, _)| *id).unwrap_or(0);
+        if e.id > cur {
+            latest.insert(path.to_string(), (e.id, assessment.to_string()));
         }
     }
-    Ok(out)
+    Ok(latest
+        .into_iter()
+        .filter_map(|(p, (_, a))| (a == "exclude").then_some(p))
+        .collect())
 }
 
 #[cfg(test)]
@@ -45,6 +57,44 @@ mod tests {
 
     fn add(c: &Connection, p: &str, payload: &str) {
         passport::append(c, p, Section::ClaimAuditResults, payload, None, None).unwrap();
+    }
+
+    #[test]
+    fn latest_review_wins_per_path() {
+        // Two current entries for the same path (legacy before supersede was
+        // enforced): the LATEST one decides. An older "exclude" must not
+        // persist after a newer "accept".
+        let c = open_in_memory().unwrap();
+        let p = create_project(&c, "T", ProjectKind::Thesis, "en", None).unwrap();
+        add(
+            &c,
+            &p,
+            r#"{"kind":"model_review","path":"a.md","assessment":"exclude"}"#,
+        );
+        add(
+            &c,
+            &p,
+            r#"{"kind":"model_review","path":"a.md","assessment":"accept"}"#,
+        );
+        let ex = excluded_paths(&c, &p).unwrap();
+        assert!(
+            !ex.contains("a.md"),
+            "latest accept must win over older exclude"
+        );
+        // The reverse: latest exclude wins over older accept.
+        let c2 = open_in_memory().unwrap();
+        let p2 = create_project(&c2, "T", ProjectKind::Thesis, "en", None).unwrap();
+        add(
+            &c2,
+            &p2,
+            r#"{"kind":"model_review","path":"b.md","assessment":"accept"}"#,
+        );
+        add(
+            &c2,
+            &p2,
+            r#"{"kind":"model_review","path":"b.md","assessment":"exclude"}"#,
+        );
+        assert!(excluded_paths(&c2, &p2).unwrap().contains("b.md"));
     }
 
     #[test]

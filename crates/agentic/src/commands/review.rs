@@ -120,6 +120,33 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
     let reviewed_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let mut tally: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
 
+    // Build a (path -> latest entry id) map from prior model_reviews so each new
+    // verdict SUPERSEDES the previous one for the same path — latest-wins on
+    // adoption, no stale "exclude" left behind after a later "accept". Same for
+    // the rankings-scope review.
+    let prior_entries = passport::current(&conn, &project, Section::ClaimAuditResults)?;
+    let mut prior_path: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut prior_rankings: Option<i64> = None;
+    for e in &prior_entries {
+        let Ok(v) = serde_json::from_str::<Value>(&e.payload_json) else {
+            continue;
+        };
+        if v.get("kind").and_then(Value::as_str) != Some("model_review") {
+            continue;
+        }
+        if v.get("scope").and_then(Value::as_str) == Some("rankings") {
+            // Latest-id wins for the rankings review too.
+            if prior_rankings.is_none_or(|id| id < e.id) {
+                prior_rankings = Some(e.id);
+            }
+        } else if let Some(p) = v.get("path").and_then(Value::as_str) {
+            let cur = prior_path.get(p).copied().unwrap_or(0);
+            if e.id > cur {
+                prior_path.insert(p.to_string(), e.id);
+            }
+        }
+    }
+
     for (path, sha) in &docs {
         let class = class_of(path);
         let blob = worktree::read_at(&conn, &project, path)?;
@@ -188,7 +215,7 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
             Section::ClaimAuditResults,
             &payload.to_string(),
             head.as_deref(),
-            None,
+            prior_path.get(path).copied(),
         )?;
         *tally.entry(assessment.clone()).or_default() += 1;
         if !json_out {
@@ -241,7 +268,7 @@ pub async fn run(db_path: &std::path::Path, action: ReviewAction, json_out: bool
             Section::ClaimAuditResults,
             &p.to_string(),
             head.as_deref(),
-            None,
+            prior_rankings,
         )?;
     }
 
