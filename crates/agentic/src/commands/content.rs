@@ -196,7 +196,10 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
             let to_temp = to.starts_with(std::env::temp_dir());
             let has_out_paths = entries.iter().any(|(p, _)| p.starts_with("out/"));
             if !to_temp && !allow_deprecated_out && has_out_paths {
-                let out_count = entries.iter().filter(|(p, _)| p.starts_with("out/")).count();
+                let out_count = entries
+                    .iter()
+                    .filter(|(p, _)| p.starts_with("out/"))
+                    .count();
                 anyhow::bail!(
                     "refusing to materialise {out_count} `out/`-prefixed path(s) into \
                      non-temp target `{}` — `out/` is a DEPRECATED working-tree prefix \
