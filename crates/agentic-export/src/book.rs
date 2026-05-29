@@ -526,6 +526,15 @@ pub fn fhnw_header_sidecar_needed(meta: &BookMeta) -> bool {
 /// header via Word COM. The CLI writes this file next to the rendered
 /// docx as `<docx_basename>.fhnw_header.json` when
 /// `fhnw_header_sidecar_needed(&meta)` is true.
+///
+/// The 5 logo-placement fields (`logo_left_pt` / `logo_top_pt` /
+/// `logo_width_cm` / `logo_wrap_type` / `logo_relh` / `logo_relv`) carry
+/// the exact values extracted from the FHNW MAS proposal docx via Word
+/// COM on 2026-05-29 (Fix A, proposal parity): the logo is a FLOATING
+/// shape anchored to the page at (-49.3, -59.8) pt with wrap = behind
+/// text, NOT an inline shape in the header text flow. Each field has
+/// `#[serde(default = ...)]` so an older sidecar JSON missing the
+/// fields still parses to the proposal defaults.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct FhnwHeaderSidecar {
     /// Absolute filesystem path of the PNG logo to inject. The engine
@@ -543,12 +552,55 @@ pub struct FhnwHeaderSidecar {
     pub line_bold: bool,
     /// Logo height in centimeters. Default: 4.92 (matches the proposal's
     /// 1_770_000 EMU height extracted by the Word-COM agent inspection
-    /// on 2026-05-29).
+    /// on 2026-05-29 → 139.3 pt).
     pub logo_height_cm: f32,
+    /// Logo width in centimeters. Default: 4.92 (the FHNW logo is square;
+    /// matches the proposal's 139.3-pt width).
+    #[serde(default = "default_logo_width_cm")]
+    pub logo_width_cm: f32,
+    /// Logo `Left` in points, page-relative (`relH=2`). Default: -49.3
+    /// (proposal value; the logo bleeds slightly off the top-left corner).
+    #[serde(default = "default_logo_left_pt")]
+    pub logo_left_pt: f32,
+    /// Logo `Top` in points, page-relative (`relV=2`). Default: -59.8
+    /// (proposal value).
+    #[serde(default = "default_logo_top_pt")]
+    pub logo_top_pt: f32,
+    /// `Shape.WrapFormat.Type` value. Default: 3 (matches proposal —
+    /// the text flows behind/around the logo without being pushed).
+    #[serde(default = "default_logo_wrap_type")]
+    pub logo_wrap_type: u32,
+    /// `Shape.RelativeHorizontalPosition`. Default: 2 (page-relative —
+    /// the proposal value; aliases `wdRelativeHorizontalPositionPage`
+    /// when used on a header-anchored shape).
+    #[serde(default = "default_logo_relh")]
+    pub logo_relh: u32,
+    /// `Shape.RelativeVerticalPosition`. Default: 2 (page-relative).
+    #[serde(default = "default_logo_relv")]
+    pub logo_relv: u32,
     /// Whether the same header should also appear on subsequent pages
     /// (FHNW convention: yes). Word's default is per-section primary
     /// header; we don't need different-first-page.
     pub apply_to_all_pages: bool,
+}
+
+fn default_logo_width_cm() -> f32 {
+    4.92
+}
+fn default_logo_left_pt() -> f32 {
+    -49.3
+}
+fn default_logo_top_pt() -> f32 {
+    -59.8
+}
+fn default_logo_wrap_type() -> u32 {
+    3
+}
+fn default_logo_relh() -> u32 {
+    2
+}
+fn default_logo_relv() -> u32 {
+    2
 }
 
 impl FhnwHeaderSidecar {
@@ -562,6 +614,12 @@ impl FhnwHeaderSidecar {
             line_size_pt: 12,
             line_bold: true,
             logo_height_cm: 4.92,
+            logo_width_cm: default_logo_width_cm(),
+            logo_left_pt: default_logo_left_pt(),
+            logo_top_pt: default_logo_top_pt(),
+            logo_wrap_type: default_logo_wrap_type(),
+            logo_relh: default_logo_relh(),
+            logo_relv: default_logo_relv(),
             apply_to_all_pages: true,
         }
     }

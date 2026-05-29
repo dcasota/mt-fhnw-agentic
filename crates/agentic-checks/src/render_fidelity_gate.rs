@@ -150,6 +150,15 @@ pub struct NonJustifyExample {
 pub struct SectionHeader {
     pub link_to_previous: bool,
     pub inline_shape_count: u32,
+    /// Count of FLOATING shapes anchored to this header's range
+    /// (`Headers(N).Shapes.Count`). v0.1.17+ adopts proposal-parity Fix A
+    /// (the FHNW logo is injected as a floating Shape via
+    /// `Shapes.AddPicture(Anchor=hdr.Range)`, NOT an inline shape).
+    /// P01 / P04 accept either kind so the gate is forward-compatible
+    /// with old (inline) and new (floating) renders. `#[serde(default)]`
+    /// keeps old WordReport JSON parseable (the field defaults to 0).
+    #[serde(default)]
+    pub floating_shape_count: u32,
     pub text: String,
 }
 
@@ -175,20 +184,24 @@ pub struct ChapterHeading {
 pub fn predicates_from_report(r: &WordReport) -> Vec<Finding> {
     let mut out = Vec::new();
 
-    // P01 — header logo
-    let header_inlines: u32 = r
+    // P01 — header logo (accepts inline OR floating; v0.1.17 Fix A
+    // switched the FHNW logo from inline to floating to match the
+    // proposal's page-anchored placement at (-49.3, -59.8) pt).
+    let header_logo_shapes: u32 = r
         .section_headers
         .first()
-        .map(|h| h.inline_shape_count)
+        .map(|h| h.inline_shape_count + h.floating_shape_count)
         .unwrap_or(0);
-    if header_inlines == 0 {
+    if header_logo_shapes == 0 {
         out.push(Finding {
             category: "HEADER_LOGO_MISSING".into(),
             severity: Severity::Error,
-            message: "section 1 primary header has no inline shape; the FHNW logo \
-                      must appear at the top-right of every page (ADR-0050 §1 item 1)"
+            message: "section 1 primary header has no logo (0 inline + 0 floating \
+                      shapes); the FHNW logo must appear on every page (ADR-0050 §1 \
+                      item 1). v0.1.17 Fix A renders it as a floating Shape via \
+                      Headers.Shapes.AddPicture at the proposal coordinates."
                 .into(),
-            location: Some("Headers(1).Range.InlineShapes".into()),
+            location: Some("Headers(1).{InlineShapes,Shapes}".into()),
         });
     }
 
@@ -224,7 +237,9 @@ pub fn predicates_from_report(r: &WordReport) -> Vec<Finding> {
     // OR have their own non-empty header)
     for (idx, sec) in r.section_headers.iter().enumerate().skip(1) {
         let inherits = sec.link_to_previous;
-        let has_own = sec.inline_shape_count > 0 || !sec.text.trim().is_empty();
+        let has_own = sec.inline_shape_count > 0
+            || sec.floating_shape_count > 0
+            || !sec.text.trim().is_empty();
         if !inherits && !has_own {
             out.push(Finding {
                 category: "HEADER_PROPAGATION_GAP".into(),
@@ -478,6 +493,7 @@ try {{
     $r.section_headers += @{{
       link_to_previous = [bool]$h.LinkToPrevious
       inline_shape_count = [int]$h.Range.InlineShapes.Count
+      floating_shape_count = [int]$h.Shapes.Count
       text = $h.Range.Text
     }}
   }}
@@ -623,16 +639,19 @@ mod tests {
                 SectionHeader {
                     link_to_previous: false,
                     inline_shape_count: 1,
+                    floating_shape_count: 0,
                     text: "Master of Advanced Studies Leadership in Cybersecurity\n".into(),
                 },
                 SectionHeader {
                     link_to_previous: true,
                     inline_shape_count: 1,
+                    floating_shape_count: 0,
                     text: "Master of Advanced Studies Leadership in Cybersecurity\n".into(),
                 },
                 SectionHeader {
                     link_to_previous: true,
                     inline_shape_count: 1,
+                    floating_shape_count: 0,
                     text: "Master of Advanced Studies Leadership in Cybersecurity\n".into(),
                 },
             ],
@@ -670,8 +689,49 @@ mod tests {
     fn missing_logo_flags_p01() {
         let mut r = good_report();
         r.section_headers[0].inline_shape_count = 0;
+        r.section_headers[0].floating_shape_count = 0;
         let f = predicates_from_report(&r);
         assert!(f.iter().any(|x| x.category == "HEADER_LOGO_MISSING"));
+    }
+
+    /// v0.1.17 Fix A: proposal-parity floating logo. The header has
+    /// 0 inline shapes (we deleted them) and 1 floating shape
+    /// (`Headers.Shapes.AddPicture(...)` at the proposal coordinates).
+    /// P01 must PASS for this configuration too.
+    #[test]
+    fn floating_only_logo_satisfies_p01() {
+        let mut r = good_report();
+        for sh in r.section_headers.iter_mut() {
+            sh.inline_shape_count = 0;
+            sh.floating_shape_count = 1;
+        }
+        let f = predicates_from_report(&r);
+        // Must NOT contain HEADER_LOGO_MISSING.
+        assert!(
+            !f.iter().any(|x| x.category == "HEADER_LOGO_MISSING"),
+            "P01 false-positive on floating-only logo: {:?}",
+            f.iter().map(|x| &x.category).collect::<Vec<_>>()
+        );
+        // Must still be a good report overall (single OK finding).
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].category, "RENDER_FIDELITY_OK");
+    }
+
+    /// P04 propagation also accepts floating-only headers on sections 2+.
+    #[test]
+    fn floating_only_propagation_satisfies_p04() {
+        let mut r = good_report();
+        r.section_headers[1] = SectionHeader {
+            link_to_previous: false,
+            inline_shape_count: 0,
+            floating_shape_count: 1,
+            text: String::new(),
+        };
+        let f = predicates_from_report(&r);
+        assert!(
+            !f.iter().any(|x| x.category == "HEADER_PROPAGATION_GAP"),
+            "P04 false-positive: a floating-shape-only header satisfies has_own"
+        );
     }
 
     #[test]
@@ -689,6 +749,7 @@ mod tests {
         r.section_headers[1] = SectionHeader {
             link_to_previous: false,
             inline_shape_count: 0,
+            floating_shape_count: 0,
             text: String::new(),
         };
         let f = predicates_from_report(&r);

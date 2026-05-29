@@ -229,40 +229,42 @@ try {{
           $logoPath = $side.logo_path_abs
           $logoExists = if ($logoPath) {{ Test-Path -LiteralPath $logoPath }} else {{ $false }}
           Write-Output ("{{0}}`tHEADER_PROBE  logo=[{{1}}]  exists={{2}}" -f $pth, $logoPath, $logoExists)
-            # Layout: logo paragraph + text-line paragraphs (each its own line).
-            # 1) Insert logo as inline picture at the header start.
-            # Use the resolved $logoPath and -LiteralPath to dodge any wildcard /
-            # bracket / non-ASCII interpretation issue. Test-Path -LiteralPath
-            # also lifts the file-existence check away from path-globbing.
+            # Layout: FLOATING-anchor logo + text-line paragraphs.
+            # The FHNW MAS proposal docx places the logo as a Shape (NOT
+            # an InlineShape) anchored to the page at (-49.3, -59.8) pt
+            # with wrap=BehindText, so the header text flows in its own
+            # right-aligned paragraph while the logo overlays the top-left
+            # corner (bleeding slightly off-page). This was the Fix-A
+            # target deferred from v0.1.16-engine; the previous attempt
+            # failed because it tried `InlineShape.ConvertToShape()` on
+            # an already-injected inline picture (Word: "Parameter value
+            # out of acceptable range" on header-anchored inlines).
+            # `Headers.Shapes.AddPicture(...)` builds the floating shape
+            # DIRECTLY — no convert step. Verified live 2026-05-29 against
+            # the proposal coordinate dump: bit-for-bit match.
             if ($logoExists) {{
-              # AddPicture on the header range as INLINE (verified
-              # working in v0.1.15-engine). A 2026-05-29 attempt to
-              # convert the inline shape to a floating Shape (wrap=
-              # BehindText for in-margin overlay, would have lowered the
-              # page count from 104 → ~85) failed with "Parameter value
-              # was out of acceptable range" — Word's ConvertToShape
-              # appears to reject the call on a header-anchored inline
-              # shape. Deferred to a later release where we'd build the
-              # picture as a floating Shape directly (Shapes.AddPicture
-              # with anchor=$hdr.Range), bypassing the convert step.
-              $shape = $hdr.Range.InlineShapes.AddPicture($logoPath, $false, $true)
-              Write-Output ("{{0}}`tHEADER_PIC_ADDED  inline-count={{1}}" -f $pth, $hdr.Range.InlineShapes.Count)
-              # Resize via ScalePercent (back-computed from post-AddPicture
-              # auto-fit). The FHNW logo is square (768×768) so the same
-              # percentage on both axes preserves aspect ratio.
-              $cm = [double]$side.logo_height_cm
-              $newH = $cm * 28.346
-              if ($shape.Height -gt 0 -and $shape.ScaleHeight -gt 0) {{
-                $intrinsicH = $shape.Height / ($shape.ScaleHeight / 100.0)
-                $pct = ($newH / $intrinsicH) * 100.0
-                $shape.ScaleHeight = $pct
-                $shape.ScaleWidth  = $pct
+              # Delete any pre-existing inline shape in the header (left
+              # over from the v0.1.15..16-engine inline path; defensive
+              # so this code path is idempotent on re-runs).
+              while ($hdr.Range.InlineShapes.Count -gt 0) {{
+                $hdr.Range.InlineShapes.Item(1).Delete()
               }}
-              # Append a paragraph-break after the picture so the text
-              # lines start on the next line.
-              $endR = $hdr.Range
-              $endR.Collapse(0)  # wdCollapseEnd
-              $endR.InsertParagraphAfter()
+              # Add as floating Shape via the Header's Shapes collection
+              # — anchor is implicit (the header range). 1 cm = 28.346 pt.
+              $W_pt = [double]$side.logo_width_cm * 28.346
+              $H_pt = [double]$side.logo_height_cm * 28.346
+              $L_pt = [double]$side.logo_left_pt
+              $T_pt = [double]$side.logo_top_pt
+              $shape = $hdr.Shapes.AddPicture($logoPath, $false, $true, $L_pt, $T_pt, $W_pt, $H_pt)
+              # Re-assert L/T after Word's auto-adjust (it sometimes
+              # re-anchors to the paragraph on first add; setting the
+              # absolute values + relH/relV pins it page-relative).
+              $shape.WrapFormat.Type           = [int]$side.logo_wrap_type
+              $shape.RelativeHorizontalPosition = [int]$side.logo_relh
+              $shape.RelativeVerticalPosition   = [int]$side.logo_relv
+              $shape.Left = $L_pt
+              $shape.Top  = $T_pt
+              Write-Output ("{{0}}`tHEADER_PIC_ADDED  floating-count={{1}}  L={{2}} T={{3}} W={{4}} H={{5}} wrap={{6}}" -f $pth, $hdr.Shapes.Count, [math]::Round($shape.Left,1), [math]::Round($shape.Top,1), [math]::Round($shape.Width,1), [math]::Round($shape.Height,1), $shape.WrapFormat.Type)
             }}
             # 2) Append each non-empty text line, terminated by a paragraph
             # mark. After all text is in place we style the whole header
@@ -277,7 +279,7 @@ try {{
             $hdr.Range.Font.Size = $side.line_size_pt
             $hdr.Range.Font.Bold = [int]$side.line_bold
             $hdr.Range.ParagraphFormat.Alignment = 2  # right (re-assert)
-            Write-Output ("{{0}}`tHEADER_DONE  inline-count={{1}}  paras={{2}}" -f $pth, $hdr.Range.InlineShapes.Count, $hdr.Range.Paragraphs.Count)
+            Write-Output ("{{0}}`tHEADER_DONE  floating-count={{1}}  inline-count={{2}}  paras={{3}}" -f $pth, $hdr.Shapes.Count, $hdr.Range.InlineShapes.Count, $hdr.Range.Paragraphs.Count)
         }} catch {{
           # Write to BOTH stdout (so the Rust filter sees it) AND stderr
           # (so the user sees it raw in case something else filters
@@ -296,7 +298,7 @@ try {{
       $d.Repaginate()
       $pages=$d.ComputeStatistics(2)
       $finalHdr = $d.Sections.Item(1).Headers.Item(1)
-      Write-Output ("{{0}}`tHEADER_PRE_SAVE  inline-count={{1}}" -f $pth, $finalHdr.Range.InlineShapes.Count)
+      Write-Output ("{{0}}`tHEADER_PRE_SAVE  floating-count={{1}}  inline-count={{2}}" -f $pth, $finalHdr.Shapes.Count, $finalHdr.Range.InlineShapes.Count)
       $d.Save()
       {pdf_block}
       $d.Close($false)
