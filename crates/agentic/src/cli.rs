@@ -1617,5 +1617,14 @@ pub enum ContentAction {
         /// Restrict to a path prefix in the working tree.
         #[arg(long, default_value = "")]
         prefix: String,
+        /// Opt-out for the ADR-0048 hardening. Materialising `out/`-prefixed
+        /// content to a non-temp `--to` is REFUSED by default (the working-tree
+        /// `out/` is deprecated; the DB is source of truth and the cascade
+        /// already materialises to `std::env::temp_dir()`). Pass this flag to
+        /// allow it — e.g. for a deliberate full-tree restore. Checkouts under
+        /// `std::env::temp_dir()` or with no `out/` paths in scope are always
+        /// allowed.
+        #[arg(long)]
+        allow_deprecated_out: bool,
     },
 }

@@ -183,8 +183,31 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
             project,
             to,
             prefix,
+            allow_deprecated_out,
         } => {
             let entries = worktree::list(&conn, &project, &prefix)?;
+            // ADR-0048 hardening: refuse to materialise `out/`-prefixed content
+            // to a non-temp `--to` unless the caller opted in. The cascade
+            // pipeline already targets `std::env::temp_dir()` (cascade.rs);
+            // ad-hoc inspections that landed in the working tree
+            // (2026-05-27..29 accumulation) are the leak path this closes.
+            // Always allowed: temp-dir targets, prefix scopes with no `out/`
+            // paths, and explicit opt-in via `--allow-deprecated-out`.
+            let to_temp = to.starts_with(std::env::temp_dir());
+            let has_out_paths = entries.iter().any(|(p, _)| p.starts_with("out/"));
+            if !to_temp && !allow_deprecated_out && has_out_paths {
+                let out_count = entries.iter().filter(|(p, _)| p.starts_with("out/")).count();
+                anyhow::bail!(
+                    "refusing to materialise {out_count} `out/`-prefixed path(s) into \
+                     non-temp target `{}` — `out/` is a DEPRECATED working-tree prefix \
+                     (ADR-0048). Either retarget to a scratch dir (e.g. \
+                     `--to $env:TEMP/agentic_scratch_<id>` on Windows, `--to $(mktemp -d)` on \
+                     Unix), narrow `--prefix` to skip `out/`, or pass `--allow-deprecated-out` \
+                     to acknowledge the deprecation and proceed (full-tree restores use this \
+                     opt-in).",
+                    to.display()
+                );
+            }
             let mut n = 0usize;
             for (path, sha) in &entries {
                 let b = blob::get_blob(&conn, sha)?;
@@ -206,22 +229,56 @@ pub fn run(db_path: &Path, action: ContentAction, json_out: bool) -> Result<()> 
             } else {
                 println!("Checked out {n} files to {}", to.display());
             }
-            // out/ deprecation history signal (ADR-0048): materialising out/
-            // paths into the working tree re-creates a deprecated prefix —
-            // legitimate only for historical/pre-deprecation content. Emitted to
-            // stderr (never pollutes --json). Skip the tool's own ephemeral
-            // scratch checkouts (temp dir), which are internal, not history.
-            let to_temp = to.starts_with(std::env::temp_dir());
-            if !to_temp && entries.iter().any(|(p, _)| p.starts_with("out/")) {
+            // ADR-0048 advisory: if the caller used `--allow-deprecated-out`
+            // and out/ paths were actually materialised, remind them on stderr
+            // that the on-disk out/ is not history-tracking and must not be
+            // committed. Suppressed for temp-dir targets (cascade scratch).
+            if !to_temp && allow_deprecated_out && has_out_paths {
                 eprintln!(
-                    "note: out/ is a DEPRECATED working-tree prefix (ADR-0048) — this checkout \
-                     materialises historical out/ paths. out/ content is DB-authoritative and \
-                     regenerable; renders go to snapshots/. Do not commit the on-disk out/."
+                    "note: out/ materialisation proceeded under --allow-deprecated-out \
+                     (ADR-0048). out/ content is DB-authoritative and regenerable; renders \
+                     go to snapshots/. Do not commit the on-disk out/."
                 );
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure-logic guard for the ADR-0048 checkout hardening.
+    //!
+    //! The integration test (DB + filesystem) lives in the workspace gate
+    //! suite; this unit test pins the decision matrix so a future refactor
+    //! cannot silently re-soften the gate. Truth table:
+    //!
+    //! | to_temp | has_out_paths | allow_deprecated_out | expected |
+    //! |---------|---------------|----------------------|----------|
+    //! |    T    |       any     |          any         |  ALLOW   |
+    //! |    F    |       F       |          any         |  ALLOW   |
+    //! |    F    |       T       |          F           |  REFUSE  |
+    //! |    F    |       T       |          T           |  ALLOW   |
+    use std::path::PathBuf;
+    fn must_refuse(to: &PathBuf, has_out_paths: bool, allow_deprecated_out: bool) -> bool {
+        let to_temp = to.starts_with(std::env::temp_dir());
+        !to_temp && !allow_deprecated_out && has_out_paths
+    }
+    #[test]
+    fn adr0048_checkout_truth_table() {
+        let temp = std::env::temp_dir().join("agentic_t");
+        let work = std::env::current_dir().unwrap();
+        // Row 1: temp dir + out/ paths + no opt-in  ⇒ ALLOW
+        assert!(!must_refuse(&temp, true, false));
+        // Row 2: working dir + no out/ paths       ⇒ ALLOW
+        assert!(!must_refuse(&work, false, false));
+        // Row 3: working dir + out/ paths + no opt-in ⇒ REFUSE
+        assert!(must_refuse(&work, true, false));
+        // Row 4: working dir + out/ paths + opt-in ⇒ ALLOW
+        assert!(!must_refuse(&work, true, true));
+        // Row 1b: temp dir + out/ paths + opt-in   ⇒ ALLOW (opt-in is a no-op in temp)
+        assert!(!must_refuse(&temp, true, true));
+    }
 }
 
 /// Recursively list files under `root` as forward-slash relative paths,

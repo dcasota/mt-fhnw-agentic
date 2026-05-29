@@ -76,7 +76,10 @@ agentic content ingest --project <ID> --root . --from-list /tmp/tracked.txt --re
     --author "Your Name" --message "ingest source of truth"
 
 # Reproduce the working tree from the DB (inverse of ingest):
-agentic content checkout --project <ID> --to ./restored
+# (`--allow-deprecated-out` is required when the DB still carries `out/`-prefixed
+# blobs and you target a non-temp directory; ADR-0048 deprecates the on-disk
+# `out/`. Without the flag the command refuses and prints the migration hint.)
+agentic content checkout --project <ID> --to ./restored --allow-deprecated-out
 
 # Inspect:
 agentic content ls   --project <ID>             # list tracked paths
