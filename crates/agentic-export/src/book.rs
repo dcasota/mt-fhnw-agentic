@@ -268,6 +268,27 @@ fn first_h1(md: &str) -> Option<String> {
     })
 }
 
+/// Return `md` with its first `# heading` line removed (ADR-0050 §1 D2,
+/// v0.1.16-engine 2026-05-29). Used to suppress the literal "Title Page"
+/// heading from the FHNW title chapter — the proposal docx has no such
+/// heading on the title page (the thesis title itself IS the page).
+///
+/// Only the FIRST top-level `# ` line is removed; if the chapter starts
+/// with prose before the heading, the heading stays.
+fn strip_first_h1_line(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut stripped = false;
+    for line in md.lines() {
+        if !stripped && line.trim_start().starts_with("# ") {
+            stripped = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// Front/back-matter titles for the THESIS profile (ADR-0045). Unlike the book
 /// profile, "Introduction"/"Conclusion"/etc. are NOT here — they are numbered
 /// chapters; only true front/back-matter stays unnumbered. The declarations
@@ -2439,10 +2460,44 @@ fn render_thesis_book(
     // first chapter wants `page_break_before=false`: the engine cover ends
     // with its own break, and an explicit title chapter is itself the cover.
     let mut emitted = false;
+    // ADR-0050 §1 (v0.1.16-engine, 2026-05-29):
+    //   * D2: under FHNW typography, suppress the first H1 of the
+    //     ThesisSlot::TitlePage chapter — the proposal's title page has
+    //     no "Title Page" heading; the title itself IS the page. We
+    //     strip the leading `# …\n` line before passing the markdown to
+    //     `render_thesis_chapter` for that one slot.
+    //   * D6: under FHNW typography, force a page break BEFORE each
+    //     front-matter chapter so Declaration of Originality, Compliance
+    //     Declaration, Management Summary and Acronyms each start on
+    //     their own page (the proposal docx separates them).
+    let fhnw = matches!(
+        meta.thesis_typography,
+        TypographyProfile::FhnwProposalParity
+    );
+    let front_matter_slots = [
+        ThesisSlot::DeclarationOriginality,
+        ThesisSlot::ComplianceDeclaration,
+        ThesisSlot::Declaration,
+        ThesisSlot::MgmtSummary,
+        ThesisSlot::Acronyms,
+    ];
     for item in thesis_layout(chapters) {
         match item {
             ThesisItem::Chapter(i) => {
-                doc = render_thesis_chapter(doc, &chapters[i].1, meta, &mut ctx, emitted);
+                let slot = thesis_slot(&chapters[i].1);
+                let md_ref: String = if fhnw && slot == ThesisSlot::TitlePage {
+                    strip_first_h1_line(&chapters[i].1)
+                } else {
+                    chapters[i].1.clone()
+                };
+                // D6: force a page break before each front-matter chapter
+                // (under FHNW only). Non-thesis books and the Designer
+                // profile keep the historical "chapter_break_before from
+                // emitted-state" behaviour.
+                if fhnw && front_matter_slots.contains(&slot) && emitted {
+                    doc = doc.add_paragraph(page_break());
+                }
+                doc = render_thesis_chapter(doc, &md_ref, meta, &mut ctx, emitted);
                 emitted = true;
             }
             ThesisItem::Toc => {

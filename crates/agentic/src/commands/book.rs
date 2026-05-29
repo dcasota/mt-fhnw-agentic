@@ -235,22 +235,21 @@ try {{
             # bracket / non-ASCII interpretation issue. Test-Path -LiteralPath
             # also lifts the file-existence check away from path-globbing.
             if ($logoExists) {{
-              # AddPicture on the header range inserts at the start of the
-              # CURRENT range. After the call the range expands to include
-              # the new shape; we keep its end position so the text we add
-              # next appears AFTER the picture.
+              # AddPicture on the header range as INLINE (verified
+              # working in v0.1.15-engine). A 2026-05-29 attempt to
+              # convert the inline shape to a floating Shape (wrap=
+              # BehindText for in-margin overlay, would have lowered the
+              # page count from 104 → ~85) failed with "Parameter value
+              # was out of acceptable range" — Word's ConvertToShape
+              # appears to reject the call on a header-anchored inline
+              # shape. Deferred to a later release where we'd build the
+              # picture as a floating Shape directly (Shapes.AddPicture
+              # with anchor=$hdr.Range), bypassing the convert step.
               $shape = $hdr.Range.InlineShapes.AddPicture($logoPath, $false, $true)
               Write-Output ("{{0}}`tHEADER_PIC_ADDED  inline-count={{1}}" -f $pth, $hdr.Range.InlineShapes.Count)
-              # Resize via ScalePercent (0..200, %). InlineShape Width/Height
-              # setters throw "Command failed" in this PowerShell host
-              # (verified 2026-05-29). ScaleHeight/ScaleWidth work, but they
-              # are percentages of the INTRINSIC image dimension, not of the
-              # current rendered Height. After AddPicture, Word auto-scales
-              # the image to fit a default width — so we back-compute the
-              # intrinsic height from the current ScaleHeight (typically
-              # not 100% after AddPicture), then compute the percentage that
-              # yields the target. The FHNW logo is square (768x768) so the
-              # same percentage on both axes preserves aspect ratio.
+              # Resize via ScalePercent (back-computed from post-AddPicture
+              # auto-fit). The FHNW logo is square (768×768) so the same
+              # percentage on both axes preserves aspect ratio.
               $cm = [double]$side.logo_height_cm
               $newH = $cm * 28.346
               if ($shape.Height -gt 0 -and $shape.ScaleHeight -gt 0) {{
@@ -259,11 +258,8 @@ try {{
                 $shape.ScaleHeight = $pct
                 $shape.ScaleWidth  = $pct
               }}
-              # Append a paragraph-break after the picture so subsequent
-              # text lines start on the next line. Use the END of the
-              # header range so the break appears AFTER the picture, not
-              # before it. (InsertAfter on the full range vs. InsertParagraphAfter
-              # at end produced different results in 2026-05-29 testing.)
+              # Append a paragraph-break after the picture so the text
+              # lines start on the next line.
               $endR = $hdr.Range
               $endR.Collapse(0)  # wdCollapseEnd
               $endR.InsertParagraphAfter()
@@ -325,13 +321,10 @@ try {{
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    // Surface any FHNW-HDR-FAIL diagnostics from stderr to the user, so a
-    // silently-swallowed PowerShell exception during header injection is
-    // visible. (The catch block also writes the same info to stdout in
-    // the tab-separated format we already parse below.)
+    // Surface any FHNW-HDR-FAIL diagnostics from stderr to the user.
     let stderr = String::from_utf8_lossy(&out.stderr);
     for line in stderr.lines() {
-        if line.contains("FHNW-HDR-FAIL") || line.contains("HEADER_PROBE") {
+        if line.contains("FHNW-HDR-FAIL") {
             eprintln!("{line}");
         }
     }

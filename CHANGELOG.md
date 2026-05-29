@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] — 2026-05-29
+
+### Added — D2 + D6 title-page polish (FHNW typography profile only)
+
+Clears the two remaining D1–D7 defects from the 2026-05-29 cascade
+audit that v0.1.15-engine did not address. Render-fidelity gate
+remains PASS (no regression in the 11 predicates).
+
+- **D2 — suppress "Title Page" H1**: `render_thesis_book` now strips
+  the first `# ` heading line from a `ThesisSlot::TitlePage` chapter
+  *under FHNW typography*. The proposal docx has no "Title Page"
+  heading at the top of page 1 — the thesis title itself is the page.
+  Designer profile and non-thesis books keep the existing H1 behavior.
+  New helper `strip_first_h1_line(md)` (pure function, easily testable).
+- **D6 — front-matter forced page breaks**: under FHNW typography, a
+  page break is emitted BEFORE each `DeclarationOriginality`,
+  `ComplianceDeclaration`, `Declaration`, `MgmtSummary` and `Acronyms`
+  chapter, so each front-matter section starts on its own page. The
+  proposal docx separates them this way; previously they ran together
+  on consecutive pages without separation.
+
+### Deferred (attempted, reverted)
+
+Floating-anchor logo via `InlineShape.ConvertToShape()` in the Word-
+COM finalize step. The conversion call returns `Parameter value was
+out of acceptable range` when the inline shape lives in a header.
+Reverted to the v0.1.15-engine inline-shape behavior (which the gate
+accepts as P01 PASS — the logo IS in the header). The page-count
+overhead (108 pages vs ~85 baseline) is a cosmetic concern, not a
+gate violation. A future release will build the picture as a floating
+Shape directly via `Shapes.AddPicture(..., Anchor=$hdr.Range)`,
+bypassing the convert step entirely.
+
+### Verified
+
+Workspace 360+ tests pass; render_fidelity gate verdict **PASS — 1
+OK finding**. Word COM verification:
+- paragraph 1 = `[Normal] Master of Advanced Studies Leadership in
+  Cybersecurity` (was `[Heading 1] Title Page` in v0.1.15)
+- 16 chapter headings (was 17; "Title Page" H1 suppressed)
+- 886 body paragraphs, 3 sections
+- Page count: 108 (D6 added 4 forced page breaks vs v0.1.15's 104)
+
 ## [0.1.15] — 2026-05-29
 
 ### Added — render-fidelity gate; FHNW running header via Word-COM finalize
