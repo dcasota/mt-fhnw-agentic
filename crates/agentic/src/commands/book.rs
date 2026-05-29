@@ -280,6 +280,50 @@ try {{
             $hdr.Range.Font.Bold = [int]$side.line_bold
             $hdr.Range.ParagraphFormat.Alignment = 2  # right (re-assert)
             Write-Output ("{{0}}`tHEADER_DONE  floating-count={{1}}  inline-count={{2}}  paras={{3}}" -f $pth, $hdr.Shapes.Count, $hdr.Range.InlineShapes.Count, $hdr.Range.Paragraphs.Count)
+            # ADR-0050 §17 / ADR-0030 §37 — centred page-number footer.
+            # docx-rs 0.4.20 attaches only ONE Footer per Document
+            # (verified 2026-05-29 by unzipping the rendered docx: 4
+            # footer*.xml files where only 1 has the PAGE field; the
+            # others are Word-generated empty stubs for each section).
+            # Result: most pages render without a footer. Fix: walk
+            # every section, write the centred PAGE field into Sec1's
+            # primary footer, then set LinkToPrevious=True on Sec2+.
+            if ([bool]$side.footer_pagenum_enabled) {{
+              try {{
+                $sec1Ftr = $d.Sections.Item(1).Footers.Item(1)
+                $sec1Ftr.Range.Text = ''
+                # Use Word's NATIVE Footer.PageNumbers.Add — handles the
+                # PAGE field, paragraph alignment, AND auto-computes the
+                # display value on every page. Fields.Add with the raw
+                # PAGE code created the field but Word didn't auto-
+                # compute it (cached '0'); PageNumbers.Add does the
+                # complete job. The alignment param is a
+                # WdPageNumberAlignment: 0=Left 1=Center 2=Right
+                # 3=Inside 4=Outside. We map the sidecar
+                # footer_pagenum_alignment (paragraph wdAlignParagraph*,
+                # 0=L 1=C 2=R 3=J) onto the page-number variant by
+                # taking 0/1/2 directly; J (3) falls back to Center.
+                $pnAlign = [int]$side.footer_pagenum_alignment
+                if ($pnAlign -lt 0 -or $pnAlign -gt 2) {{ $pnAlign = 1 }}
+                $sec1Ftr.PageNumbers.Add($pnAlign, $true) | Out-Null
+                # Style the inserted page number (Arial 11pt black,
+                # proposal-parity).
+                $sec1Ftr.Range.Font.Name = $side.footer_pagenum_font
+                $sec1Ftr.Range.Font.Size = [int]$side.footer_pagenum_size_pt
+                $sec1Ftr.Range.Font.Bold = $false
+                # Sections 2+ inherit from Sec1 via LinkToPrevious. This
+                # replaces the Word-generated empty footers with the
+                # Sec1 page-number content.
+                for ($s = 2; $s -le $d.Sections.Count; $s++) {{
+                  $d.Sections.Item($s).Footers.Item(1).LinkToPrevious = $true
+                }}
+                Write-Output ("{{0}}`tFOOTER_PAGENUM_ADDED  sections={{1}}  field-count={{2}}" -f $pth, $d.Sections.Count, $sec1Ftr.Range.Fields.Count)
+              }} catch {{
+                $fmsg = "FOOTER_INJECT_ERR {{0}} | trace: {{1}}" -f $_.Exception.Message, ($_.ScriptStackTrace -replace "`r?`n", " >> ")
+                Write-Output ("{{0}}`t{{1}}" -f $pth, $fmsg)
+                [Console]::Error.WriteLine(("FHNW-FTR-FAIL [{{0}}]: {{1}}" -f $pth, $fmsg))
+              }}
+            }}
         }} catch {{
           # Write to BOTH stdout (so the Rust filter sees it) AND stderr
           # (so the user sees it raw in case something else filters
@@ -291,6 +335,28 @@ try {{
         }}
       }}
       $d.Fields.Update() | Out-Null
+      # 2026-05-29 Fix-G1: $d.Fields.Update() only refreshes the
+      # MAIN BODY story. Header/footer fields (specifically the
+      # PAGE field newly injected by FOOTER_PAGENUM_ADDED) live in
+      # separate StoryRanges and stay at their cached value (often
+      # "0") unless explicitly updated. Walk every story and refresh
+      # its fields so the page-number footer shows real numbers.
+      try {{
+        foreach ($story in $d.StoryRanges) {{
+          $story.Fields.Update() | Out-Null
+          $nxt = $story.NextStoryRange
+          while ($nxt -ne $null) {{
+            $nxt.Fields.Update() | Out-Null
+            $nxt = $nxt.NextStoryRange
+          }}
+        }}
+      }} catch {{
+        # StoryRanges iteration can fail on docs with no linked
+        # stories — non-fatal; the main update above already covered
+        # the body fields, headers/footers may still show "0" but
+        # Word will refresh them on user open via updateFields.
+        [Console]::Error.WriteLine(("STORY_UPDATE_WARN [{{0}}]: {{1}}" -f $pth, $_.Exception.Message))
+      }}
       foreach ($tof in $d.TablesOfFigures) {{ $tof.Update() }}
       foreach ($toc in $d.TablesOfContents) {{ $toc.Update() }}
       foreach ($ix in $d.Indexes) {{ $ix.Update() }}
@@ -323,10 +389,11 @@ try {{
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    // Surface any FHNW-HDR-FAIL diagnostics from stderr to the user.
+    // Surface any FHNW-HDR-FAIL / FHNW-FTR-FAIL diagnostics from
+    // stderr to the user.
     let stderr = String::from_utf8_lossy(&out.stderr);
     for line in stderr.lines() {
-        if line.contains("FHNW-HDR-FAIL") {
+        if line.contains("FHNW-HDR-FAIL") || line.contains("FHNW-FTR-FAIL") {
             eprintln!("{line}");
         }
     }

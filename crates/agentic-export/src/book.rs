@@ -582,6 +582,30 @@ pub struct FhnwHeaderSidecar {
     /// (FHNW convention: yes). Word's default is per-section primary
     /// header; we don't need different-first-page.
     pub apply_to_all_pages: bool,
+    /// Inject a centred PAGE-field footer into Section 1 primary footer
+    /// and set `LinkToPrevious=True` on sections 2+. Defaults to `true`
+    /// when this sidecar is used (FHNW typography requires a page-number
+    /// footer per ADR-0050 §17 / ADR-0030 §37; ADR-0050 §78 deferred
+    /// only the Roman→Arabic switch, not the basic Arabic numbering).
+    /// docx-rs 0.4.20 attaches only one Footer per Document, so multi-
+    /// section docs have Word-generated empty footers; this opt-in
+    /// rewrites them via Word COM. Set to `false` to keep the
+    /// docx-rs-only one-section footer behaviour.
+    #[serde(default = "default_footer_pagenum_enabled")]
+    pub footer_pagenum_enabled: bool,
+    /// Font face for the page-number field. Default: "Arial" (matches
+    /// proposal: extracted via Word COM, $ftr.Range.Font.Name = "Arial").
+    #[serde(default = "default_footer_pagenum_font")]
+    pub footer_pagenum_font: String,
+    /// Point size for the page-number field. Default: 11 (matches
+    /// proposal: $ftr.Range.Font.Size = 11).
+    #[serde(default = "default_footer_pagenum_size_pt")]
+    pub footer_pagenum_size_pt: u32,
+    /// Paragraph alignment for the footer. Default: 1
+    /// (wdAlignParagraphCenter — matches ADR-0030 §37 "centred page-
+    /// number footer").
+    #[serde(default = "default_footer_pagenum_alignment")]
+    pub footer_pagenum_alignment: u32,
 }
 
 fn default_logo_width_cm() -> f32 {
@@ -602,6 +626,18 @@ fn default_logo_relh() -> u32 {
 fn default_logo_relv() -> u32 {
     2
 }
+fn default_footer_pagenum_enabled() -> bool {
+    true
+}
+fn default_footer_pagenum_font() -> String {
+    "Arial".to_string()
+}
+fn default_footer_pagenum_size_pt() -> u32 {
+    11
+}
+fn default_footer_pagenum_alignment() -> u32 {
+    1
+}
 
 impl FhnwHeaderSidecar {
     /// Build the sidecar struct from a BookMeta, with the proposal's
@@ -621,6 +657,10 @@ impl FhnwHeaderSidecar {
             logo_relh: default_logo_relh(),
             logo_relv: default_logo_relv(),
             apply_to_all_pages: true,
+            footer_pagenum_enabled: default_footer_pagenum_enabled(),
+            footer_pagenum_font: default_footer_pagenum_font(),
+            footer_pagenum_size_pt: default_footer_pagenum_size_pt(),
+            footer_pagenum_alignment: default_footer_pagenum_alignment(),
         }
     }
 }

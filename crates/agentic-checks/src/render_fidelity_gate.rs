@@ -61,7 +61,7 @@ use crate::{CheckReport, Finding, Severity};
 /// Run the gate against a rendered docx path.
 ///
 /// `proposal_docx` is reserved for a future "structural diff vs proposal"
-/// mode; today the gate evaluates the 11 predicates above against the
+/// mode; today the gate evaluates the 12 predicates above against the
 /// rendered docx only (every predicate is derived FROM the proposal but
 /// encoded as a self-contained predicate, so the proposal isn't needed
 /// at runtime).
@@ -160,6 +160,17 @@ pub struct SectionHeader {
     #[serde(default)]
     pub floating_shape_count: u32,
     pub text: String,
+    /// Per-section primary footer state (v0.1.17+ Fix-G1 page-number
+    /// injection — ADR-0050 §17 / ADR-0030 §37). `field_count` is the
+    /// number of fields in the footer; `has_page_field` is true iff at
+    /// least one of those fields is a PAGE field (Word `Type=33`).
+    /// `#[serde(default)]` for forward compat with older fixtures.
+    #[serde(default)]
+    pub footer_field_count: u32,
+    #[serde(default)]
+    pub footer_has_page_field: bool,
+    #[serde(default)]
+    pub footer_link_to_previous: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -178,7 +189,7 @@ pub struct ChapterHeading {
     pub color_hex: String,
 }
 
-/// Evaluate the 11 predicates against a [`WordReport`]. Pure function; the
+/// Evaluate the 12 predicates against a [`WordReport`]. Pure function; the
 /// Word-COM call lives in [`inspect_docx_via_word`].
 #[must_use]
 pub fn predicates_from_report(r: &WordReport) -> Vec<Finding> {
@@ -420,6 +431,49 @@ pub fn predicates_from_report(r: &WordReport) -> Vec<Finding> {
         });
     }
 
+    // P12 — page-number footer (ADR-0050 §17 / ADR-0030 §37 / ADR-0050
+    // §78 deferred only the Roman/Arabic switch, NOT the basic Arabic
+    // page-number footer). Section 1 primary footer must carry a PAGE
+    // field; sections 2+ must either carry their own PAGE field or be
+    // LinkToPrevious so they inherit. Bug fixed in v0.1.17+ Fix-G1:
+    // docx-rs 0.4.20 attaches only one Footer per Document, so multi-
+    // section docs ended up with Word-generated empty footers; the
+    // Word-COM finalize step now walks every section after open and
+    // injects the PAGE field into Sec1 + sets LinkToPrev on Sec2+.
+    if let Some(s1) = r.section_headers.first() {
+        if !s1.footer_has_page_field {
+            out.push(Finding {
+                category: "FOOTER_PAGENUM_MISSING".into(),
+                severity: Severity::Error,
+                message: format!(
+                    "section 1 primary footer carries no PAGE field \
+                     ({} field(s) total) — ADR-0050 §17 / ADR-0030 §37 \
+                     require a centred page-number footer. v0.1.17 Fix-G1 \
+                     injects this via Word-COM finalize \
+                     (Headers.Footers.Item(1) + Fields.Add wdFieldPage).",
+                    s1.footer_field_count
+                ),
+                location: Some("Sections(1).Footers(1)".into()),
+            });
+        }
+    }
+    for (idx, sec) in r.section_headers.iter().enumerate().skip(1) {
+        // Sec2+ ok if it inherits from Sec1 OR carries its own PAGE field.
+        if !sec.footer_link_to_previous && !sec.footer_has_page_field {
+            out.push(Finding {
+                category: "FOOTER_PAGENUM_PROPAGATION_GAP".into(),
+                severity: Severity::Error,
+                message: format!(
+                    "section {} primary footer is not LinkToPrevious and \
+                     carries no PAGE field of its own — pages in this \
+                     section render without a page number.",
+                    idx + 1
+                ),
+                location: Some(format!("Sections({}).Footers(1)", idx + 1)),
+            });
+        }
+    }
+
     // P11 — chapter heading style
     for h in &r.chapter_headings {
         let arial = h.font.eq_ignore_ascii_case("Arial");
@@ -449,7 +503,7 @@ pub fn predicates_from_report(r: &WordReport) -> Vec<Finding> {
             category: "RENDER_FIDELITY_OK".into(),
             severity: Severity::Info,
             message: format!(
-                "all 11 predicates passed; {} sections, {} body paragraphs, \
+                "all 12 predicates passed; {} sections, {} body paragraphs, \
                  {} chapter headings, {} captions inspected",
                 r.sections,
                 r.body_paragraph_count,
@@ -490,11 +544,23 @@ try {{
           chapter_headings = @(); non_arial_examples = @(); non_justify_examples = @() }}
   foreach ($sec in $d.Sections) {{
     $h = $sec.Headers.Item(1)
+    # P12 footer state — wdFieldPage = 33 (PAGE field type).
+    $ftr = $sec.Footers.Item(1)
+    $hasPageField = $false
+    $ftrFieldCount = [int]$ftr.Range.Fields.Count
+    if ($ftrFieldCount -gt 0) {{
+      for ($fi = 1; $fi -le $ftrFieldCount; $fi++) {{
+        if ([int]$ftr.Range.Fields.Item($fi).Type -eq 33) {{ $hasPageField = $true; break }}
+      }}
+    }}
     $r.section_headers += @{{
       link_to_previous = [bool]$h.LinkToPrevious
       inline_shape_count = [int]$h.Range.InlineShapes.Count
       floating_shape_count = [int]$h.Shapes.Count
       text = $h.Range.Text
+      footer_field_count = $ftrFieldCount
+      footer_has_page_field = $hasPageField
+      footer_link_to_previous = [bool]$ftr.LinkToPrevious
     }}
   }}
   $sb = New-Object System.Text.StringBuilder
@@ -641,18 +707,27 @@ mod tests {
                     inline_shape_count: 1,
                     floating_shape_count: 0,
                     text: "Master of Advanced Studies Leadership in Cybersecurity\n".into(),
+                    footer_field_count: 1,
+                    footer_has_page_field: true,
+                    footer_link_to_previous: false,
                 },
                 SectionHeader {
                     link_to_previous: true,
                     inline_shape_count: 1,
                     floating_shape_count: 0,
                     text: "Master of Advanced Studies Leadership in Cybersecurity\n".into(),
+                    footer_field_count: 0,
+                    footer_has_page_field: false,
+                    footer_link_to_previous: true,
                 },
                 SectionHeader {
                     link_to_previous: true,
                     inline_shape_count: 1,
                     floating_shape_count: 0,
                     text: "Master of Advanced Studies Leadership in Cybersecurity\n".into(),
+                    footer_field_count: 0,
+                    footer_has_page_field: false,
+                    footer_link_to_previous: true,
                 },
             ],
             body_paragraph_count: 100,
@@ -726,11 +801,43 @@ mod tests {
             inline_shape_count: 0,
             floating_shape_count: 1,
             text: String::new(),
+            footer_field_count: 0,
+            footer_has_page_field: false,
+            footer_link_to_previous: true,
         };
         let f = predicates_from_report(&r);
         assert!(
             !f.iter().any(|x| x.category == "HEADER_PROPAGATION_GAP"),
             "P04 false-positive: a floating-shape-only header satisfies has_own"
+        );
+    }
+
+    /// v0.1.17 Fix-G1: a Sec1 footer with NO PAGE field must flag P12.
+    #[test]
+    fn missing_footer_pagenum_flags_p12() {
+        let mut r = good_report();
+        r.section_headers[0].footer_field_count = 0;
+        r.section_headers[0].footer_has_page_field = false;
+        let f = predicates_from_report(&r);
+        assert!(
+            f.iter().any(|x| x.category == "FOOTER_PAGENUM_MISSING"),
+            "P12 should flag missing Sec1 PAGE field"
+        );
+    }
+
+    /// v0.1.17 Fix-G1: a Sec2+ that neither inherits via LinkToPrevious
+    /// NOR has its own PAGE field must flag P12 propagation.
+    #[test]
+    fn footer_pagenum_propagation_gap_flags_p12() {
+        let mut r = good_report();
+        r.section_headers[1].footer_field_count = 0;
+        r.section_headers[1].footer_has_page_field = false;
+        r.section_headers[1].footer_link_to_previous = false;
+        let f = predicates_from_report(&r);
+        assert!(
+            f.iter()
+                .any(|x| x.category == "FOOTER_PAGENUM_PROPAGATION_GAP"),
+            "P12 should flag Sec2 with no PAGE field and no LinkToPrev"
         );
     }
 
@@ -751,6 +858,9 @@ mod tests {
             inline_shape_count: 0,
             floating_shape_count: 0,
             text: String::new(),
+            footer_field_count: 0,
+            footer_has_page_field: false,
+            footer_link_to_previous: true,
         };
         let f = predicates_from_report(&r);
         assert!(f.iter().any(|x| x.category == "HEADER_PROPAGATION_GAP"));
