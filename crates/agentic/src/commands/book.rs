@@ -71,6 +71,17 @@ struct BookSpec {
     /// "colon" → "Figure 1:" (English) / "Abbildung 1:" (German).
     #[serde(default)]
     caption_format: Option<String>,
+    /// Optional DB path of a PNG logo to render in the FHNW running
+    /// header (ADR-0050 §1 item 1). When set with `thesis_typography =
+    /// "fhnw-proposal-parity"`, the engine renders the logo + the
+    /// `header_lines` on every page header.
+    #[serde(default)]
+    header_logo: Option<String>,
+    /// Optional header text lines (rendered right-aligned beneath the
+    /// logo). e.g. `["Master of Advanced Studies", "Leadership in
+    /// Cybersecurity"]`.
+    #[serde(default)]
+    header_lines: Vec<String>,
     chapters: Vec<String>,
 }
 
@@ -409,6 +420,20 @@ fn build_one(
         Some("colon") => agentic_export::book::CaptionFormat::Colon,
         _ => agentic_export::book::CaptionFormat::Period,
     };
+    // ADR-0050 §1 item 1: load the FHNW running-header logo bytes from the
+    // project DB when the manifest specifies one. Failures are non-fatal
+    // (the engine falls back to no header); we log a context-rich warning.
+    let header_logo: Option<Vec<u8>> = if let Some(path) = spec.header_logo.as_deref() {
+        match agentic_core::worktree::read_at(conn, project, path) {
+            Ok(blob) => Some(blob.content),
+            Err(e) => {
+                eprintln!("warn: header_logo {path} not loadable ({e}) — rendering without logo");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let meta = BookMeta {
         title: spec.title.clone(),
         subtitle: spec.subtitle.clone(),
@@ -442,6 +467,8 @@ fn build_one(
         thesis_typography,
         page_numbering: agentic_export::book::PageNumbering::default(),
         caption_format,
+        header_logo,
+        header_lines: spec.header_lines.clone(),
     };
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));

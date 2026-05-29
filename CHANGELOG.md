@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] — 2026-05-29
+
+### Added — FHNW running header + body justify + Word Caption style + acronyms column widths
+
+Closes 4 of the 13 items from the 2026-05-29 multi-domain requirement set
+(items 1-3, 8-9). All changes are opt-in behind the `FhnwProposalParity`
+typography profile and the new manifest fields — zero regression for the
+17 non-thesis books.
+
+- **BookMeta.header_logo + header_lines** (new): when set with
+  `thesis_typography=FhnwProposalParity`, the engine renders a Word
+  page-header on every page with the FHNW logo (right-aligned, 4.92 cm)
+  and the two text lines "Master of Advanced Studies" + "Leadership in
+  Cybersecurity" (Arial 12pt bold, right-aligned). The logo bytes are
+  loaded from the project DB by the CLI; the engine is filesystem-free.
+  Designer profile + non-thesis books emit no header (regression
+  guarded).
+- **Body justify alignment (item 3)**: `body_alignment_for(profile)`
+  returns `AlignmentType::Both` (OOXML `w:jc w:val="both"`) for FHNW,
+  `Left` for Designer. Applied at `para_of()` — every body paragraph
+  built from markdown is now justified under the FHNW profile.
+- **Native Word `Caption` style on captions (item 8)**: figure and table
+  caption paragraphs carry `w:pStyle w:val="Caption"`. Word's
+  Insert → Reference → Table of Figures / Tables dialog reads the
+  Caption style natively — users can now build/refresh both lists from
+  Word's UI in addition to the engine's `TOC \c` field.
+- **Acronyms-table 10/80/10 column widths (item 9)**: a 3-column table
+  headed `Acronym | Expansion | Pages` (case-insensitive trim match)
+  gets 10/80/10 column widths instead of equal-share. The middle
+  Expansion column is 8× wider than each outer column. Every other
+  3-column table keeps equal widths.
+- **BookSpec.header_logo + header_lines** (manifest schema): the CLI
+  `build_one` reads these from the manifest and threads them into the
+  BookMeta. The `master_thesis` book entry will be amended in v0.1.15
+  with the actual values.
+
+### Verified
+
+Workspace **349/349 tests pass** (was 345; +4 new regression tests for
+the v0.1.14 features). The 4 new tests:
+
+- `fhnw_header_renders_text_lines` — header part exists with both lines;
+  Designer profile + neither-logo-nor-lines combinations correctly emit
+  no header part.
+- `fhnw_body_paragraphs_are_justified` — `w:jc w:val="both"` present
+  under FHNW, absent under Designer.
+- `caption_paragraph_carries_word_caption_style` — table captions emit
+  `w:pStyle w:val="Caption"`.
+- `acronyms_table_uses_10_80_10_column_widths` — `column_widths_for`
+  returns the right split for the Acronym/Expansion/Pages header pattern
+  and falls through to equal-share for everything else.
+
+### Deferred to v0.1.15
+
+The two nice-to-have engine extensions in the planned v0.1.14 scope are
+deferred to keep the release tight and content-fixable:
+
+- A `MISSING_TABLE_CAPTION` deliverable-gate WARN — the v0.1.15 content
+  pass adds the missing captions directly, making the gate moot.
+- The scaffolded "No Spacing" / "List Paragraph" / "Body Text 3"
+  proposal-style definitions — useful only if future markdown
+  references the styles by name; for now every paragraph's formatting is
+  direct character formatting, so the scaffolding adds no rendered
+  output.
+
 ## [0.1.13] — 2026-05-28
 
 ### Added — ADR-0050: FHNW-compliant master-thesis typography + back-matter

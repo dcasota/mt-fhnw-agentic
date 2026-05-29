@@ -10,8 +10,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use docx_rs::{
-    AlignmentType, BorderType, BreakType, Docx, FieldCharType, Footer, HeightRule, Hyperlink,
-    HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin, PageNum,
+    AlignmentType, BorderType, BreakType, Docx, FieldCharType, Footer, Header, HeightRule,
+    Hyperlink, HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin, PageNum,
     PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty, Shading, Style,
     StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition, TableCellMargins,
     TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType, VertAlignType,
@@ -186,6 +186,16 @@ pub struct BookMeta {
     /// Caption label format (ADR-0050 §1). `Period` (default) → "Figure 1.";
     /// `Colon` → "Figure 1:" (English) or "Abbildung 1:" (German).
     pub caption_format: CaptionFormat,
+    /// Optional FHNW-style header logo bytes (PNG). When set with the
+    /// FHNW typography profile, the engine renders a page header on every
+    /// page with the logo (right-anchored) plus the two header text lines
+    /// from `header_lines`. Loaded from the project DB by the CLI; the
+    /// engine itself only consumes the bytes (zero filesystem coupling).
+    pub header_logo: Option<Vec<u8>>,
+    /// Optional header text lines (e.g. `["Master of Advanced Studies",
+    /// "Leadership in Cybersecurity"]`). Rendered right-aligned under the
+    /// logo when present. Empty/missing → header text suppressed.
+    pub header_lines: Vec<String>,
 }
 
 /// Per-book render state threaded through `render_block`: running figure / table
@@ -437,6 +447,65 @@ fn caption_separator_for(p: CaptionFormat) -> &'static str {
         CaptionFormat::Period => ".",
         CaptionFormat::Colon => ":",
     }
+}
+
+/// Build the FHNW running-header (Master of Advanced Studies / Leadership in
+/// Cybersecurity + logo) — ADR-0050 §1, item 1 of the 2026-05-29 cascade
+/// rewrite. Returns `Some(Header)` only when the meta carries logo bytes
+/// AND uses the FHNW proposal typography; otherwise `None` and the engine
+/// falls back to its prior no-header behaviour (every non-thesis book and
+/// every Designer-profile book is unaffected).
+///
+/// Layout matches the proposal docx (extracted via Word COM 2026-05-29):
+///   - Right-aligned anchored picture, ≈4.92 × 4.92 cm (image dims 768×768 px)
+///   - Two right-aligned lines below: Arial 12 pt bold, both lines lang=en-US
+///
+/// We use an INLINE picture (not floating-anchored) because docx-rs does not
+/// expose the `Anchor`/`Drawing`-anchor fluent builder; an inline picture in a
+/// right-aligned paragraph achieves the same visual placement for header use,
+/// with the minor difference that text wraps below the image instead of
+/// flowing alongside (the proposal's prose does not flow at the header
+/// boundary anyway, so this is invisible in the rendered output).
+fn fhnw_header_for(meta: &BookMeta) -> Option<Header> {
+    if meta.thesis_typography != TypographyProfile::FhnwProposalParity {
+        return None;
+    }
+    let has_text = meta.header_lines.iter().any(|l| !l.trim().is_empty());
+    let has_logo = meta.header_logo.as_ref().is_some_and(|b| !b.is_empty());
+    if !has_text && !has_logo {
+        return None;
+    }
+
+    let mut header = Header::new();
+    if let Some(bytes) = meta.header_logo.as_ref() {
+        if !bytes.is_empty() {
+            // 4.92 cm ≈ 1.77e6 EMU (914_400 EMU = 1 inch ≈ 2.54 cm).
+            let logo_emu: u32 = 1_770_000;
+            let pic = Pic::new(bytes).size(logo_emu, logo_emu);
+            // Picture paragraph, right-aligned.
+            header = header.add_paragraph(
+                Paragraph::new()
+                    .align(AlignmentType::Right)
+                    .add_run(Run::new().add_image(pic)),
+            );
+        }
+    }
+    // Header text lines (Arial 12 pt bold, right-aligned).
+    for line in &meta.header_lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        header = header.add_paragraph(
+            Paragraph::new().align(AlignmentType::Right).add_run(
+                Run::new()
+                    .add_text(line.as_str())
+                    .bold()
+                    .size(24) // 12pt = 24 half-points
+                    .fonts(RunFonts::new().ascii(FHNW_BODY).hi_ansi(FHNW_BODY)),
+            ),
+        );
+    }
+    Some(header)
 }
 
 fn page_break() -> Paragraph {
@@ -720,13 +789,34 @@ fn add_runs(
     p
 }
 
+/// Default body-paragraph alignment for the active typography profile.
+///
+/// ADR-0050 §1 item 3: the FHNW proposal direct-formats prose as JUSTIFY
+/// even though its `Normal` style is LEFT. We mirror that in the
+/// `FhnwProposalParity` profile by giving body paragraphs an explicit
+/// Justify alignment; the Designer profile keeps the engine's historical
+/// LEFT-via-style behaviour.
+fn body_alignment_for(t: TypographyProfile) -> AlignmentType {
+    match t {
+        TypographyProfile::Designer => AlignmentType::Left,
+        // docx-rs maps WordprocessingML `w:jc w:val="both"` (the canonical
+        // OOXML "justify both edges" value, internally also called "Justified")
+        // to `AlignmentType::Both`. Word renders both identically; we pick
+        // `Both` because it is the one OOXML actually serialises and matches
+        // the value found in the proposal docx.
+        TypographyProfile::FhnwProposalParity => AlignmentType::Both,
+    }
+}
+
 fn para_of(
     runs: &[DocxRun],
     links: &mut Vec<(String, String)>,
     typography: TypographyProfile,
 ) -> Paragraph {
     add_runs(
-        Paragraph::new().line_spacing(body_spacing()),
+        Paragraph::new()
+            .line_spacing(body_spacing())
+            .align(body_alignment_for(typography)),
         runs,
         links,
         typography,
@@ -743,9 +833,43 @@ fn png_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// Per-column widths in twips for a given header.
+///
+/// ADR-0050 §1 item 9 (2026-05-29): the FHNW MAS acronyms table reads as
+/// "Acronym | Expansion | Pages" — equal-share widths waste real estate
+/// because the middle "Expansion" column carries 3-10× the text density of
+/// the two outer columns. We detect that header pattern and return a
+/// 10 / 80 / 10 split; every other table keeps the historical equal-share
+/// behaviour, so non-thesis books are unaffected.
+///
+/// Detection is exact-match (case-insensitive trim) on the three header
+/// strings `Acronym`, `Expansion`, `Pages` — narrow enough to avoid false
+/// positives on other 3-column tables.
+fn column_widths_for(header: &[String], content_twips: usize, ncols: usize) -> Vec<usize> {
+    let equal = content_twips / ncols;
+    if ncols == 3 && header.len() == 3 {
+        let h0 = header[0].trim().to_ascii_lowercase();
+        let h1 = header[1].trim().to_ascii_lowercase();
+        let h2 = header[2].trim().to_ascii_lowercase();
+        let is_acronyms = h0 == "acronym" && h1 == "expansion" && h2 == "pages";
+        if is_acronyms {
+            // 10 / 80 / 10 split, rounded so the row sums to `content_twips`
+            // (the engine sets `WidthType::Dxa` per cell + on the table, so
+            // rounding loss would otherwise create a tiny gap on the right
+            // edge).
+            let c0 = content_twips / 10;
+            let c2 = content_twips / 10;
+            let c1 = content_twips - c0 - c2;
+            return vec![c0, c1, c2];
+        }
+    }
+    vec![equal; ncols]
+}
+
 fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) -> Table {
     let ncols = col_count(header, rows);
-    let colw = content_twips / ncols;
+    let col_widths = column_widths_for(header, content_twips, ncols);
+    let colw = content_twips / ncols; // legacy single-column metric, kept for the rotate-headers heuristic
     // Narrow many-column tables: rotate non-trivial header labels to read
     // bottom-up so they stay legible instead of wrapping into a sliver.
     let rotate_headers = colw < ROTATE_COLW && header.iter().any(|h| h.trim().chars().count() > 4);
@@ -753,7 +877,8 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
     if !header.is_empty() {
         let cells = header
             .iter()
-            .map(|h| {
+            .enumerate()
+            .map(|(ci, h)| {
                 let para = Paragraph::new()
                     .align(if rotate_headers {
                         AlignmentType::Center
@@ -770,7 +895,7 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
                     );
                 let mut cell = TableCell::new()
                     .shading(Shading::new().fill(HEADBG))
-                    .width(colw, WidthType::Dxa)
+                    .width(col_widths[ci.min(col_widths.len() - 1)], WidthType::Dxa)
                     .vertical_align(VAlignType::Center);
                 if rotate_headers {
                     cell = cell.text_direction(TextDirectionType::BtLr);
@@ -791,10 +916,11 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
         let mut cells = Vec::with_capacity(ncols);
         for c in 0..ncols {
             let val = row.get(c).map(String::as_str).unwrap_or("");
+            let cw = col_widths[c.min(col_widths.len() - 1)];
             cells.push(
                 TableCell::new()
                     .shading(Shading::new().fill(fill))
-                    .width(colw, WidthType::Dxa)
+                    .width(cw, WidthType::Dxa)
                     .vertical_align(VAlignType::Center)
                     .add_paragraph(
                         Paragraph::new()
@@ -805,7 +931,7 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
         trows.push(TableRow::new(cells).cant_split());
     }
     Table::new(trows)
-        .set_grid(vec![colw; ncols])
+        .set_grid(col_widths.clone())
         .width(content_twips, WidthType::Dxa)
         // Fixed layout makes Word honour the grid and wrap text, so a wide table
         // can never expand past the page margins (ADR-0030).
@@ -1667,6 +1793,7 @@ fn render_block(
             };
             doc = doc.add_paragraph(
                 Paragraph::new()
+                    .style("Caption") // ADR-0050 §1 item 8: native Word Caption style
                     .line_spacing(LineSpacing::new().before(SPACE_AROUND_TABLE).after(40))
                     .keep_next(true) // caption stays on the same page as its table
                     .add_run(cap_style(t(ctx.lang, "table_prefix")))
@@ -1740,6 +1867,7 @@ fn render_block(
                 let sep = caption_separator_for(caption_format);
                 doc.add_paragraph(
                     Paragraph::new()
+                        .style("Caption") // ADR-0050 §1 item 8: native Word Caption style
                         .align(AlignmentType::Center)
                         .line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG))
                         .add_run(cap_style(t(ctx.lang, "fig_prefix")))
@@ -1788,6 +1916,24 @@ fn with_styles(mut doc: Docx) -> Docx {
                 .outline_lvl(usize::from(lvl) - 1),
         );
     }
+    // ADR-0050 §1 item 8 (v0.1.14): register Word's "Caption" style so the
+    // native List-of-Figures / List-of-Tables dialog recognises our caption
+    // paragraphs. Without this style definition the Word finalize step
+    // strips the pStyle reference and the captions fall back to Normal,
+    // making the native lists empty (the engine's `TOC \c` field still
+    // works, but the UI path doesn't). The visual values here mirror the
+    // engine's previous direct-formatted caption (size 18 = 9pt italic
+    // grey body font) so behaviour is unchanged for the Designer profile;
+    // FHNW captions override these via direct character formatting.
+    doc = doc.add_style(
+        Style::new("Caption", StyleType::Paragraph)
+            .name("caption")
+            .based_on("Normal")
+            .size(18)
+            .italic()
+            .color(GREY)
+            .fonts(body_fonts()),
+    );
     doc
 }
 
@@ -2158,6 +2304,13 @@ fn render_thesis_book(
                 .add_page_num(PageNum::new()),
         ),
     );
+
+    // FHNW running header (ADR-0050 item 1) — only attached for the FHNW
+    // typography profile AND when the manifest supplies logo bytes; no
+    // regression for any other book.
+    if let Some(header) = fhnw_header_for(meta) {
+        doc = doc.header(header);
+    }
 
     // Skip the engine-generated cover when the manifest already supplies an
     // explicit `ThesisSlot::TitlePage` chapter (e.g. the FHNW formal title
@@ -2839,6 +2992,205 @@ mod tests {
             d.contains("1F3864") || d.contains("2E4A7A"),
             "Designer profile must keep at least one NAVY/HEAD2 colour"
         );
+    }
+
+    #[test]
+    fn fhnw_header_renders_text_lines() {
+        // ADR-0050 item 1 (v0.1.14): when the FHNW profile is active AND
+        // header_lines is non-empty, the rendered docx contains a header
+        // part with the lines. We test the text-only path here (a real
+        // PNG logo is exercised end-to-end during the book build, where
+        // the FHNW logo is loaded from the project DB). Logo-bytes
+        // validation belongs to docx-rs / the PNG decoder, not to this
+        // engine's contract.
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            thesis_profile: true,
+            thesis_typography: TypographyProfile::FhnwProposalParity,
+            header_logo: None,
+            header_lines: vec![
+                "Master of Advanced Studies".into(),
+                "Leadership in Cybersecurity".into(),
+            ],
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut header_xml = String::new();
+        let r = zip.by_name("word/header1.xml");
+        assert!(
+            r.is_ok(),
+            "FHNW profile with header_lines must emit word/header1.xml"
+        );
+        r.unwrap().read_to_string(&mut header_xml).unwrap();
+        assert!(
+            header_xml.contains("Master of Advanced Studies"),
+            "header must contain the first header line"
+        );
+        assert!(
+            header_xml.contains("Leadership in Cybersecurity"),
+            "header must contain the second header line"
+        );
+
+        // Designer profile (default) must NOT emit a header part even
+        // when header_lines is supplied — the header is FHNW-profile-only.
+        let meta2 = BookMeta {
+            title: "T".into(),
+            header_lines: vec!["Should not appear".into()],
+            ..Default::default()
+        };
+        let bytes2 = render_book(
+            &meta2,
+            &[("c1".into(), "# C\n\nBody.\n".into())],
+            Path::new("."),
+        )
+        .unwrap();
+        let mut zip2 = zip::ZipArchive::new(Cursor::new(bytes2)).unwrap();
+        assert!(
+            zip2.by_name("word/header1.xml").is_err(),
+            "Designer profile must NOT emit a header part (regression guard)"
+        );
+
+        // FHNW profile with NEITHER logo NOR lines → no header part.
+        let meta3 = BookMeta {
+            title: "T".into(),
+            thesis_profile: true,
+            thesis_typography: TypographyProfile::FhnwProposalParity,
+            ..Default::default()
+        };
+        let bytes3 = render_book(
+            &meta3,
+            &[("c1".into(), "# C\n\nBody.\n".into())],
+            Path::new("."),
+        )
+        .unwrap();
+        let mut zip3 = zip::ZipArchive::new(Cursor::new(bytes3)).unwrap();
+        assert!(
+            zip3.by_name("word/header1.xml").is_err(),
+            "FHNW profile with neither logo nor lines must NOT emit a header part"
+        );
+    }
+
+    #[test]
+    fn fhnw_body_paragraphs_are_justified() {
+        // ADR-0050 §1 item 3 (v0.1.14): body paragraphs under the FHNW
+        // profile carry w:jc w:val="both" (= AlignmentType::Both, OOXML
+        // "justify"). Designer profile body paragraphs do NOT carry a w:jc
+        // and inherit Normal/LEFT.
+        use std::io::Read;
+        let meta_fhnw = BookMeta {
+            title: "T".into(),
+            thesis_typography: TypographyProfile::FhnwProposalParity,
+            ..Default::default()
+        };
+        let bytes = render_book(
+            &meta_fhnw,
+            &[(
+                "c1".into(),
+                "# C\n\nA body paragraph that should justify.\n".into(),
+            )],
+            Path::new("."),
+        )
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains("w:val=\"both\""),
+            "FHNW profile must emit w:jc w:val=\"both\" on body paragraphs"
+        );
+
+        // Designer baseline: no w:jc=both anywhere (regression guard).
+        let meta_designer = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let bytes2 = render_book(
+            &meta_designer,
+            &[(
+                "c1".into(),
+                "# C\n\nA body paragraph that should NOT justify.\n".into(),
+            )],
+            Path::new("."),
+        )
+        .unwrap();
+        let mut zip2 = zip::ZipArchive::new(Cursor::new(bytes2)).unwrap();
+        let mut d2 = String::new();
+        zip2.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d2)
+            .unwrap();
+        assert!(
+            !d2.contains("w:val=\"both\""),
+            "Designer profile must NOT emit w:jc=both (regression guard)"
+        );
+    }
+
+    #[test]
+    fn caption_paragraph_carries_word_caption_style() {
+        // ADR-0050 §1 item 8 (v0.1.14): caption paragraphs use Word's
+        // built-in `Caption` style so the native List-of-Figures /
+        // List-of-Tables dialog finds them. The style reference is
+        // `w:pStyle w:val="Caption"` in word/document.xml.
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            caption_format: CaptionFormat::Colon,
+            ..Default::default()
+        };
+        let md = "# C\n\nTable: example for caption style.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let bytes = render_book(&meta, &[("c1".into(), md.to_string())], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        assert!(
+            d.contains("w:val=\"Caption\""),
+            "Table-caption paragraph must reference the Word 'Caption' style"
+        );
+    }
+
+    #[test]
+    fn acronyms_table_uses_10_80_10_column_widths() {
+        // ADR-0050 §1 item 9 (v0.1.14): a 3-column table headed
+        // "Acronym | Expansion | Pages" gets 10/80/10 widths instead of
+        // equal-share. Every other 3-col table keeps equal widths.
+        let header = vec![
+            "Acronym".to_string(),
+            "Expansion".to_string(),
+            "Pages".to_string(),
+        ];
+        let widths = column_widths_for(&header, 10_000, 3);
+        assert_eq!(widths.len(), 3);
+        assert_eq!(widths[0], 1000, "Acronym col = 10%");
+        assert_eq!(widths[2], 1000, "Pages col = 10%");
+        assert_eq!(widths[1], 8000, "Expansion col = 80% (remainder)");
+        assert_eq!(
+            widths.iter().sum::<usize>(),
+            10_000,
+            "widths sum to content_twips"
+        );
+
+        // Non-matching headers fall through to equal-share.
+        let other = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let widths2 = column_widths_for(&other, 9_000, 3);
+        assert_eq!(widths2, vec![3000, 3000, 3000]);
+
+        // 4-column headers fall through to equal-share.
+        let four = vec![
+            "Acronym".to_string(),
+            "Expansion".to_string(),
+            "Pages".to_string(),
+            "Notes".to_string(),
+        ];
+        let widths3 = column_widths_for(&four, 9_000, 4);
+        assert_eq!(widths3, vec![2250, 2250, 2250, 2250]);
     }
 
     #[test]
