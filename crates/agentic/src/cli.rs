@@ -1163,6 +1163,27 @@ pub enum CheckAction {
         #[arg(long, requires = "paths_from_manifest")]
         book_key: Option<String>,
     },
+    /// Verify a rendered FHNW master-thesis docx against 11 structural
+    /// predicates derived from the proposal docx (ADR-0050 v0.1.15-engine):
+    /// header logo + 2 text lines, header propagation, body Arial coverage,
+    /// no Designer-font leak, no XE/MERGEFORMAT field leaks, justify
+    /// alignment, Caption-style coverage, chapter-heading style.
+    ///
+    /// Windows-only (requires Microsoft Word COM). Without `--rendered-docx`
+    /// the gate is no-op (INFO PASS).
+    RenderFidelity {
+        #[arg(long)]
+        project: String,
+        /// Path to the rendered docx to inspect. Without this flag the gate
+        /// is opt-in and skipped.
+        #[arg(long)]
+        rendered_docx: Option<std::path::PathBuf>,
+        /// Optional path to the FHNW proposal docx (reserved for future
+        /// structural-diff mode; today the gate evaluates self-contained
+        /// predicates that were extracted FROM the proposal).
+        #[arg(long)]
+        proposal_docx: Option<std::path::PathBuf>,
+    },
     /// ARS 7-mode integrity scan (ADR-0044): hallucinated results, method
     /// fabrication, shortcuts, impl-bug admissions, frame-lock, unverified
     /// results, overclaims — over deliverable markdown.

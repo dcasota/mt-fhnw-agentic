@@ -31,6 +31,7 @@ pub mod normalize;
 pub mod page_boundary_gate;
 pub mod predatory_gate;
 pub mod prisma_gate;
+pub mod render_fidelity_gate;
 pub mod reproducibility_gate;
 pub mod rr_matrix_gate;
 pub mod self_check;

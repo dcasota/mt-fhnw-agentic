@@ -5,6 +5,119 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] — 2026-05-29
+
+### Added — render-fidelity gate; FHNW running header via Word-COM finalize
+
+Closes the 2026-05-29 guardrail-miss class surfaced by user inspection
+of v0.1.16's title page (FHNW logo missing from header despite v0.1.14
+claiming to ship it; 472 Georgia body paragraphs leaking the Designer
+profile; XE "Photon OS" index field visibly bleeding into chapter 1
+prose; only 41% of body paragraphs justified). Eight prior releases
+hid these defects because every existing gate (page_boundary, bookkit,
+deliverable) reads markdown **source**, but the FHNW requirements are
+about the rendered **docx**. v0.1.15 fixes the entire class.
+
+New `agentic check render-fidelity` gate (`render_fidelity_gate.rs`)
+opens a rendered docx via Microsoft Word COM and evaluates 11
+predicates against it. Each predicate emits one finding per failure
+plus an INFO summary on full PASS. Predicates:
+
+  P01 HEADER_LOGO_MISSING        Section 1 primary header has 0 InlineShapes
+  P02 HEADER_LINE_MAS_MISSING    Header lacks "Master of Advanced Studies"
+  P03 HEADER_LINE_LIC_MISSING    Header lacks "Leadership in Cybersecurity"
+  P04 HEADER_PROPAGATION_GAP     A non-first section has no LinkToPrev + own
+  P05 BODY_FONT_COVERAGE_LOW     < 95% body paragraphs use Arial (FHNW)
+  P06 DESIGNER_FONT_LEAK         Body has Georgia or Calibri paragraphs
+  P07 XE_INDEX_LEAK              Visible body text contains `XE "..."`
+  P08 STALE_FIELD_LEAK           Visible body text contains MERGEFORMAT
+  P09 BODY_JUSTIFY_LOW           < 80% body paragraphs are justify-aligned
+  P10 CAPTION_STYLE_GAP          Caption paragraph not using Word "Caption"
+  P11 CHAPTER_HEADING_STYLE_WRONG  H1 not Arial 14pt bold black
+
+CLI: `agentic check render-fidelity --project <p> --rendered-docx <path>`.
+Without the flag the gate is opt-in (INFO PASS). Windows-only (Word COM).
+11 predicate-evaluation unit tests + diagnostic output (first 10 examples
+of non-Arial / non-justify body paragraphs) for fix-locating.
+
+Engine fixes that the gate surfaced and we resolved:
+
+- **FHNW header via Word-COM finalize**. The docx-rs `Pic` builder for
+  inline header images produces XML Word's parser silently rejects on
+  open (verified 2026-05-29: `word/header1.xml` looks well-formed but
+  `Headers(1).InlineShapes.Count == 0` after `Documents.Open`).
+  `fhnw_header_for(meta)` now always returns None; the engine writes
+  a sidecar `<docx>.fhnw_header.json` + materialises the logo PNG
+  next to the docx; `agentic book finalize` reads the sidecar and
+  injects the header via Word's `InlineShapes.AddPicture` + paragraph
+  insertion (Word builds the XML itself, so Word's parser will accept
+  what Word produces).
+- **UTF-8 encoding fix** in the finalize PowerShell: `Get-Content`
+  defaults to Windows-1252 on Windows PowerShell 5.1, mangling
+  non-ASCII path bytes (`ö` → `Ã¶`) in the sidecar JSON read, which
+  silently skipped the logo injection. Now `-Encoding UTF8`.
+- **Section-1-only header injection**. The thesis docx has 5 sections,
+  sections 2-5 with `LinkToPrevious=True`. Iterating all sections in
+  the foreach loop wiped section 1's just-added picture on section 2's
+  iteration. Now: write to section 1 only; the others inherit.
+- **InlineShape resize via ScaleHeight/ScaleWidth percentages** (not
+  Width/Height twips, which throw "Command failed" in this PowerShell
+  host). Scale computed back from the post-AddPicture intrinsic-height
+  (= shape.Height / (shape.ScaleHeight/100)) so the result lands at
+  the target 4.92 cm regardless of Word's default auto-fit.
+- **Table cells, sources box, rule_para** now route through the typed
+  `body_fonts_for(typography)` / `caption_fonts_for(typography)` /
+  `body_alignment_for(typography)` helpers — under FHNW they emit
+  Arial 10pt black justify; under Designer (every non-thesis book)
+  they keep the historical Georgia 11pt LEFT.
+- **XE index entries suppressed under FHNW typography**. Word renders
+  XE fields with an empty cached value as visible text (e.g.
+  `XE "Photon OS"` was leaking into chapter 1 prose). The FHNW profile
+  has no back-of-book Index per the proposal docx; we skip XE emission
+  AND the `ThesisItem::Index` slot entirely.
+- **BulletItem + OrderedItem paragraphs**: now use
+  `body_alignment_for(ctx.typography)` (= justify under FHNW; per the
+  proposal docx all `List Paragraph` bullets are JUSTIFY-aligned).
+- **Gate diagnostic enhancements**: body-paragraph definition excludes
+  Caption / Table of Figures / Table of Tables / TOC* / Header /
+  Footer / Hyperlink / Index* styles (they have their own font/align
+  contracts). First-run-font fallback for mixed-font paragraphs
+  (Word's `Range.Font.Name` is empty when runs have different fonts).
+  First 10 examples of non-Arial / non-justify body paragraphs
+  returned in the finding message for fix-locating.
+
+### Verified end-to-end (Word COM on rebuilt master_thesis.docx)
+
+| Element | Before v0.1.15 | v0.1.15 |
+|---|---|---|
+| Header logo | 0 / 5 sections | **3 / 3 sections, 139.9pt ≈ 4.92cm** |
+| Header text "Master of Advanced Studies" | absent | **present, Arial 12pt bold right** |
+| Header text "Leadership in Cybersecurity" | absent | **present, Arial 12pt bold right** |
+| Body Arial coverage | 33.4 % | **≥ 95 %** |
+| Designer-font leak | 472 Georgia + 1 Calibri | **0** |
+| XE-index leak | 1 | **0** |
+| Justify alignment | 41.3 % | **≥ 80 %** |
+| Caption-style false positives | 18 | **0** |
+| Gate verdict | (no gate existed) | **PASS — 1 OK finding** |
+
+Workspace: 360+ tests pass (143 in agentic-checks, +11 for the new
+gate). All non-thesis books (17 of them) keep the Designer profile
+unchanged — regression-guarded by `designer_typography_profile_keeps_navy_and_georgia`.
+
+### Known minor (deferred to v0.1.16-engine)
+
+- D2 "Title Page" heading text still rendered at the top of the first
+  page (the FHNW title chapter's H1 prints "Title Page" rather than
+  the thesis title itself). Content-level fix.
+- D6 front-matter sections (Declaration of Originality, Compliance
+  Declaration) run together on consecutive pages without a forced
+  page break between them.
+- Page count: 104 (was 85 in v0.1.16 without the header). The
+  Word-COM-injected logo is INLINE (pushes body down by its height);
+  the proposal uses a FLOATING-ANCHORED picture that overlaps the
+  page margin without pushing body. Floating-anchor support in
+  Word COM is a v0.1.16-engine refinement.
+
 ## [0.1.14] — 2026-05-29
 
 ### Added — FHNW running header + body justify + Word Caption style + acronyms column widths

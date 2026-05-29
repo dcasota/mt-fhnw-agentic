@@ -254,6 +254,17 @@ pub async fn run_report(
             agentic_checks::tree_integrity::run(&conn, &project, &root, &prefix)?,
             Some(project),
         ),
+        CheckAction::RenderFidelity {
+            project,
+            rendered_docx,
+            proposal_docx,
+        } => (
+            agentic_checks::render_fidelity_gate::run(
+                rendered_docx.as_deref(),
+                proposal_docx.as_deref(),
+            )?,
+            Some(project),
+        ),
     };
 
     // Record the verdict so the gate run is itself auditable (ADR-0041).

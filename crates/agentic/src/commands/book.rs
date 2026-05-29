@@ -189,6 +189,109 @@ try {{
   foreach ($pth in $paths) {{
     try {{
       $d = $w.Documents.Open($pth, $false, $false, $false)
+      # ADR-0050 §1 item 1 (v0.1.15-engine, 2026-05-29): inject the FHNW
+      # running header via Word's own API when a sidecar exists. The
+      # docx-rs Pic-in-header path emits XML Word silently rejects on
+      # open (verified 2026-05-29: header XML on disk is well-formed but
+      # InlineShapes.Count == 0 after Documents.Open). Using
+      # InlineShapes.AddPicture lets Word build XML Word itself will
+      # accept.
+      $sidePath = $pth + '.fhnw_header.json'
+      if (Test-Path $sidePath) {{
+        try {{
+          # IMPORTANT: -Encoding UTF8. Windows PowerShell 5.1's Get-Content
+          # defaults to the system code page (Windows-1252 in DE/CH locales),
+          # which corrupts non-ASCII path characters (`ö` → `Ã¶`) when reading
+          # the UTF-8 JSON sidecar written by Rust. Verified 2026-05-29:
+          # without -Encoding UTF8 the OneDrive path `Persönlich` becomes
+          # `PersÃ¶nlich` and Test-Path fails, silently skipping the logo
+          # injection.
+          $side = Get-Content $sidePath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $cr = [char]13  # Word paragraph mark = CR
+          # 2026-05-29 fix: write to Section 1's primary header ONLY.
+          # The docx-rs builder emits multiple sections (we saw 5 in the
+          # rebuilt master_thesis.docx), all marked LinkToPrevious=True.
+          # Setting `.Range.Text = ''` inside a `foreach ($sec in $d.Sections)`
+          # loop wipes section 1's header on the second iteration (because
+          # section 2 IS section 1 when linked) — and the wipe also drops
+          # any InlineShape that was just added. Edit section 1 only; the
+          # other sections inherit via LinkToPrevious.
+          $sec1Hdrs = $d.Sections.Item(1).Headers
+          # Suppress different-first-page so the same header renders on page 1.
+          $d.Sections.Item(1).PageSetup.DifferentFirstPageHeaderFooter = 0
+          $hdr = $sec1Hdrs.Item(1)
+          # Wipe and right-align the whole header.
+          $hdr.Range.Text = ''
+          $hdr.Range.ParagraphFormat.Alignment = 2  # wdAlignParagraphRight
+          # 2026-05-29 debug: surface the parsed logo path + Test-Path result
+          # so we can see if non-ASCII characters survive the Rust→PowerShell
+          # round-trip.
+          $logoPath = $side.logo_path_abs
+          $logoExists = if ($logoPath) {{ Test-Path -LiteralPath $logoPath }} else {{ $false }}
+          Write-Output ("{{0}}`tHEADER_PROBE  logo=[{{1}}]  exists={{2}}" -f $pth, $logoPath, $logoExists)
+            # Layout: logo paragraph + text-line paragraphs (each its own line).
+            # 1) Insert logo as inline picture at the header start.
+            # Use the resolved $logoPath and -LiteralPath to dodge any wildcard /
+            # bracket / non-ASCII interpretation issue. Test-Path -LiteralPath
+            # also lifts the file-existence check away from path-globbing.
+            if ($logoExists) {{
+              # AddPicture on the header range inserts at the start of the
+              # CURRENT range. After the call the range expands to include
+              # the new shape; we keep its end position so the text we add
+              # next appears AFTER the picture.
+              $shape = $hdr.Range.InlineShapes.AddPicture($logoPath, $false, $true)
+              Write-Output ("{{0}}`tHEADER_PIC_ADDED  inline-count={{1}}" -f $pth, $hdr.Range.InlineShapes.Count)
+              # Resize via ScalePercent (0..200, %). InlineShape Width/Height
+              # setters throw "Command failed" in this PowerShell host
+              # (verified 2026-05-29). ScaleHeight/ScaleWidth work, but they
+              # are percentages of the INTRINSIC image dimension, not of the
+              # current rendered Height. After AddPicture, Word auto-scales
+              # the image to fit a default width — so we back-compute the
+              # intrinsic height from the current ScaleHeight (typically
+              # not 100% after AddPicture), then compute the percentage that
+              # yields the target. The FHNW logo is square (768x768) so the
+              # same percentage on both axes preserves aspect ratio.
+              $cm = [double]$side.logo_height_cm
+              $newH = $cm * 28.346
+              if ($shape.Height -gt 0 -and $shape.ScaleHeight -gt 0) {{
+                $intrinsicH = $shape.Height / ($shape.ScaleHeight / 100.0)
+                $pct = ($newH / $intrinsicH) * 100.0
+                $shape.ScaleHeight = $pct
+                $shape.ScaleWidth  = $pct
+              }}
+              # Append a paragraph-break after the picture so subsequent
+              # text lines start on the next line. Use the END of the
+              # header range so the break appears AFTER the picture, not
+              # before it. (InsertAfter on the full range vs. InsertParagraphAfter
+              # at end produced different results in 2026-05-29 testing.)
+              $endR = $hdr.Range
+              $endR.Collapse(0)  # wdCollapseEnd
+              $endR.InsertParagraphAfter()
+            }}
+            # 2) Append each non-empty text line, terminated by a paragraph
+            # mark. After all text is in place we style the whole header
+            # uniformly (font/size/bold).
+            foreach ($line in $side.lines) {{
+              if ([string]::IsNullOrWhiteSpace($line)) {{ continue }}
+              $hdr.Range.InsertAfter($line + $cr)
+            }}
+            # Apply uniform character formatting to every run in the header
+            # (the picture is unaffected; this only touches text runs).
+            $hdr.Range.Font.Name = $side.line_font
+            $hdr.Range.Font.Size = $side.line_size_pt
+            $hdr.Range.Font.Bold = [int]$side.line_bold
+            $hdr.Range.ParagraphFormat.Alignment = 2  # right (re-assert)
+            Write-Output ("{{0}}`tHEADER_DONE  inline-count={{1}}  paras={{2}}" -f $pth, $hdr.Range.InlineShapes.Count, $hdr.Range.Paragraphs.Count)
+        }} catch {{
+          # Write to BOTH stdout (so the Rust filter sees it) AND stderr
+          # (so the user sees it raw in case something else filters
+          # stdout). The full ScriptStackTrace is included so we can find
+          # which line failed without re-running the script manually.
+          $msg = "HEADER_INJECT_ERR {{0}} | trace: {{1}}" -f $_.Exception.Message, ($_.ScriptStackTrace -replace "`r?`n", " >> ")
+          Write-Output ("{{0}}`t{{1}}" -f $pth, $msg)
+          [Console]::Error.WriteLine(("FHNW-HDR-FAIL [{{0}}]: {{1}}" -f $pth, $msg))
+        }}
+      }}
       $d.Fields.Update() | Out-Null
       foreach ($tof in $d.TablesOfFigures) {{ $tof.Update() }}
       foreach ($toc in $d.TablesOfContents) {{ $toc.Update() }}
@@ -196,6 +299,8 @@ try {{
       try {{ $d.ActiveWindow.View.ShowFieldCodes=$false }} catch {{}}
       $d.Repaginate()
       $pages=$d.ComputeStatistics(2)
+      $finalHdr = $d.Sections.Item(1).Headers.Item(1)
+      Write-Output ("{{0}}`tHEADER_PRE_SAVE  inline-count={{1}}" -f $pth, $finalHdr.Range.InlineShapes.Count)
       $d.Save()
       {pdf_block}
       $d.Close($false)
@@ -219,6 +324,16 @@ try {{
             "Word finalize failed (is Microsoft Word installed?): {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
+    }
+    // Surface any FHNW-HDR-FAIL diagnostics from stderr to the user, so a
+    // silently-swallowed PowerShell exception during header injection is
+    // visible. (The catch block also writes the same info to stdout in
+    // the tab-separated format we already parse below.)
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for line in stderr.lines() {
+        if line.contains("FHNW-HDR-FAIL") || line.contains("HEADER_PROBE") {
+            eprintln!("{line}");
+        }
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     Ok(stdout
@@ -319,6 +434,14 @@ fn build(
     if !built_docs.is_empty() {
         match finalize_docs(&built_docs, false) {
             Ok(res) => {
+                // 2026-05-29 DEBUG: surface per-doc HEADER_* diagnostics so
+                // the FHNW header injection lifecycle is visible. Remove
+                // when item D1 is resolved.
+                for (p, r) in &res {
+                    if r.contains("HEADER_") {
+                        eprintln!("[finalize-debug] {p}\t{r}");
+                    }
+                }
                 let failed: Vec<_> = res.iter().filter(|(_, r)| r.starts_with("ERROR")).collect();
                 if !json_out {
                     println!(
@@ -473,6 +596,36 @@ fn build_one(
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));
     std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+
+    // ADR-0050 §1 item 1 (v0.1.15-engine, 2026-05-29 fix): the engine
+    // can't reliably produce a Word-acceptable header drawing via
+    // docx-rs's `Pic` — Word's parser silently discards it on open.
+    // Write a sidecar JSON next to the docx; the finalize step injects
+    // the header via Word's own API. The logo bytes are materialised to
+    // a sibling PNG so finalize doesn't need the project DB.
+    if agentic_export::book::fhnw_header_sidecar_needed(&meta) {
+        let logo_path_abs: Option<String> = if let Some(bytes) = meta.header_logo.as_ref() {
+            let logo_path = out.join(format!("{}.fhnw_logo.png", spec.key));
+            std::fs::write(&logo_path, bytes)
+                .with_context(|| format!("writing FHNW logo to {}", logo_path.display()))?;
+            // Use the absolute path so the PowerShell finalize step is
+            // independent of the working directory.
+            std::fs::canonicalize(&logo_path)
+                .ok()
+                .map(|p| p.to_string_lossy().replace(r"\\?\", ""))
+        } else {
+            None
+        };
+        let sidecar =
+            agentic_export::book::FhnwHeaderSidecar::from_meta(&meta, logo_path_abs.clone());
+        let sidecar_path = out.join(format!("{}.docx.fhnw_header.json", spec.key));
+        let json = serde_json::to_string_pretty(&sidecar)
+            .with_context(|| "serialising FHNW header sidecar")?;
+        std::fs::write(&sidecar_path, json).with_context(|| {
+            format!("writing FHNW header sidecar to {}", sidecar_path.display())
+        })?;
+    }
+
     Ok((figs, bytes.len() as u64, held))
 }
 

@@ -22,6 +22,8 @@ typst-pdf      = { workspace = true }
 typst-kit      = { workspace = true }
 tracing        = { workspace = true }
 chrono         = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
 qrcode         = { version = "0.14", default-features = false }
 image          = { version = "0.25", default-features = false, features = ["png"] }
 zip            = { version = "2.2", default-features = false, features = ["deflate"] }

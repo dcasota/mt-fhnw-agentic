@@ -466,46 +466,84 @@ fn caption_separator_for(p: CaptionFormat) -> &'static str {
 /// with the minor difference that text wraps below the image instead of
 /// flowing alongside (the proposal's prose does not flow at the header
 /// boundary anyway, so this is invisible in the rendered output).
-fn fhnw_header_for(meta: &BookMeta) -> Option<Header> {
-    if meta.thesis_typography != TypographyProfile::FhnwProposalParity {
-        return None;
-    }
-    let has_text = meta.header_lines.iter().any(|l| !l.trim().is_empty());
-    let has_logo = meta.header_logo.as_ref().is_some_and(|b| !b.is_empty());
-    if !has_text && !has_logo {
-        return None;
-    }
+/// Build the FHNW running-header — **DEFERRED to the Word-COM finalize step**.
+///
+/// History (v0.1.14 → v0.1.16): we previously emitted a docx-rs `Header`
+/// with an inline `Pic`. docx-rs serialises that as
+/// `<w:drawing><wp:inline>…<a:blip r:embed="rId1">` which on inspection
+/// (snapshot 2026-05-29) is structurally well-formed and the embedded
+/// `media/imageN.png` is wired correctly. But Microsoft Word's parser is
+/// stricter than the OOXML schema and silently discards the drawing on
+/// `Documents.Open`, leaving `Headers(1).InlineShapes.Count == 0` in
+/// the live document even though the bytes on disk look right.
+///
+/// Pragmatic fix: don't emit the header from docx-rs at all. The render
+/// pass writes a sidecar JSON next to the docx with `{logo_path, lines}`;
+/// the `agentic book finalize` step reads it and injects the header via
+/// Word's own `InlineShapes.AddPicture` API + `Range.Text` — Word builds
+/// the XML itself, so Word's parser will accept what Word produces.
+///
+/// Returns `None` ⇒ the calling code skips `.header(…)` and the
+/// finalize-time sidecar takes over. Designer profile + non-thesis
+/// books are unaffected (they never had a header to begin with).
+fn fhnw_header_for(_meta: &BookMeta) -> Option<Header> {
+    None
+}
 
-    let mut header = Header::new();
-    if let Some(bytes) = meta.header_logo.as_ref() {
-        if !bytes.is_empty() {
-            // 4.92 cm ≈ 1.77e6 EMU (914_400 EMU = 1 inch ≈ 2.54 cm).
-            let logo_emu: u32 = 1_770_000;
-            let pic = Pic::new(bytes).size(logo_emu, logo_emu);
-            // Picture paragraph, right-aligned.
-            header = header.add_paragraph(
-                Paragraph::new()
-                    .align(AlignmentType::Right)
-                    .add_run(Run::new().add_image(pic)),
-            );
+/// Should the engine write the FHNW-header sidecar JSON next to the docx?
+///
+/// True iff (a) the active typography profile is FHNW proposal parity, and
+/// (b) at least one of `header_logo` (non-empty bytes) or `header_lines`
+/// (non-empty after trim) is supplied via the BookMeta.
+pub fn fhnw_header_sidecar_needed(meta: &BookMeta) -> bool {
+    meta.thesis_typography == TypographyProfile::FhnwProposalParity
+        && (meta.header_logo.as_ref().is_some_and(|b| !b.is_empty())
+            || meta.header_lines.iter().any(|l| !l.trim().is_empty()))
+}
+
+/// Sidecar metadata `agentic book finalize` reads to inject the FHNW
+/// header via Word COM. The CLI writes this file next to the rendered
+/// docx as `<docx_basename>.fhnw_header.json` when
+/// `fhnw_header_sidecar_needed(&meta)` is true.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct FhnwHeaderSidecar {
+    /// Absolute filesystem path of the PNG logo to inject. The engine
+    /// can't write this from the renderer (figdir is scratch); the CLI
+    /// materialises the logo from the project DB and sets this field.
+    pub logo_path_abs: Option<String>,
+    /// Header text lines (right-aligned, rendered in `line_font` at
+    /// `line_size_pt`, bold if `line_bold`).
+    pub lines: Vec<String>,
+    /// Font face for the text lines. Default: "Arial" (FHNW proposal).
+    pub line_font: String,
+    /// Point size for the text lines. Default: 12.
+    pub line_size_pt: u32,
+    /// Whether to render the text lines bold. Default: true.
+    pub line_bold: bool,
+    /// Logo height in centimeters. Default: 4.92 (matches the proposal's
+    /// 1_770_000 EMU height extracted by the Word-COM agent inspection
+    /// on 2026-05-29).
+    pub logo_height_cm: f32,
+    /// Whether the same header should also appear on subsequent pages
+    /// (FHNW convention: yes). Word's default is per-section primary
+    /// header; we don't need different-first-page.
+    pub apply_to_all_pages: bool,
+}
+
+impl FhnwHeaderSidecar {
+    /// Build the sidecar struct from a BookMeta, with the proposal's
+    /// measured defaults for the cosmetic fields.
+    pub fn from_meta(meta: &BookMeta, logo_path_abs: Option<String>) -> Self {
+        Self {
+            logo_path_abs,
+            lines: meta.header_lines.clone(),
+            line_font: "Arial".to_string(),
+            line_size_pt: 12,
+            line_bold: true,
+            logo_height_cm: 4.92,
+            apply_to_all_pages: true,
         }
     }
-    // Header text lines (Arial 12 pt bold, right-aligned).
-    for line in &meta.header_lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        header = header.add_paragraph(
-            Paragraph::new().align(AlignmentType::Right).add_run(
-                Run::new()
-                    .add_text(line.as_str())
-                    .bold()
-                    .size(24) // 12pt = 24 half-points
-                    .fonts(RunFonts::new().ascii(FHNW_BODY).hi_ansi(FHNW_BODY)),
-            ),
-        );
-    }
-    Some(header)
 }
 
 fn page_break() -> Paragraph {
@@ -866,7 +904,12 @@ fn column_widths_for(header: &[String], content_twips: usize, ncols: usize) -> V
     vec![equal; ncols]
 }
 
-fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) -> Table {
+fn table_block(
+    header: &[String],
+    rows: &[Vec<String>],
+    content_twips: usize,
+    typography: TypographyProfile,
+) -> Table {
     let ncols = col_count(header, rows);
     let col_widths = column_widths_for(header, content_twips, ncols);
     let colw = content_twips / ncols; // legacy single-column metric, kept for the rotate-headers heuristic
@@ -891,7 +934,7 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
                             .bold()
                             .size(19)
                             .color("FFFFFF")
-                            .fonts(body_fonts()),
+                            .fonts(body_fonts_for(typography)),
                     );
                 let mut cell = TableCell::new()
                     .shading(Shading::new().fill(HEADBG))
@@ -924,7 +967,14 @@ fn table_block(header: &[String], rows: &[Vec<String>], content_twips: usize) ->
                     .vertical_align(VAlignType::Center)
                     .add_paragraph(
                         Paragraph::new()
-                            .add_run(Run::new().add_text(val).size(19).fonts(body_fonts())),
+                            .align(body_alignment_for(typography))
+                            .add_run(
+                                Run::new()
+                                    .add_text(val)
+                                    .size(19)
+                                    .color(body_color_for(typography))
+                                    .fonts(body_fonts_for(typography)),
+                            ),
                     ),
             );
         }
@@ -1325,10 +1375,28 @@ fn conventions_block(mut doc: Docx, figdir: &Path, lang: &str) -> Docx {
 }
 
 /// A real horizontal rule: an empty paragraph carrying a bottom border.
-fn rule_para() -> Paragraph {
+///
+/// The run text is a Unicode U+2500 box-drawings string — Word renders it
+/// in whatever the paragraph's default font is. Under the Designer profile
+/// that's Georgia (the engine's `Normal` style font); under the FHNW
+/// profile we explicitly request `body_fonts_for(typography)` (= Arial)
+/// so the rule line matches the body font instead of falling through to
+/// a Designer-leftover. The colour also shifts: Designer uses the
+/// peach-tan RULE accent, FHNW uses pure black per the proposal.
+fn rule_para(typography: TypographyProfile) -> Paragraph {
+    let color = match typography {
+        TypographyProfile::Designer => RULE,
+        TypographyProfile::FhnwProposalParity => FHNW_BLACK,
+    };
     Paragraph::new()
         .line_spacing(LineSpacing::new().before(60).after(120))
-        .add_run(Run::new().add_text("\u{2500}".repeat(60)).color(RULE))
+        .align(body_alignment_for(typography))
+        .add_run(
+            Run::new()
+                .add_text("\u{2500}".repeat(60))
+                .color(color)
+                .fonts(body_fonts_for(typography)),
+        )
 }
 
 /// A Word field `{ instr }` with a cached display value — lets us emit arbitrary
@@ -1500,11 +1568,21 @@ const INDEX_TERMS: &[&str] = &[
 ];
 
 /// XE index-entry field runs for any curated term first seen in `text`.
+///
+/// Suppressed under the FHNW typography profile: the proposal docx has no
+/// back-of-book Index, and Word's render of an XE field with an empty
+/// cached value leaks the instrText (`XE "Foo"`) as visible body text
+/// (verified 2026-05-29 via the `render_fidelity_gate` P07 finding —
+/// `XE "Photon OS"` was appearing in chapter 1 prose).
 fn index_marks(
     text: &str,
     terms: &[String],
     seen: &mut std::collections::HashSet<String>,
+    typography: TypographyProfile,
 ) -> Vec<Run> {
+    if matches!(typography, TypographyProfile::FhnwProposalParity) {
+        return Vec::new();
+    }
     let lower = text.to_lowercase();
     let mut out = Vec::new();
     for term in terms {
@@ -1574,7 +1652,12 @@ fn qr_png(url: &str) -> Option<Vec<u8>> {
 /// two-column table (numbered link | scannable QR) of every link registered in
 /// the chapter. Clears the registry. The heading is a plain bold run (not an
 /// outline Heading) so it stays out of the TOC.
-fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>, lang: &str) -> Docx {
+fn flush_sources(
+    mut doc: Docx,
+    links: &mut Vec<(String, String)>,
+    lang: &str,
+    typography: TypographyProfile,
+) -> Docx {
     if links.is_empty() {
         return doc;
     }
@@ -1590,8 +1673,8 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>, lang: &str) -
                     .add_text(t(lang, "sources_box"))
                     .bold()
                     .size(26)
-                    .color(HEAD2)
-                    .fonts(head_fonts()),
+                    .color(subheading_color_for(typography))
+                    .fonts(head_fonts_for(typography)),
             ),
     );
     doc = doc.add_paragraph(
@@ -1602,8 +1685,8 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>, lang: &str) -
                     .add_text("Scan a code, or follow the link, to reach the cited source.")
                     .italic()
                     .size(18)
-                    .color(GREY)
-                    .fonts(body_fonts()),
+                    .color(subtitle_color_for(typography))
+                    .fonts(body_fonts_for(typography)),
             ),
     );
     const QR_COL: usize = 1700; // ≈3.0 cm
@@ -1622,8 +1705,8 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>, lang: &str) -
                             .add_text(format!("{n}.  {label}"))
                             .bold()
                             .size(19)
-                            .color("1A1A1A")
-                            .fonts(body_fonts()),
+                            .color(body_color_for(typography))
+                            .fonts(body_fonts_for(typography)),
                     ),
             )
             .add_paragraph(
@@ -1632,9 +1715,9 @@ fn flush_sources(mut doc: Docx, links: &mut Vec<(String, String)>, lang: &str) -
                         Run::new()
                             .add_text(url)
                             .size(16)
-                            .color(ACCENT)
+                            .color(accent_color_for(typography))
                             .underline("single")
-                            .fonts(body_fonts()),
+                            .fonts(body_fonts_for(typography)),
                     ),
                 ),
             );
@@ -1689,32 +1772,38 @@ fn render_block(
         DocxBlock::Paragraph(runs) => {
             let mut p = para_of(runs, &mut ctx.links, ctx.typography);
             let text: String = runs.iter().map(|r| r.text.as_str()).collect();
-            for xe in index_marks(&text, &ctx.index_terms, &mut ctx.idx_seen) {
+            for xe in index_marks(&text, &ctx.index_terms, &mut ctx.idx_seen, ctx.typography) {
                 p = p.add_run(xe);
             }
             doc.add_paragraph(p)
         }
         DocxBlock::BulletItem(runs) => {
-            let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
-                Run::new()
-                    .add_text("•  ")
-                    .size(body_size_hp(ctx.typography))
-                    .color(heading_color_for(ctx.typography))
-                    .bold()
-                    .fonts(body_fonts_for(ctx.typography)),
-            );
+            let mut p = Paragraph::new()
+                .line_spacing(body_spacing())
+                .align(body_alignment_for(ctx.typography))
+                .add_run(
+                    Run::new()
+                        .add_text("•  ")
+                        .size(body_size_hp(ctx.typography))
+                        .color(heading_color_for(ctx.typography))
+                        .bold()
+                        .fonts(body_fonts_for(ctx.typography)),
+                );
             p = add_runs(p, runs, &mut ctx.links, ctx.typography);
             doc.add_paragraph(p)
         }
         DocxBlock::OrderedItem { number, runs } => {
-            let mut p = Paragraph::new().line_spacing(body_spacing()).add_run(
-                Run::new()
-                    .add_text(format!("{number}.  "))
-                    .size(body_size_hp(ctx.typography))
-                    .color(heading_color_for(ctx.typography))
-                    .bold()
-                    .fonts(body_fonts_for(ctx.typography)),
-            );
+            let mut p = Paragraph::new()
+                .line_spacing(body_spacing())
+                .align(body_alignment_for(ctx.typography))
+                .add_run(
+                    Run::new()
+                        .add_text(format!("{number}.  "))
+                        .size(body_size_hp(ctx.typography))
+                        .color(heading_color_for(ctx.typography))
+                        .bold()
+                        .fonts(body_fonts_for(ctx.typography)),
+                );
             p = add_runs(p, runs, &mut ctx.links, ctx.typography);
             doc.add_paragraph(p)
         }
@@ -1759,7 +1848,7 @@ fn render_block(
                 doc.add_paragraph(p)
             }
         },
-        DocxBlock::HorizontalRule => doc.add_paragraph(rule_para()),
+        DocxBlock::HorizontalRule => doc.add_paragraph(rule_para(ctx.typography)),
         DocxBlock::Table {
             header,
             rows,
@@ -1811,7 +1900,12 @@ fn render_block(
                 // the trailing landscape-sectPr paragraph closes before portrait
                 // content resumes.
                 doc = doc.add_paragraph(Paragraph::new().section_property(portrait_sectpr()));
-                doc = doc.add_table(table_block(header, rows, LAND_CONTENT_TWIPS));
+                doc = doc.add_table(table_block(
+                    header,
+                    rows,
+                    LAND_CONTENT_TWIPS,
+                    ctx.typography,
+                ));
                 doc.add_paragraph(Paragraph::new().section_property(landscape_sectpr()))
             } else {
                 // Breathing room around the table (ADR-0030 relaxed placement).
@@ -1820,7 +1914,7 @@ fn render_block(
                 // keep_next chains caption -> spacer -> table so the title never
                 // strands at a page foot (the trailing spacer must NOT keep_next).
                 doc = doc.add_paragraph(spacer().keep_next(true));
-                doc = doc.add_table(table_block(header, rows, CONTENT_TWIPS));
+                doc = doc.add_table(table_block(header, rows, CONTENT_TWIPS, ctx.typography));
                 doc.add_paragraph(spacer())
             }
         }
@@ -2077,7 +2171,7 @@ pub fn render_book(
             first = false;
         }
         // End-of-chapter Sources & QR-codes box (bookkit flush_sources).
-        doc = flush_sources(doc, &mut ctx.links, &meta.lang);
+        doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
     }
 
     // Appendix lists (filled from the caption SEQ fields on field update).
@@ -2276,7 +2370,7 @@ fn render_thesis_chapter(
         doc = render_block(doc, b, ctx, first && page_break_before, numbered);
         first = false;
     }
-    flush_sources(doc, &mut ctx.links, &meta.lang)
+    flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography)
 }
 
 /// Render the FHNW master-thesis profile (bookkit C, ADR-0045) in the mandated
@@ -2386,6 +2480,14 @@ fn render_thesis_book(
                 }
             }
             ThesisItem::Index => {
+                // Back-of-book Index: skipped under FHNW typography (the
+                // proposal docx has no Index section; emitting an empty
+                // INDEX field would just add a blank "Index" page at the
+                // end of the thesis). Designer profile keeps the standard
+                // book Index.
+                if matches!(ctx.typography, TypographyProfile::FhnwProposalParity) {
+                    continue;
+                }
                 // Back-of-book Index: the INDEX field, filled from XE entries
                 // on field update. Heading is "Index" so the thesis profile
                 // closes with the same standard structural element as a book.
@@ -2995,80 +3097,47 @@ mod tests {
     }
 
     #[test]
-    fn fhnw_header_renders_text_lines() {
-        // ADR-0050 item 1 (v0.1.14): when the FHNW profile is active AND
-        // header_lines is non-empty, the rendered docx contains a header
-        // part with the lines. We test the text-only path here (a real
-        // PNG logo is exercised end-to-end during the book build, where
-        // the FHNW logo is loaded from the project DB). Logo-bytes
-        // validation belongs to docx-rs / the PNG decoder, not to this
-        // engine's contract.
-        use std::io::Read;
-        let meta = BookMeta {
-            title: "T".into(),
-            thesis_profile: true,
+    fn fhnw_header_sidecar_signaling() {
+        // ADR-0050 item 1 (v0.1.15-engine, 2026-05-29): the engine no longer
+        // emits a docx-rs Header for the FHNW profile (verified: docx-rs
+        // Pic-in-header produces XML Word's parser silently rejects). The
+        // header is now injected by `agentic book finalize` via Word COM,
+        // reading a sidecar JSON written next to the docx by the CLI.
+        //
+        // This test verifies the SIGNALLING side of that contract:
+        //
+        //   * `fhnw_header_for` always returns None (no Header is attached)
+        //   * `fhnw_header_sidecar_needed` returns true iff
+        //     - FHNW typography profile is active, AND
+        //     - at least one of (header_logo bytes, header_lines) is set
+        //
+        // The CLI uses `fhnw_header_sidecar_needed` to decide whether to
+        // write the sidecar JSON + materialise the logo file. The finalize
+        // step then reads them and uses Word's own InlineShapes.AddPicture
+        // (which Word's parser obviously accepts).
+        let meta_fhnw_with_lines = BookMeta {
             thesis_typography: TypographyProfile::FhnwProposalParity,
-            header_logo: None,
-            header_lines: vec![
-                "Master of Advanced Studies".into(),
-                "Leadership in Cybersecurity".into(),
-            ],
+            header_lines: vec!["Master of Advanced Studies".into()],
             ..Default::default()
         };
-        let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let mut header_xml = String::new();
-        let r = zip.by_name("word/header1.xml");
-        assert!(
-            r.is_ok(),
-            "FHNW profile with header_lines must emit word/header1.xml"
-        );
-        r.unwrap().read_to_string(&mut header_xml).unwrap();
-        assert!(
-            header_xml.contains("Master of Advanced Studies"),
-            "header must contain the first header line"
-        );
-        assert!(
-            header_xml.contains("Leadership in Cybersecurity"),
-            "header must contain the second header line"
-        );
+        assert!(fhnw_header_for(&meta_fhnw_with_lines).is_none());
+        assert!(fhnw_header_sidecar_needed(&meta_fhnw_with_lines));
 
-        // Designer profile (default) must NOT emit a header part even
-        // when header_lines is supplied — the header is FHNW-profile-only.
-        let meta2 = BookMeta {
-            title: "T".into(),
-            header_lines: vec!["Should not appear".into()],
-            ..Default::default()
-        };
-        let bytes2 = render_book(
-            &meta2,
-            &[("c1".into(), "# C\n\nBody.\n".into())],
-            Path::new("."),
-        )
-        .unwrap();
-        let mut zip2 = zip::ZipArchive::new(Cursor::new(bytes2)).unwrap();
-        assert!(
-            zip2.by_name("word/header1.xml").is_err(),
-            "Designer profile must NOT emit a header part (regression guard)"
-        );
-
-        // FHNW profile with NEITHER logo NOR lines → no header part.
-        let meta3 = BookMeta {
-            title: "T".into(),
-            thesis_profile: true,
+        let meta_fhnw_no_inputs = BookMeta {
             thesis_typography: TypographyProfile::FhnwProposalParity,
             ..Default::default()
         };
-        let bytes3 = render_book(
-            &meta3,
-            &[("c1".into(), "# C\n\nBody.\n".into())],
-            Path::new("."),
-        )
-        .unwrap();
-        let mut zip3 = zip::ZipArchive::new(Cursor::new(bytes3)).unwrap();
+        assert!(fhnw_header_for(&meta_fhnw_no_inputs).is_none());
+        assert!(!fhnw_header_sidecar_needed(&meta_fhnw_no_inputs));
+
+        let meta_designer = BookMeta {
+            header_lines: vec!["Should not trigger".into()],
+            ..Default::default()
+        };
+        assert!(fhnw_header_for(&meta_designer).is_none());
         assert!(
-            zip3.by_name("word/header1.xml").is_err(),
-            "FHNW profile with neither logo nor lines must NOT emit a header part"
+            !fhnw_header_sidecar_needed(&meta_designer),
+            "Designer profile must not emit a sidecar regardless of lines"
         );
     }
 
