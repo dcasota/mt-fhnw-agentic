@@ -108,5 +108,53 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
         ));
     }
 
+    // 4. External-platform sessions (ADR-0053): summary of how many AI
+    // sessions from external platforms (grok.com, gemini.google.com,
+    // chatgpt.com, claude.ai, perplexity.ai, other) the author has
+    // ingested into the AIBOM via `agentic external-session import`.
+    // Emit an INFO finding so the AIBOM gate's output records the
+    // current coverage. A future commit (per ADR-0053 §5.4) can add a
+    // WARN-on-disclosure-mismatch check that compares against the
+    // platforms referenced in `thesis/fhnw_99_ai_tools_disclosure.md`.
+    let ext_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM external_sessions WHERE project_id = ?1",
+            [project],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let per_platform: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT platform, COUNT(*) FROM external_sessions WHERE project_id = ?1 \
+             GROUP BY platform ORDER BY platform",
+        )
+        .and_then(|mut s| {
+            s.query_map([project], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
+            .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+        })
+        .unwrap_or_default();
+    let breakdown = if per_platform.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " ({})",
+            per_platform
+                .iter()
+                .map(|(p, n)| format!("{p}={n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    findings.push(Finding {
+        category: "AIBOM_EXTERNAL_SESSION_COVERAGE".into(),
+        severity: Severity::Info,
+        message: format!(
+            "{ext_count} external-platform session(s) ingested via `agentic external-session import` (ADR-0053){breakdown}"
+        ),
+        location: Some("external_sessions".into()),
+    });
+
     Ok(CheckReport::new("aibom", findings))
 }

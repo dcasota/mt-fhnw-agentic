@@ -247,6 +247,18 @@ pub enum Command {
         action: InboxAction,
     },
 
+    /// External AI-platform session ingest (ADR-0053): record a session
+    /// from grok.com / gemini.google.com / chatgpt.com / claude.ai /
+    /// perplexity.ai / other into the AIBOM. The captured export file
+    /// is stored as a content-addressed blob (ML-DSA-87 signed at
+    /// import); the row in `external_sessions` carries the author's
+    /// attestation that makes the entry the audit anchor.
+    #[command(name = "external-session")]
+    ExternalSession {
+        #[command(subcommand)]
+        action: ExternalSessionAction,
+    },
+
     /// Deterministically normalise content-store markdown (expand prediction×mode
     /// codes, shorten over-long figure captions, apply verified-facts
     /// corrections). Writes changed blobs back in a single commit.
@@ -1637,5 +1649,44 @@ pub enum ContentAction {
         /// allowed.
         #[arg(long)]
         allow_deprecated_out: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExternalSessionAction {
+    /// Ingest an exported AI-platform session (grok / gemini / chatgpt /
+    /// claude / perplexity / other) into the AIBOM. The raw export file
+    /// is stored as a content-addressed blob; per-platform parsers
+    /// extract metadata (session_id, started_at, ended_at, model_hint,
+    /// turn_count). Stub parsers store the raw blob only with
+    /// turn_count=0. See ADR-0053 §5.2.
+    Import {
+        #[arg(long)]
+        project: String,
+        /// Platform identifier — one of: grok, gemini, chatgpt, claude,
+        /// perplexity, other.
+        #[arg(long)]
+        platform: String,
+        /// Path to the exported session file (HTML, JSON, MD, or ZIP per
+        /// the platform's export format).
+        #[arg(long)]
+        file: PathBuf,
+        /// Author's one-line provenance statement; e.g. "exported
+        /// 2026-05-30 14:22 UTC from grok.com share-link
+        /// https://grok.com/share/abc123 to ~/Downloads/grok-share.json".
+        #[arg(long)]
+        attestation: String,
+        /// Optional free-form notes (privacy summary, which thesis
+        /// paragraph the session informed, etc.).
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// List captured sessions for a project.
+    List {
+        #[arg(long)]
+        project: String,
+        /// Optional: restrict to one platform.
+        #[arg(long)]
+        platform: Option<String>,
     },
 }

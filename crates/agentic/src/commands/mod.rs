@@ -11,6 +11,7 @@ mod content;
 mod doctor;
 mod embed;
 mod export;
+mod external_session;
 pub(crate) mod facts;
 #[path = "gen.rs"]
 mod generate;
@@ -54,6 +55,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         } => promote::run(&args.db, &project, &issue, snapshot.as_deref(), args.json),
         Command::Audit { action } => audit::run(&args.db, action, args.json),
         Command::Inbox { action } => inbox::run(&args.db, action, args.json),
+        Command::ExternalSession { action } => external_session::run(&args.db, action),
         Command::Normalize { project, prefix } => {
             normalize::run(&args.db, &project, &prefix, args.json)
         }
