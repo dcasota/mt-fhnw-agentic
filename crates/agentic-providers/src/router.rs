@@ -254,18 +254,15 @@ pub fn parse_ollama_enable_flag(v: Option<&str>) -> bool {
 /// SKIPs (per §3.3) rather than FAILing.
 #[must_use]
 pub fn available_provider_for(task: Task) -> Option<ProviderKind> {
-    preferred_provider_order(task)
-        .iter()
-        .copied()
-        .find(|k| {
-            // Ollama is in the scan but only when explicitly enabled
-            // via `AGENTIC_OLLAMA_ENABLE` — see `ollama_available_for_scan`.
-            // This preserves SKIP semantics when Ollama isn't running.
-            if *k == ProviderKind::Ollama {
-                return ollama_available_for_scan();
-            }
-            supports_task(*k, task) && registry::has_key(*k)
-        })
+    preferred_provider_order(task).iter().copied().find(|k| {
+        // Ollama is in the scan but only when explicitly enabled
+        // via `AGENTIC_OLLAMA_ENABLE` — see `ollama_available_for_scan`.
+        // This preserves SKIP semantics when Ollama isn't running.
+        if *k == ProviderKind::Ollama {
+            return ollama_available_for_scan();
+        }
+        supports_task(*k, task) && registry::has_key(*k)
+    })
 }
 
 fn model_or_default(kind: ProviderKind, task: Task) -> String {
@@ -339,7 +336,11 @@ mod tests {
         // MUST be LAST (per user directive 2026-05-30: optional last-
         // resort), and Anthropic/Grok MUST be EXCLUDED (no embed API).
         let embed = preferred_provider_order(Task::Embed);
-        assert_eq!(embed[0], ProviderKind::Voyage, "embed must start with Voyage");
+        assert_eq!(
+            embed[0],
+            ProviderKind::Voyage,
+            "embed must start with Voyage"
+        );
         assert_eq!(
             *embed.last().unwrap(),
             ProviderKind::Ollama,
@@ -361,7 +362,11 @@ mod tests {
         // Chat: Anthropic MUST be first, Ollama MUST be last, Voyage
         // MUST be EXCLUDED, Google/Grok MUST be included.
         let chat = preferred_provider_order(Task::Chat);
-        assert_eq!(chat[0], ProviderKind::Anthropic, "chat must start with Anthropic");
+        assert_eq!(
+            chat[0],
+            ProviderKind::Anthropic,
+            "chat must start with Anthropic"
+        );
         assert_eq!(
             *chat.last().unwrap(),
             ProviderKind::Ollama,
