@@ -5,6 +5,120 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.17] — 2026-05-30
+
+### Added
+
+- **ADR-0051 — provider routing fallback + GEMINI_API_KEY alias + SKIP semantics.**
+  `crates/agentic-providers/src/router.rs` adds
+  `available_provider_for(task)` which walks a defined preferred-
+  provider order (Voyage→Google→OpenAI→Mistral→Cohere→Ollama for
+  Embed; Anthropic-first for Chat) and picks the first that
+  `supports_task(task)` AND has a key in env / OS keychain BEFORE
+  the hard Voyage/Anthropic fallback. Ollama stays optional at the
+  end of both orders, **opt-in via `AGENTIC_OLLAMA_ENABLE` env var**
+  (default off — prevents `has_key(Ollama)=true` from defeating SKIP
+  semantics). `crates/agentic-providers/src/keychain.rs` `VENDOR_ENV`
+  table now slice-of-aliases per provider: Google accepts
+  `GOOGLE_API_KEY` OR `GEMINI_API_KEY` (gemini-cli default); Grok
+  accepts `XAI_API_KEY` OR `GROK_API_KEY`. `commands/embed.rs`
+  `run_embed` / `run_classify` exit 0 with `SKIPPED:` marker when
+  no provider key is available, instead of FAIL. Closes the long-
+  standing `embed inbox FAIL` / `classify inbox FAIL` on configs
+  where only `GEMINI_API_KEY` or `XAI_API_KEY` was set.
+
+- **ADR-0052 — `enforced_by:` YAML frontmatter + `check
+  adr-enforcement` gate.** Every ADR must declare an `enforced_by:`
+  list (entries: `test:` / `gate:` / `policy:` / `manual:`). New
+  gate `crates/agentic-checks/src/adr_enforcement_gate.rs` walks
+  `specs/adr/NNNN-*.md`, parses frontmatter, cross-checks `test:`
+  entries against the workspace and `gate:` entries against
+  `GATE_CATALOG`. Registered in `GATE_CATALOG` + the default
+  rule-matrix universal set + new `agentic check adr-enforcement`
+  CLI subcommand. Initial severity WARN per ADR-0052 §4.5
+  (phased backfill); ERROR escalation gated on future ADR.
+
+- **ADR-0053 v1 — external-platform sessions in AIBOM.** New
+  migration `0015_external_sessions.sql` + table. New
+  `agentic external-session import|list` subcommands. Per-platform
+  parsers: full for grok.com (share-link / Download-data JSON) +
+  gemini.google.com (Google Takeout); stubs (raw-store, turn_count
+  =0) for chatgpt / claude.ai / perplexity / other. Stores raw
+  export as content-addressed blob (ML-DSA-87 signed; ADR-0039) +
+  normalised-JSON view + audit_row + author attestation. New
+  `AIBOM_EXTERNAL_SESSION_COVERAGE` INFO finding in the aibom gate
+  shows per-platform breakdown. §6 documents the v2 cosine
+  relevance-scoring layer (DESIGN, not implemented).
+
+- **Fix-G1 — page-number footer injection** (ADR-0050 §17 /
+  ADR-0030 §37). Word-COM finalize step injects a centred PAGE
+  field into Sec1 primary footer via `Footers.PageNumbers.Add(1,
+  true)` + sets `LinkToPrevious=true` on Sec2+; walks all
+  StoryRanges to refresh the PAGE field's cached value (the default
+  `Document.Fields.Update()` only refreshes the main-body story).
+  Closes the docx-rs 0.4.20 limitation where multi-section docs got
+  Word-generated empty footers and most pages had no page number.
+  Sidecar `FhnwHeaderSidecar` gains
+  `footer_pagenum_{enabled,font,size_pt,alignment}` fields.
+  Render-fidelity gate gains P12 (`FOOTER_PAGENUM_MISSING` +
+  `FOOTER_PAGENUM_PROPAGATION_GAP`) with 2 unit tests.
+
+- **Fix-A — floating-anchor FHNW logo** via
+  `Headers.Shapes.AddPicture(Anchor=hdr.Range)` (proposal parity).
+  Closes the v0.1.16-engine deferred-feature note. Coordinates match
+  the FHNW MAS proposal docx exactly: L=-49.3 / T=-59.8 / W=139.3 /
+  H=139.3 / relH=2 / relV=2 / wrap=3 (wdWrapBehind). Master_thesis
+  page count 108 → 85 → **70** as floating logo no longer pushes
+  body content. `FhnwHeaderSidecar` gains
+  `logo_{width_cm,left_pt,top_pt,wrap_type,relh,relv}` fields with
+  proposal-parity defaults. Render-fidelity gate `SectionHeader`
+  gains `floating_shape_count`; P01 / P04 accept inline OR
+  floating shapes as logo evidence.
+
+### Changed
+
+- **ADR-0048 hardening — `agentic content checkout` refuses
+  non-temp `--to` for `out/` prefix.** **Breaking** for scripts
+  that called `content checkout --to ./restored` without the new
+  `--allow-deprecated-out` opt-in flag. Documented full-tree
+  restore example in README updated. Closes the leak path that
+  accumulated 4 residual files under the deprecated `out/` working-
+  tree directory across the 2026-05-27..29 iterations.
+
+- **aibom gate — cascade-phase-ordering remediation.**
+  `cascade.rs` sets `AGENTIC_CASCADE_IN_PROGRESS=1` on every
+  spawned subprocess (per-Command env, no parent-shell mutation
+  → safe under Rust 2024). `aibom_gate.rs` downgrades
+  `AIBOM_UNSIGNED` severity Error→Info when env var set;
+  standalone `agentic check aibom` invocations keep Error
+  severity. Closes the persistent `[6] check aibom FAIL` that the
+  phase-6-gates-before-phase-7-sign-commits ordering produced.
+
+### Internals
+
+- Migration 0015 (`external_sessions` table) — schema version
+  14 → 15. `NEWEST_SCHEMA_VERSION` constant in `db.rs` bumped.
+  `agentic content ls`, `agentic external-session list`, etc.
+  refuse to open DBs with schema_version > NEWEST_SCHEMA_VERSION
+  (forward-compat guard).
+- Test count: 372 → 377 (+5 new external-session parser tests,
+  +2 new P12 render-fidelity-gate tests, +2 new ADR-0051 router
+  truth-table tests; -2 fixture updates).
+- `cargo fmt --all -- --check` enforced by pre-push hook;
+  two fmt-recovery commits this cycle (`597001b`, `75610cd`).
+
+### Migration notes
+
+- DBs older than schema 15 auto-upgrade on first run; new
+  `external_sessions` table is created empty.
+- Users on `0.1.16` with shell scripts that call
+  `agentic content checkout --to ./restored` must add
+  `--allow-deprecated-out` or retarget to `$env:TEMP`.
+- Users who set only `GEMINI_API_KEY` (no `GOOGLE_API_KEY`) will
+  see `embed inbox` / `classify inbox` succeed for the first time
+  on this version (router now routes Embed to Google when Google
+  is the only available embed-capable provider).
+
 ## [0.1.16] — 2026-05-29
 
 ### Added — D2 + D6 title-page polish (FHNW typography profile only)
