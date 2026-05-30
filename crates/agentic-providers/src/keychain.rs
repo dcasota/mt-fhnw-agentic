@@ -15,15 +15,21 @@ use anyhow::Result;
 
 const SERVICE: &str = "agentic";
 
-/// Vendor-native env-var names indexed by provider key.
-const VENDOR_ENV: &[(&str, &str)] = &[
-    ("anthropic", "ANTHROPIC_API_KEY"),
-    ("openai", "OPENAI_API_KEY"),
-    ("google", "GOOGLE_API_KEY"),
-    ("mistral", "MISTRAL_API_KEY"),
-    ("cohere", "COHERE_API_KEY"),
-    ("voyage", "VOYAGE_API_KEY"),
-    ("grok", "XAI_API_KEY"),
+/// Vendor-native env-var names indexed by provider key. A provider can
+/// list MULTIPLE aliases — the first non-empty one wins. Google
+/// publishes BOTH `GOOGLE_API_KEY` (the AI-platform default) and
+/// `GEMINI_API_KEY` (the Gemini-API-specific name); the gemini-cli
+/// tooling typically sets only the latter. Recognising both means a
+/// user who sets `GEMINI_API_KEY` is correctly routed without having
+/// to also set `GOOGLE_API_KEY` (ADR-0051 §3.1, 2026-05-30).
+const VENDOR_ENV: &[(&str, &[&str])] = &[
+    ("anthropic", &["ANTHROPIC_API_KEY"]),
+    ("openai", &["OPENAI_API_KEY"]),
+    ("google", &["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
+    ("mistral", &["MISTRAL_API_KEY"]),
+    ("cohere", &["COHERE_API_KEY"]),
+    ("voyage", &["VOYAGE_API_KEY"]),
+    ("grok", &["XAI_API_KEY", "GROK_API_KEY"]),
 ];
 
 /// Identifies which env-var path produced a hit, for diagnostics.
@@ -51,13 +57,24 @@ pub fn env_var_name(provider: &str) -> String {
     format!("AGENTIC_{}_KEY", provider.to_uppercase())
 }
 
-/// The vendor-native env var name for a provider, if one exists.
+/// The vendor-native env var name for a provider — returns the FIRST
+/// configured alias (for backward compat with callers that expect a
+/// single name). Prefer [`vendor_env_var_names`] when scanning all
+/// possible aliases.
 #[must_use]
 pub fn vendor_env_var_name(provider: &str) -> Option<&'static str> {
+    vendor_env_var_names(provider).first().copied()
+}
+
+/// All vendor-native env var aliases for a provider. The first
+/// non-empty value at lookup time wins (see [`get_key_with_source`]).
+#[must_use]
+pub fn vendor_env_var_names(provider: &str) -> &'static [&'static str] {
     VENDOR_ENV
         .iter()
         .find(|(p, _)| *p == provider)
         .map(|(_, v)| *v)
+        .unwrap_or(&[])
 }
 
 pub fn get_key(provider: &str) -> Result<Option<String>> {
@@ -72,8 +89,8 @@ pub fn get_key_with_source(provider: &str) -> Result<Option<(String, KeySource)>
             return Ok(Some((v, KeySource::AgenticEnv)));
         }
     }
-    // 2. Vendor-native env var.
-    if let Some(vendor_var) = vendor_env_var_name(provider) {
+    // 2. Vendor-native env vars (first non-empty alias wins).
+    for vendor_var in vendor_env_var_names(provider) {
         if let Ok(v) = std::env::var(vendor_var) {
             if !v.is_empty() {
                 return Ok(Some((v, KeySource::VendorEnv)));

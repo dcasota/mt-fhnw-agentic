@@ -9,6 +9,7 @@ use agentic_import::{
     ChapterAssignment, EmbedOutcome, Slot, Strategy, auto_strategy, classify_project_with_strategy,
     default_slots, embed_project_blobs,
 };
+use agentic_providers::{Task, router};
 
 pub async fn run_embed(
     db_path: &Path,
@@ -19,6 +20,32 @@ pub async fn run_embed(
     force: bool,
     json: bool,
 ) -> Result<()> {
+    // ADR-0051 §3.3 — graceful SKIP when no provider key is available.
+    // If the caller didn't pin a specific provider via `--provider` AND
+    // the available-key scan finds no embed-capable provider with a
+    // configured key, exit 0 with a SKIPPED marker (cascade gate then
+    // displays OK instead of FAIL). Distinguishes "intentionally
+    // running keyless" from "configured key + actual error".
+    if provider.is_none() && router::available_provider_for(Task::Embed).is_none() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "skipped",
+                    "reason": "no embed-capable provider key in env or OS keychain (ADR-0051 §3.3)"
+                })
+            );
+        } else {
+            println!(
+                "SKIPPED: no embed-capable provider key configured (ADR-0051 §3.3). \
+                 Set one of GOOGLE_API_KEY / GEMINI_API_KEY (Google), OPENAI_API_KEY, \
+                 VOYAGE_API_KEY, MISTRAL_API_KEY, or COHERE_API_KEY to enable the \
+                 inbox embed gate; otherwise the gate is informational and does not \
+                 block the cascade."
+            );
+        }
+        return Ok(());
+    }
     let conn = agentic_core::db::open(db_path)?;
     let outcomes = embed_project_blobs(&conn, project, prefix, provider, model, !force).await?;
     report_embed(&outcomes, json)
@@ -63,6 +90,34 @@ pub async fn run_classify(
     model: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    // ADR-0051 §3.3 — graceful SKIP when no provider key is available
+    // for either Embed or Chat. Mirrors the embed-gate behaviour above:
+    // classify can use either strategy, so we only skip when BOTH lanes
+    // have no available key.
+    if provider.is_none() && strategy_arg.is_none() {
+        let no_embed = router::available_provider_for(Task::Embed).is_none();
+        let no_chat = router::available_provider_for(Task::Chat).is_none();
+        if no_embed && no_chat {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "skipped",
+                        "reason": "no provider key for either Embed or Chat (ADR-0051 §3.3)"
+                    })
+                );
+            } else {
+                println!(
+                    "SKIPPED: no provider key configured for either Embed or Chat \
+                     (ADR-0051 §3.3). Set any of the supported vendor env vars \
+                     (ANTHROPIC_API_KEY, GEMINI_API_KEY / GOOGLE_API_KEY, \
+                     OPENAI_API_KEY, XAI_API_KEY, etc.) to enable inbox \
+                     classification; otherwise the gate is informational."
+                );
+            }
+            return Ok(());
+        }
+    }
     let conn = agentic_core::db::open(db_path)?;
     let slots = match slot_keys {
         None => default_slots(),

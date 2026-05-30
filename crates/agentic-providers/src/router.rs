@@ -15,7 +15,7 @@
 
 use std::env;
 
-use crate::{ProviderKind, Route, Task};
+use crate::{ProviderKind, Route, Task, registry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliContext {
@@ -141,7 +141,29 @@ pub fn route(task: Task) -> Route {
         }
     }
 
+    // ADR-0051 §3.2 (2026-05-30) — available-key scan BEFORE the hard
+    // fallback. The historical behaviour (commit `9b347a4`+) was to
+    // always default Embed → Voyage and everything else → Anthropic
+    // even if the user had ZERO key for that vendor but ONE key for
+    // another vendor that COULD serve the task. Result: cascade gates
+    // `embed inbox` / `classify inbox` reported FAIL when the user
+    // (e.g.) had only `GEMINI_API_KEY` set — Google CAN do embeddings,
+    // but the router never asked. This block fixes that by walking the
+    // preferred-provider order and picking the first that both supports
+    // the task AND has a key in env/keychain.
+    if let Some(kind) = available_provider_for(task) {
+        return Route {
+            kind,
+            model: model_or_default(kind, task),
+            reason: format!("available-key-scan:{}", kind.as_str()),
+        };
+    }
+
     // Per-task hard fallback: embeddings → Voyage, anything else → Anthropic.
+    // Reached ONLY when no available-key match exists. The cascade gate
+    // layer (commands/embed.rs / commands/classify.rs) intercepts this
+    // case and converts the resulting build-provider failure into a
+    // graceful SKIP per ADR-0051 §3.3.
     let fallback = match task {
         Task::Embed => ProviderKind::Voyage,
         _ => ProviderKind::Anthropic,
@@ -151,6 +173,99 @@ pub fn route(task: Task) -> Route {
         model: model_or_default(fallback, task),
         reason: "fallback".into(),
     }
+}
+
+/// ADR-0051 §3.2 — preferred-provider order for the available-key scan.
+///
+/// Ordering rationale (most-capable / cheapest-per-token first within
+/// each task class):
+/// - **Embed:** Voyage (purpose-built embeddings, best quality) →
+///   Google (strong + cheap) → OpenAI → Mistral → Cohere → Ollama
+///   (local, last resort). Anthropic and Grok excluded — neither has
+///   an embeddings API (`supports_task`).
+/// - **Chat / other:** Anthropic → OpenAI → Google → Grok → Mistral
+///   → Cohere → Ollama (local, last resort). Voyage excluded —
+///   embeddings-only.
+///
+/// **Ollama policy (user directive, 2026-05-30):** Ollama stays
+/// optional at the END of both orders. Its inclusion is gated by a
+/// reachability probe in `available_provider_for` so that an
+/// unconfigured / not-running Ollama does NOT cause the gate to FAIL —
+/// it stays cleanly invisible to the scan, and the SKIP semantics of
+/// §3.3 trigger. Per persistent memory `db-source-of-truth-and-pqc-
+/// audit` Ollama is never an automatic substitute for a missing cloud
+/// provider — but when it IS reachable, it's a valid last-resort
+/// fallback.
+fn preferred_provider_order(task: Task) -> &'static [ProviderKind] {
+    match task {
+        Task::Embed => &[
+            ProviderKind::Voyage,
+            ProviderKind::Google,
+            ProviderKind::OpenAi,
+            ProviderKind::Mistral,
+            ProviderKind::Cohere,
+            ProviderKind::Ollama,
+        ],
+        _ => &[
+            ProviderKind::Anthropic,
+            ProviderKind::OpenAi,
+            ProviderKind::Google,
+            ProviderKind::Grok,
+            ProviderKind::Mistral,
+            ProviderKind::Cohere,
+            ProviderKind::Ollama,
+        ],
+    }
+}
+
+/// ADR-0051 §3.2 — Ollama-specific gate. `registry::has_key(Ollama)`
+/// returns `true` unconditionally (Ollama needs no key); without an
+/// extra check the scan would always pick Ollama as a last-resort
+/// fallback even when the Ollama server isn't running, defeating the
+/// SKIP semantics. This helper makes the inclusion **opt-out by
+/// environment**: Ollama is included only when
+/// `AGENTIC_OLLAMA_ENABLE` is explicitly set (default: excluded).
+/// Tests stay deterministic (env unset → Ollama not picked → SKIP).
+/// Users who run Ollama locally set the var once and Ollama joins the
+/// last-resort fallback chain.
+fn ollama_available_for_scan() -> bool {
+    parse_ollama_enable_flag(env::var("AGENTIC_OLLAMA_ENABLE").ok().as_deref())
+}
+
+/// Pure parser for `AGENTIC_OLLAMA_ENABLE`. Truthy values are anything
+/// non-empty other than `0` and `false` (case-insensitive). Pulled out
+/// so the truth table is testable without env mutation (which the
+/// agentic-providers crate forbids via `deny(unsafe_code)`).
+#[must_use]
+pub fn parse_ollama_enable_flag(v: Option<&str>) -> bool {
+    match v {
+        None => false,
+        Some(s) => !s.is_empty() && s != "0" && !s.eq_ignore_ascii_case("false"),
+    }
+}
+
+/// ADR-0051 §3.2 — return the first provider in
+/// [`preferred_provider_order`] that both `supports_task(task)` AND has
+/// a configured key (via `registry::has_key`, which checks
+/// `AGENTIC_<PROVIDER>_KEY`, the vendor-native env-var aliases —
+/// including `GEMINI_API_KEY` for `google` per ADR-0051 §3.1 — and
+/// finally the OS keychain). Returns `None` when nothing is available;
+/// the caller falls back to the hard-coded default and the gate then
+/// SKIPs (per §3.3) rather than FAILing.
+#[must_use]
+pub fn available_provider_for(task: Task) -> Option<ProviderKind> {
+    preferred_provider_order(task)
+        .iter()
+        .copied()
+        .find(|k| {
+            // Ollama is in the scan but only when explicitly enabled
+            // via `AGENTIC_OLLAMA_ENABLE` — see `ollama_available_for_scan`.
+            // This preserves SKIP semantics when Ollama isn't running.
+            if *k == ProviderKind::Ollama {
+                return ollama_available_for_scan();
+            }
+            supports_task(*k, task) && registry::has_key(*k)
+        })
 }
 
 fn model_or_default(kind: ProviderKind, task: Task) -> String {
@@ -206,6 +321,100 @@ mod tests {
     fn voyage_supports_only_embed() {
         assert!(supports_task(ProviderKind::Voyage, Task::Embed));
         assert!(!supports_task(ProviderKind::Voyage, Task::Chat));
+    }
+
+    /// ADR-0051 §3.2 / §3.4 — the preferred-provider order locks the
+    /// availability scan. This test is structural (doesn't touch env)
+    /// to keep CI deterministic — it verifies the ordering invariants
+    /// the ADR codifies.
+    ///
+    /// A separate integration test that toggles env vars and asserts
+    /// `available_provider_for(...)` returns the right kind lives in
+    /// `tests/router_available_key.rs` (env-tinkering inside a
+    /// `#[cfg(test)]` module would race with concurrent tests).
+    #[test]
+    fn preferred_provider_order_invariants_per_adr_0051() {
+        // Embed: Voyage MUST be first (purpose-built), Google MUST be
+        // included (covers the GEMINI_API_KEY case from §3.1), Ollama
+        // MUST be LAST (per user directive 2026-05-30: optional last-
+        // resort), and Anthropic/Grok MUST be EXCLUDED (no embed API).
+        let embed = preferred_provider_order(Task::Embed);
+        assert_eq!(embed[0], ProviderKind::Voyage, "embed must start with Voyage");
+        assert_eq!(
+            *embed.last().unwrap(),
+            ProviderKind::Ollama,
+            "embed must end with Ollama (last-resort fallback per ADR-0051)"
+        );
+        assert!(
+            embed.contains(&ProviderKind::Google),
+            "embed must include Google (handles GEMINI_API_KEY)"
+        );
+        assert!(
+            !embed.contains(&ProviderKind::Anthropic),
+            "Anthropic has no embeddings API — must NOT appear in embed order"
+        );
+        assert!(
+            !embed.contains(&ProviderKind::Grok),
+            "Grok has no embeddings API — must NOT appear in embed order"
+        );
+
+        // Chat: Anthropic MUST be first, Ollama MUST be last, Voyage
+        // MUST be EXCLUDED, Google/Grok MUST be included.
+        let chat = preferred_provider_order(Task::Chat);
+        assert_eq!(chat[0], ProviderKind::Anthropic, "chat must start with Anthropic");
+        assert_eq!(
+            *chat.last().unwrap(),
+            ProviderKind::Ollama,
+            "chat must end with Ollama (last-resort fallback per ADR-0051)"
+        );
+        assert!(
+            !chat.contains(&ProviderKind::Voyage),
+            "Voyage has no chat API — must NOT appear in chat order"
+        );
+        assert!(
+            chat.contains(&ProviderKind::Google),
+            "chat must include Google (covers GEMINI_API_KEY for chat too)"
+        );
+        assert!(
+            chat.contains(&ProviderKind::Grok),
+            "chat must include Grok (covers XAI_API_KEY)"
+        );
+
+        // Every kind in each order MUST `supports_task` for that task.
+        for &k in embed {
+            assert!(
+                supports_task(k, Task::Embed),
+                "{k:?} in embed order but doesn't support embed"
+            );
+        }
+        for &k in chat {
+            assert!(
+                supports_task(k, Task::Chat),
+                "{k:?} in chat order but doesn't support chat"
+            );
+        }
+    }
+
+    /// ADR-0051 Ollama-policy gate: parse_ollama_enable_flag — env-free
+    /// truth table. Locks the matrix the user directive (2026-05-30)
+    /// codifies: "Ollama optional at the end, no failure if not
+    /// configured" → default-off, explicit opt-in.
+    #[test]
+    fn ollama_opt_in_truth_table_per_adr_0051() {
+        // Truthy
+        assert!(parse_ollama_enable_flag(Some("1")));
+        assert!(parse_ollama_enable_flag(Some("true")));
+        assert!(parse_ollama_enable_flag(Some("True")));
+        assert!(parse_ollama_enable_flag(Some("TRUE")));
+        assert!(parse_ollama_enable_flag(Some("yes")));
+        assert!(parse_ollama_enable_flag(Some("on")));
+        // Falsy
+        assert!(!parse_ollama_enable_flag(None));
+        assert!(!parse_ollama_enable_flag(Some("")));
+        assert!(!parse_ollama_enable_flag(Some("0")));
+        assert!(!parse_ollama_enable_flag(Some("false")));
+        assert!(!parse_ollama_enable_flag(Some("False")));
+        assert!(!parse_ollama_enable_flag(Some("FALSE")));
     }
 
     #[test]

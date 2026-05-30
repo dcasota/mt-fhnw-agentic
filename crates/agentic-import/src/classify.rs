@@ -551,10 +551,12 @@ mod tests {
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
+            "GEMINI_API_KEY", // ADR-0051 §3.1 alias for google
             "MISTRAL_API_KEY",
             "COHERE_API_KEY",
             "VOYAGE_API_KEY",
             "XAI_API_KEY",
+            "GROK_API_KEY", // ADR-0051 §3.1 alias for grok
             // Also clear the CLI-context envs so the router takes the
             // fallback path (Voyage for Embed, Anthropic for Chat).
             "CLAUDECODE",
