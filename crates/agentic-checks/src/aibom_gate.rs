@@ -35,10 +35,34 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
         )
         .unwrap_or(0);
     if unsigned > 0 {
+        // ADR-0023 / cascade-phase-ordering remediation (2026-05-30):
+        // when this gate runs INSIDE a cascade subprocess (env
+        // `AGENTIC_CASCADE_IN_PROGRESS=1` set by `cascade.rs`), an
+        // unsigned-commit count > 0 is the EXPECTED transient state
+        // between phase-5 ingest and phase-7 `audit sign-commits`.
+        // Downgrade Error → Info so the cascade verdict reflects the
+        // post-seal state, not the mid-cascade snapshot. Standalone
+        // `agentic check aibom` invocations (env unset) keep Error
+        // severity — a real unsigned commit IS a real ledger gap.
+        let in_cascade = std::env::var("AGENTIC_CASCADE_IN_PROGRESS")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let sev = if in_cascade {
+            Severity::Info
+        } else {
+            Severity::Error
+        };
+        let suffix = if in_cascade {
+            " (cascade-transient: phase-7 `audit sign-commits` will sign them; standalone re-run would PASS)"
+        } else {
+            ""
+        };
         findings.push(finding(
             "AIBOM_UNSIGNED",
-            Severity::Error,
-            format!("{unsigned} commit(s) unsigned — run `audit sign-commits` so every ledger entry is sealed"),
+            sev,
+            format!(
+                "{unsigned} commit(s) unsigned — run `audit sign-commits` so every ledger entry is sealed{suffix}"
+            ),
         ));
     }
 

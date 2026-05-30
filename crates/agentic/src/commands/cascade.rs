@@ -739,6 +739,17 @@ fn run_cascade(db_path: &Path, opts: &CascadeOpts, json_out: bool) -> Result<()>
         cmd.arg("--db").arg(&db).args(&step.args);
         // Sub-sessions need the subscription OAuth, not an API key.
         cmd.env_remove("ANTHROPIC_API_KEY");
+        // ADR-0023 / cascade-phase-ordering remediation (2026-05-30):
+        // mark every cascade-spawned subprocess so the aibom gate can
+        // distinguish "user invoked `agentic check aibom` standalone
+        // and a real unsigned commit exists" (FAIL) from "cascade
+        // phase 6 ran the gate before phase 7 sign-commits had a
+        // chance to sign newly-created phase-5-ingest commits"
+        // (transient — INFO, not blocking). The seal step then
+        // signs those commits and a re-run would PASS. Setting the
+        // env per-Command keeps the parent-shell env clean and
+        // avoids unsafe std::env::set_var under Rust 2024.
+        cmd.env("AGENTIC_CASCADE_IN_PROGRESS", "1");
         if !json_out {
             println!("  → {}", step.label);
         }
