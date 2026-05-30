@@ -1009,6 +1009,17 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// ADR enforcement coverage (ADR-0052): every ADR in `specs/adr/`
+    /// must declare an `enforced_by:` frontmatter list pointing at
+    /// tests, gates, policies, or manual-justifications. Each `test:`
+    /// entry is cross-checked against the workspace source tree; each
+    /// `gate:` entry against the GATE_CATALOG. Missing enforcement is
+    /// WARN (initial — escalation to ERROR gated on backfill
+    /// completion in a future ADR).
+    AdrEnforcement {
+        #[arg(long)]
+        project: String,
+    },
     /// Verified-facts integrity (ADR-0036/0042): every anchored fact has a real
     /// source; needs_verification placeholders are surfaced as outstanding HITL.
     FactsIntegrity {

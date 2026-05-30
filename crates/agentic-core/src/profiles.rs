@@ -44,6 +44,7 @@ pub const GATE_CATALOG: &[(&str, &str)] = &[
     ("page-boundary", "page_boundary"),
     ("rr-matrix", "rr_matrix"),
     ("calibration", "calibration"),
+    ("adr-enforcement", "adr_enforcement"), // ADR-0052 §4.3
 ];
 
 /// Resolve a gate subcommand to its catalog `(subcommand, checkpoint)` entry.
@@ -102,6 +103,7 @@ impl RuleMatrix {
             "figure-quality",
             "disclosure",
             "freshness",
+            "adr-enforcement", // ADR-0052 §4.3 — universal
         ]
         .iter()
         .map(|s| (*s).to_string())

@@ -77,6 +77,10 @@ pub async fn run_report(
             agentic_checks::aibom_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::AdrEnforcement { project } => (
+            agentic_checks::adr_enforcement_gate::run(&conn, &project)?,
+            Some(project),
+        ),
         CheckAction::FactsIntegrity { project } => (
             agentic_checks::facts_gate::run(&conn, &project)?,
             Some(project),
