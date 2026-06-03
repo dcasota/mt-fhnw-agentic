@@ -698,6 +698,50 @@ fn should_apply_bk_bullet_prefix(text: &str) -> bool {
     matches!(after_dot, Some(c) if c.is_ascii_whitespace()) || after_dot.is_none()
 }
 
+/// Round V zone C lists-06 (AI-Norms parity, 2026-06-03) — demote the
+/// leading bold run of a `BkBullet` item when it forms the `- **X** — Y`
+/// lead-in pattern.
+///
+/// In the reference book, bulletted items of the form `- **Lead-in** —
+/// body text` render the lead-in in regular weight; the visual emphasis
+/// comes from the (italic-ish) em-dash continuation and the bullet glyph
+/// itself, not from the lead-in word. docx-rs preserves the markdown
+/// `**…**` as a bold run, so without this demotion the lead-in over-bolds
+/// against the reference and the parity gate's bold-run count over-shoots
+/// by ~250 occurrences across the AI-Norms book.
+///
+/// Conservative trigger: only demote when ALL of the following hold:
+///   1. `use_bk_styles == true` (Bk* parity mode only)
+///   2. runs[0] is bold and non-empty
+///   3. runs[1] starts with an em-dash separator (`—`, `\u{2014}`,
+///      optionally preceded by whitespace) or with ` - ` (ASCII fallback)
+///   4. runs[0] does NOT contain an em-dash itself (so we don't demote a
+///      bold sentence that happens to contain `—` mid-text)
+///
+/// Returns a new `Vec<DocxRun>` with runs[0].bold flipped to `false`; the
+/// original slice is consumed in normal Rust style. When the trigger does
+/// not fire, returns `runs.to_vec()` unchanged.
+fn demote_lead_bold_for_bk_bullet(
+    runs: &[crate::markdown::DocxRun],
+    use_bk_styles: bool,
+) -> Vec<crate::markdown::DocxRun> {
+    if !use_bk_styles || runs.len() < 2 {
+        return runs.to_vec();
+    }
+    let first = &runs[0];
+    if !first.bold || first.text.is_empty() || first.text.contains('\u{2014}') {
+        return runs.to_vec();
+    }
+    let second_lead = runs[1].text.trim_start();
+    let starts_with_emdash = second_lead.starts_with('\u{2014}') || second_lead.starts_with("- ");
+    if !starts_with_emdash {
+        return runs.to_vec();
+    }
+    let mut out = runs.to_vec();
+    out[0].bold = false;
+    out
+}
+
 fn chapter_is_numbered(md: &str, thesis_profile: bool) -> bool {
     let set: &[&str] = if thesis_profile {
         THESIS_UNNUMBERED
@@ -1084,12 +1128,15 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
     for _ in 0..3 {
         doc = doc.add_paragraph(Paragraph::new());
     }
+    // Round V zone C fwc-06 (AI-Norms parity, 2026-06-03): bump the
+    // title-page font from 36pt (size 72) to 40pt (size 80) so the cover
+    // title matches the reference book's larger setting.
     doc = doc.add_paragraph(
         Paragraph::new().align(AlignmentType::Center).add_run(
             Run::new()
                 .add_text(&m.title)
                 .bold()
-                .size(72)
+                .size(80)
                 .color(NAVY)
                 .fonts(head_fonts()),
         ),
@@ -1565,11 +1612,18 @@ fn heading_para(
     p
 }
 
+/// Round V zone C fwc-03 (AI-Norms parity, 2026-06-03): body runs no longer
+/// force a `<w:color w:val="000000"/>` override. The reference book lets
+/// every body paragraph inherit colour from its `pStyle` (BkBullet,
+/// BkCaption, …) which in turn inherits from the BkNormal docDefaults —
+/// none of which set `<w:color>`. Forcing `000000` on every body run
+/// short-circuits the cascade, so the new theme1.xml + styles.xml fixture
+/// pair (zone B) cannot retint inherited colours (e.g. Hyperlink).
+///
+/// Callers that DO need an explicit colour (callout boxes, title page,
+/// inscription) must use [`run_of_callout`] instead.
 fn run_of(r: &DocxRun, typography: TypographyProfile) -> Run {
-    let mut run = Run::new()
-        .add_text(&r.text)
-        .size(body_size_hp(typography))
-        .color(body_color_for(typography));
+    let mut run = Run::new().add_text(&r.text).size(body_size_hp(typography));
     run = if r.code {
         run.fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO))
     } else {
@@ -1584,14 +1638,47 @@ fn run_of(r: &DocxRun, typography: TypographyProfile) -> Run {
     run
 }
 
+/// Round V zone C fwc-03 (AI-Norms parity, 2026-06-03): body run helper
+/// for paragraphs that explicitly need a colour override (callout boxes,
+/// the warning callout's amber title, inscription italics, etc). Forks the
+/// historical `run_of` behaviour. Use this instead of `run_of` when the
+/// caller has already decided on a non-inherited colour.
+#[allow(dead_code)] // wired up by zones D/E callout helpers; kept reachable
+fn run_of_callout(r: &DocxRun, typography: TypographyProfile, color: &str) -> Run {
+    let mut run = Run::new()
+        .add_text(&r.text)
+        .size(body_size_hp(typography))
+        .color(color);
+    run = if r.code {
+        run.fonts(RunFonts::new().ascii(MONO).hi_ansi(MONO))
+    } else {
+        run.fonts(body_fonts_for(typography))
+    };
+    if r.bold {
+        run = run.bold();
+    }
+    if r.italic {
+        run = run.italic();
+    }
+    run
+}
+
+// Note: `body_color_for` is still called by the table / callout paths
+// (lines ~1925 and ~3686) that DO want an explicit colour. Only `run_of`
+// (the body-prose helper) was decoupled per zone-C fwc-03.
+
 /// A true superscript bracketed reference-number run (bookkit `_superscript`),
 /// pointing into the chapter Sources box. Uses `RunProperty::vert_align`
 /// (`<w:vertAlign w:val="superscript"/>`); `Run` has no fluent setter, but its
 /// `run_property` field is public.
 fn superscript(n: usize) -> Run {
+    // Round V zone C fwc-06 (AI-Norms parity, 2026-06-03): the reference
+    // book superscripts use 8pt (size 16), not 7.5pt (size 15) — the
+    // half-point difference is visible against body Calibri 10pt because
+    // 8pt sits exactly two points below the baseline-x-height.
     let mut r = Run::new()
         .add_text(format!("[{n}]"))
-        .size(15)
+        .size(16)
         .color(ACCENT)
         .fonts(body_fonts());
     r.run_property = r.run_property.vert_align(VertAlignType::SuperScript);
@@ -1626,11 +1713,19 @@ fn add_runs(
             // resource) and we do NOT add the `[N]` superscript — the
             // hyperlink label alone is the cross-reference.
             if let Some(anchor) = url.strip_prefix('#') {
+                // Round V zone C fwc-04 (AI-Norms parity, 2026-06-03):
+                // do NOT hard-code colour/underline on the inline run.
+                // The `Hyperlink` character style (defined in the 186-
+                // style fixture as `<w:color w:val="0000FF"/>` +
+                // `<w:u w:val="single"/>`) controls the visuals when
+                // `body_render_use_bk_styles=true`. Adding an inline
+                // colour/underline here would shadow the style and
+                // prevent theme1.xml's `<a:hlink val="0000FF"/>` from
+                // taking effect on docs that DO read the theme palette.
                 let mut label = Run::new()
                     .add_text(&r.text)
                     .size(body_size_hp(typography))
-                    .color(accent_color_for(typography))
-                    .underline("single")
+                    .style("Hyperlink")
                     .fonts(body_fonts_for(typography));
                 if r.bold {
                     label = label.bold();
@@ -1649,11 +1744,13 @@ fn add_runs(
                     links.len()
                 }
             };
+            // Round V zone C fwc-04 (AI-Norms parity, 2026-06-03): same
+            // rationale as the anchor branch above — let the Hyperlink
+            // character style govern colour + underline.
             let mut label = Run::new()
                 .add_text(&r.text)
                 .size(body_size_hp(typography))
-                .color(accent_color_for(typography))
-                .underline("single")
+                .style("Hyperlink")
                 .fonts(body_fonts_for(typography));
             if r.bold {
                 label = label.bold();
@@ -2414,6 +2511,20 @@ fn postprocess_docx_inner_layout(
                     .context("start styles.xml part")?;
                 zout.write_all(xml.as_bytes())
                     .context("write reference styles.xml")?;
+            } else if name == "word/theme/theme1.xml" && inject_reference_styles {
+                // Round V zone B (AI-Norms parity, 2026-06-03): discard the
+                // docx-rs-emitted Office-2016 theme (Aptos/teal) and write
+                // the verbatim Office-2010 reference theme1.xml so every
+                // `<w:rFonts w:asciiTheme="majorHAnsi"/>` reference resolves
+                // to Calibri/Cambria and the Hyperlink character style
+                // inherits `<a:hlink val="0000FF"/>`. Coupled with the
+                // styles.xml replacement above so theme + styles ship in
+                // lockstep (the styles file references theme font slots).
+                let xml = crate::theme_xml::emit_theme_xml();
+                zout.start_file(&name, zip::write::SimpleFileOptions::default())
+                    .context("start theme1.xml part")?;
+                zout.write_all(xml.as_bytes())
+                    .context("write reference theme1.xml")?;
             } else {
                 zout.raw_copy_file(f).context("copy zip entry")?;
             }
@@ -2467,6 +2578,18 @@ fn postprocess_docx_inner_layout(
                 // (the docx-rs default-empty header parts that Word
                 // would otherwise render as a blank running header).
                 s = drop_refs_to_empty_parts(&s, &dropped_rids);
+                // Round V zone C fwc-05 (AI-Norms parity, 2026-06-03):
+                // strip `<w:bCs/>`, `<w:iCs/>`, and redundant `<w:szCs>`
+                // from runs whose text content is pure ASCII. docx-rs
+                // 0.4.x emits the complex-script siblings on every run
+                // (bold/italic/size are mirrored to bCs/iCs/szCs for
+                // CJK/Arabic/Hebrew fonts). The reference book emits
+                // them ONLY on runs that actually contain non-ASCII
+                // text. The noise inflates document.xml and creates
+                // visible diff churn against the parity gate.
+                if inject_reference_styles {
+                    s = strip_complex_script_noise_for_ascii_runs(&s);
+                }
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start document.xml")?;
                 zout.write_all(s.as_bytes()).context("write document.xml")?;
@@ -2666,6 +2789,61 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 zout.write_all(s.as_bytes()).context("write footer part")?;
             }
             // Everything else was already raw-copied in the first pass.
+        }
+        zout.finish().context("finish docx zip")?;
+    }
+    Ok(out.into_inner())
+}
+
+/// Round V zone B (AI-Norms parity, 2026-06-03) — post-finalize restore of
+/// `word/theme/theme1.xml` and `word/styles.xml`.
+///
+/// Word COM (`Documents.Open → … → Save`) silently regenerates BOTH the
+/// theme XML and styles.xml every time it touches a docx — even if the
+/// invocation only updates fields. The Wave-2 render-time replacement in
+/// [`postprocess_docx_inner_layout`] is therefore overwritten the moment
+/// `book finalize` runs (or the automatic finalize at the end of `book
+/// build`). This function re-applies BOTH replacements to the on-disk
+/// bytes once Word has released the file, restoring Office-2010 theme
+/// fonts (Calibri/Cambria) and the 186-style fixture in lockstep.
+///
+/// Callers should invoke this AFTER [`collapse_empty_header_footer_parts`]
+/// so the empty-header/footer pass runs against the post-finalize bytes
+/// first (one zip rewrite each, ordering does not matter functionally —
+/// neither pass touches the other's targets).
+///
+/// SAFETY: only rewrites `word/theme/theme1.xml` and `word/styles.xml`;
+/// every other entry is streamed verbatim. Idempotent — re-running on a
+/// docx whose theme/styles already match the reference is a no-op.
+pub fn restore_reference_theme_and_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
+    let mut out = Cursor::new(Vec::<u8>::new());
+    {
+        let mut zout = zip::ZipWriter::new(&mut out);
+        for i in 0..zin.len() {
+            let mut f = zin.by_index(i).context("read zip entry")?;
+            let name = f.name().to_string();
+            if name == "word/theme/theme1.xml" {
+                let xml = crate::theme_xml::emit_theme_xml();
+                zout.start_file(&name, zip::write::SimpleFileOptions::default())
+                    .context("start theme1.xml part")?;
+                zout.write_all(xml.as_bytes())
+                    .context("write reference theme1.xml")?;
+                // drain the original entry so the zip reader advances
+                let mut _drain = String::new();
+                let _ = f.read_to_string(&mut _drain);
+            } else if name == "word/styles.xml" {
+                let xml = crate::styles_xml::emit_styles_xml();
+                zout.start_file(&name, zip::write::SimpleFileOptions::default())
+                    .context("start styles.xml part")?;
+                zout.write_all(xml.as_bytes())
+                    .context("write reference styles.xml")?;
+                let mut _drain = String::new();
+                let _ = f.read_to_string(&mut _drain);
+            } else {
+                zout.raw_copy_file(f).context("copy zip entry")?;
+            }
         }
         zout.finish().context("finish docx zip")?;
     }
@@ -2940,6 +3118,126 @@ fn mark_header_rows(doc: &str) -> String {
         rest = &rest[row_end + "</w:tr>".len()..];
     }
     out.push_str(rest);
+    out
+}
+
+/// Round V zone C fwc-05 (AI-Norms parity, 2026-06-03) — strip the
+/// complex-script (`w:bCs`, `w:iCs`, `w:szCs`) sibling tags from every
+/// `<w:r>` whose `<w:t>` text content is pure 7-bit ASCII.
+///
+/// Rationale: docx-rs 0.4.x mirrors `bold` / `italic` / `size` onto the
+/// `*Cs` complex-script siblings on every run, regardless of script. Word
+/// reads `bCs` / `iCs` / `szCs` only for runs containing CJK, Arabic,
+/// Hebrew, Thai, Devanagari, etc. — for an ASCII-only run the tags are
+/// schema-legal but unused noise that inflates document.xml by ~30 bytes
+/// per run and creates large diffs against the parity gate.
+///
+/// The reference book's document.xml emits the `*Cs` siblings ONLY on
+/// runs that actually contain non-ASCII text. This helper walks
+/// `<w:r>...</w:r>` spans, classifies the contained `<w:t>...</w:t>`
+/// text as ASCII-only or not, and strips the three self-closing tag
+/// variants when ASCII. Preserves them otherwise so the cascade stays
+/// correct for CJK/Arabic prose.
+///
+/// XML-rewrite is intentionally tag-textual (no parser): the rewrite is
+/// a self-closing-tag delete, the surrounding rPr ordering is preserved,
+/// and the helper is idempotent (a second pass finds nothing to strip).
+fn strip_complex_script_noise_for_ascii_runs(doc: &str) -> String {
+    let mut out = String::with_capacity(doc.len());
+    let mut rest = doc;
+    while let Some(open) = rest.find("<w:r>") {
+        out.push_str(&rest[..open]);
+        let after_open = open + "<w:r>".len();
+        let Some(close_rel) = rest[after_open..].find("</w:r>") else {
+            // Unbalanced run — flush remainder and stop scanning.
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let run_end = after_open + close_rel;
+        let run_inner = &rest[after_open..run_end];
+        let text = extract_run_text(run_inner);
+        let cleaned = if text.as_ref().map(|t| t.is_ascii()).unwrap_or(false) {
+            strip_complex_script_tags(run_inner)
+        } else {
+            run_inner.to_string()
+        };
+        out.push_str("<w:r>");
+        out.push_str(&cleaned);
+        out.push_str("</w:r>");
+        rest = &rest[run_end + "</w:r>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Collect every `<w:t>...</w:t>` (or `<w:t xml:space="preserve">…</w:t>`)
+/// run within a `<w:r>` body. Returns `None` if the run has no text node
+/// (e.g. picture-only, field-only) — those runs are left alone.
+fn extract_run_text(run_inner: &str) -> Option<String> {
+    let mut text = String::new();
+    let mut rest = run_inner;
+    let mut found_any = false;
+    while let Some(open_idx) = rest.find("<w:t") {
+        found_any = true;
+        let after = open_idx + "<w:t".len();
+        // skip attributes until `>`
+        let Some(gt) = rest[after..].find('>') else {
+            return Some(text);
+        };
+        let body_start = after + gt + 1;
+        let Some(close_rel) = rest[body_start..].find("</w:t>") else {
+            return Some(text);
+        };
+        let body_end = body_start + close_rel;
+        text.push_str(&rest[body_start..body_end]);
+        rest = &rest[body_end + "</w:t>".len()..];
+    }
+    if found_any { Some(text) } else { None }
+}
+
+/// Strip the three self-closing complex-script tags (`<w:bCs/>`,
+/// `<w:iCs/>`, and `<w:szCs ... />`) from a run body. Preserves
+/// everything else (rPr ordering, sibling tags, attributes). Handles
+/// both `<w:bCs/>` and `<w:bCs />` self-closing variants.
+fn strip_complex_script_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while !rest.is_empty() {
+        let Some(open) = rest.find("<w:") else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..open]);
+        let after = open + 3; // past `<w:`
+        // Match one of bCs, iCs, szCs by next chars
+        let is_target = rest[after..].starts_with("bCs")
+            || rest[after..].starts_with("iCs")
+            || rest[after..].starts_with("szCs");
+        if !is_target {
+            // Not a target — emit the `<w:` and advance one byte so we
+            // resume scanning for the next `<w:`.
+            out.push_str(&rest[open..open + 3]);
+            rest = &rest[open + 3..];
+            continue;
+        }
+        // Find the close `>` and decide if this is self-closing or has
+        // a body. The three tags are always emitted self-closing by
+        // docx-rs, so we only strip the self-closing form.
+        let Some(gt_rel) = rest[after..].find('>') else {
+            out.push_str(&rest[open..]);
+            break;
+        };
+        let gt_abs = after + gt_rel;
+        let tag = &rest[open..=gt_abs];
+        if tag.ends_with("/>") {
+            // Drop the self-closing tag entirely.
+            rest = &rest[gt_abs + 1..];
+        } else {
+            // Has a body — extremely unusual for these tags; keep verbatim.
+            out.push_str(tag);
+            rest = &rest[gt_abs + 1..];
+        }
+    }
     out
 }
 
@@ -3497,7 +3795,13 @@ fn render_block(
                     .bold()
                     .fonts(body_fonts_for(ctx.typography)),
             );
-            p = add_runs(p, runs, &mut ctx.links, ctx.typography);
+            // Round V zone C lists-06 (AI-Norms parity, 2026-06-03): when
+            // the bullet starts with a bold lead-in followed by an em-dash
+            // separator (`- **X** — body`), the reference book renders the
+            // lead-in in regular weight — only the bullet glyph is bold.
+            // Demote the leading bold run so the inline emphasis matches.
+            let runs_demoted = demote_lead_bold_for_bk_bullet(runs, ctx.body_render_use_bk_styles);
+            p = add_runs(p, &runs_demoted, &mut ctx.links, ctx.typography);
             doc.add_paragraph(p)
         }
         DocxBlock::OrderedItem { number, runs } => {
