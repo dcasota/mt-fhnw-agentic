@@ -17,6 +17,7 @@ pub mod markdown;
 pub mod numbering_xml;
 pub mod pdf;
 pub mod styles_xml;
+pub mod table_xml;
 pub mod theme_xml;
 
 use anyhow::Result;

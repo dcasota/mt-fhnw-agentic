@@ -14,8 +14,8 @@ use docx_rs::{
     Hyperlink, HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin, PageNum,
     PageOrientationType, PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition, Pic, Run,
     RunFonts, SectionProperty, Shading, Style, StyleType, Table, TableCell, TableCellBorder,
-    TableCellBorderPosition, TableCellMargins, TableLayoutType, TableOfContents, TableRow,
-    TextDirectionType, VAlignType, VertAlignType, WidthType,
+    TableCellBorderPosition, TableOfContents, TableRow, TextDirectionType, VAlignType,
+    VertAlignType, WidthType,
 };
 
 use agentic_core::i18n::t;
@@ -2026,10 +2026,17 @@ fn table_block(
                             .color("FFFFFF")
                             .fonts(body_fonts_for(typography)),
                     );
+                // Round-V Zone-F (2026-06-03): vertical_align(Center)
+                // removed from captioned-table cells. The reference
+                // fixture leaves captioned cells without <w:vAlign>
+                // so multi-line cell content (header word-wrap, body
+                // paragraphs) baseline-aligns naturally. Cells in
+                // the right-side QR column of `sources_box` still
+                // carry vAlign explicitly because the QR pic needs
+                // to centre against multi-line link text.
                 let mut cell = TableCell::new()
                     .shading(Shading::new().fill(HEADBG))
-                    .width(col_widths[ci.min(col_widths.len() - 1)], WidthType::Dxa)
-                    .vertical_align(VAlignType::Center);
+                    .width(col_widths[ci.min(col_widths.len() - 1)], WidthType::Dxa);
                 if rotate_headers {
                     cell = cell.text_direction(TextDirectionType::BtLr);
                 }
@@ -2050,11 +2057,12 @@ fn table_block(
         for c in 0..ncols {
             let val = row.get(c).map(String::as_str).unwrap_or("");
             let cw = col_widths[c.min(col_widths.len() - 1)];
+            // Round-V Zone-F: see header-cell comment above —
+            // body cells likewise no longer set vertical_align.
             cells.push(
                 TableCell::new()
                     .shading(Shading::new().fill(fill))
                     .width(cw, WidthType::Dxa)
-                    .vertical_align(VAlignType::Center)
                     .add_paragraph(
                         Paragraph::new()
                             .align(body_alignment_for(typography))
@@ -2070,14 +2078,22 @@ fn table_block(
         }
         trows.push(TableRow::new(cells).cant_split());
     }
-    Table::new(trows)
-        .set_grid(col_widths.clone())
-        .width(content_twips, WidthType::Dxa)
-        // Fixed layout makes Word honour the grid and wrap text, so a wide table
-        // can never expand past the page margins (ADR-0030).
-        .layout(TableLayoutType::Fixed)
-        // Cell padding so text never touches the borders.
-        .margins(TableCellMargins::new().margin(60, 100, 60, 100))
+    // Round-V Zone-F (2026-06-03): table-level styling now flows
+    // through `table_xml::emit(TableKind::Captioned, ...)`. The
+    // helper centralises tblStyle="TableGrid", jc=center, sz=4
+    // color="auto" borders, and fixed layout — eliminating the
+    // 22-vs-33 styling drift the visual-parity audit caught between
+    // this call site and `flush_sources` (sources box). Inline
+    // tblCellMar dropped — padding is governed by the TableGrid
+    // style instead.
+    crate::table_xml::emit(
+        crate::table_xml::TableKind::Captioned,
+        trows,
+        crate::table_xml::TableLayout {
+            grid: col_widths,
+            total_twips: content_twips,
+        },
+    )
 }
 
 /// chapter_extras.py "Key topics at a glance" box.
@@ -2465,13 +2481,19 @@ fn quote_block(mut doc: Docx, body: &str) -> Docx {
         );
     }
     doc = doc.add_paragraph(spacer());
-    doc = doc.add_table(
-        Table::new(vec![TableRow::new(vec![cell])])
-            .set_grid(vec![CONTENT_TWIPS])
-            .width(CONTENT_TWIPS, WidthType::Dxa)
-            .layout(TableLayoutType::Fixed)
-            .margins(TableCellMargins::new().margin(70, 200, 70, 120)),
-    );
+    // Round-V Zone-F: route the quote-callout's <w:tbl> through the
+    // kind-aware emitter so its tblStyle / jc / layout profile cannot
+    // drift from the captioned + sources-box profiles. Inline
+    // tblCellMar (70/200/70/120) is preserved because the larger
+    // vertical padding is intentional for quote breathing room.
+    doc = doc.add_table(crate::table_xml::emit(
+        crate::table_xml::TableKind::QuoteCallout,
+        vec![TableRow::new(vec![cell])],
+        crate::table_xml::TableLayout {
+            grid: vec![CONTENT_TWIPS],
+            total_twips: CONTENT_TWIPS,
+        },
+    ));
     doc.add_paragraph(spacer())
 }
 
@@ -3972,9 +3994,14 @@ fn flush_sources(
     let mut rows = Vec::new();
     for (i, (label, url)) in links.iter().enumerate() {
         let n = i + 1;
+        // Round-V Zone-F: left text cell no longer carries
+        // vAlign=center. The reference fixture leaves the
+        // text-column cell baseline-aligned so the numbered link +
+        // URL hyperlink read as a coherent paragraph block; only
+        // the QR column (built below) keeps vAlign=center, since
+        // the pic genuinely needs to centre against multi-line text.
         let left = TableCell::new()
             .width(text_col, WidthType::Dxa)
-            .vertical_align(VAlignType::Center)
             .add_paragraph(
                 Paragraph::new()
                     .line_spacing(LineSpacing::new().after(40))
@@ -4015,13 +4042,19 @@ fn flush_sources(
             .add_paragraph(qr_para);
         rows.push(TableRow::new(vec![left, right]));
     }
-    doc = doc.add_table(
-        Table::new(rows)
-            .set_grid(vec![text_col, QR_COL])
-            .width(CONTENT_TWIPS, WidthType::Dxa)
-            .layout(TableLayoutType::Fixed)
-            .margins(TableCellMargins::new().margin(60, 100, 60, 100)),
-    );
+    // Round-V Zone-F: route the sources-box <w:tbl> through the
+    // kind-aware emitter. Per-cell QR padding (60/100/60/100) is
+    // preserved as the kind's profile (matches the previous inline
+    // setting). The right QR cell keeps its vAlign=center above; the
+    // left text cell no longer carries it.
+    doc = doc.add_table(crate::table_xml::emit(
+        crate::table_xml::TableKind::SourcesBox,
+        rows,
+        crate::table_xml::TableLayout {
+            grid: vec![text_col, QR_COL],
+            total_twips: CONTENT_TWIPS,
+        },
+    ));
     links.clear();
     doc.add_paragraph(Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE)))
 }
