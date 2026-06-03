@@ -986,33 +986,47 @@ fn dashed_rect(
 }
 
 /// `gen_icons.py` → flat admonition icon (note / tip / warning) on white.
+///
+/// Round V (visual parity, 2026-06-03): bumped from 200×200 to 330×330 to
+/// match the dominant admonition-icon resolution observed in the reference
+/// `AI_Norms_and_Regulations_BOOK.docx` (`word/media/` icon images cluster
+/// at 290–330 px). All shape coordinates are scaled by `S = ICON_PX / 200`
+/// from the original 200-px design so the silhouette stays identical;
+/// only the bitmap raster is denser. See subagent inventory icons-02.
 fn render_icon(spec: &FigSpec, out: &Path) -> Result<()> {
+    const ICON_PX: u32 = 330;
     let variant = spec
         .data
         .get("variant")
         .and_then(Value::as_str)
         .unwrap_or("note");
-    let root = BitMapBackend::new(out, (200, 200)).into_drawing_area();
+    let root = BitMapBackend::new(out, (ICON_PX, ICON_PX)).into_drawing_area();
     root.fill(&WHITEC).map_err(|e| anyhow!("fill: {e}"))?;
     let navy = RGBColor(0x1F, 0x38, 0x64);
     let green = RGBColor(0x2E, 0x7D, 0x32);
     let amber = RGBColor(0xC7, 0x7F, 0x18);
+    // Scale factor from the legacy 200-px design grid → ICON_PX raster.
+    let s = |v: i32| (f64::from(v) * f64::from(ICON_PX) / 200.0).round() as i32;
     match variant {
         "tip" => {
-            fill_circle(&root, 100, 100, 92, &green)?;
-            fill_circle(&root, 100, 86, 44, &WHITEC)?; // bulb
-            fill_rect(&root, 80, 126, 120, 162, &WHITEC)?; // base
-            fill_rect(&root, 86, 162, 114, 178, &green)?; // screw
+            fill_circle(&root, s(100), s(100), s(92), &green)?;
+            fill_circle(&root, s(100), s(86), s(44), &WHITEC)?; // bulb
+            fill_rect(&root, s(80), s(126), s(120), s(162), &WHITEC)?; // base
+            fill_rect(&root, s(86), s(162), s(114), s(178), &green)?; // screw
         }
         "warning" => {
-            fill_poly(&root, vec![(100, 20), (186, 172), (14, 172)], &amber)?;
-            fill_rect(&root, 92, 64, 108, 130, &WHITEC)?; // !
-            fill_circle(&root, 100, 150, 9, &WHITEC)?;
+            fill_poly(
+                &root,
+                vec![(s(100), s(20)), (s(186), s(172)), (s(14), s(172))],
+                &amber,
+            )?;
+            fill_rect(&root, s(92), s(64), s(108), s(130), &WHITEC)?; // !
+            fill_circle(&root, s(100), s(150), s(9), &WHITEC)?;
         }
         _ => {
-            fill_circle(&root, 100, 100, 92, &navy)?;
-            fill_circle(&root, 100, 58, 13, &WHITEC)?; // dot of i
-            fill_rect(&root, 88, 80, 112, 150, &WHITEC)?; // stem of i
+            fill_circle(&root, s(100), s(100), s(92), &navy)?;
+            fill_circle(&root, s(100), s(58), s(13), &WHITEC)?; // dot of i
+            fill_rect(&root, s(88), s(80), s(112), s(150), &WHITEC)?; // stem of i
         }
     }
     root.present().map_err(|e| anyhow!("present: {e}"))?;

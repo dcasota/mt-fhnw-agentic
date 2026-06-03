@@ -14,6 +14,7 @@ pub mod index;
 pub mod markdown;
 pub mod pdf;
 pub mod styles_xml;
+pub mod theme_xml;
 
 use anyhow::Result;
 use rusqlite::Connection;

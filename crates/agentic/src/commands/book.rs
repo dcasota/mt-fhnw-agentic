@@ -496,8 +496,17 @@ fn finalize(path: &Path, pdf: bool, json_out: bool) -> Result<()> {
     let results = finalize_docs(&docs, pdf)?;
     // Round D-C (AI-Norms parity, 2026-06-03): see comment in `build`
     // where this same pass runs after the automatic finalize.
+    //
+    // Round V zone B (AI-Norms parity, 2026-06-03): `book finalize` is the
+    // standalone re-finalize entry point — we cannot tell from the on-disk
+    // bytes whether the docx was rendered with `body_render_use_bk_styles`
+    // (the flag is render-time only). Default to TRUE: re-injecting the
+    // reference theme + styles on a docx that did NOT opt into them is a
+    // small visual delta (modern Office-2016 theme → Office-2010
+    // Calibri/Cambria pair) but is the safer default for the AI-Norms
+    // cascade book renderer where this command is almost always invoked.
     for d in &docs {
-        if let Err(e) = post_finalize_collapse(d) {
+        if let Err(e) = post_finalize_collapse(d, true) {
             eprintln!(
                 "WARNING: post-finalize header/footer collapse failed for {}: {e}",
                 d.display()
@@ -809,13 +818,33 @@ fn finalize_docs(_docs: &[PathBuf], _pdf: bool) -> Result<Vec<(String, String)>>
 /// to undo Word COM's regeneration of the default/even/firstPage
 /// header & footer triad.
 ///
-/// Idempotent: re-running on an already-collapsed docx is a no-op.
-fn post_finalize_collapse(path: &Path) -> Result<()> {
+/// Round V zone B (AI-Norms parity, 2026-06-03) also re-injects the
+/// reference Office-2010 theme1.xml and the 186-style styles.xml when
+/// `restore_theme_and_styles=true` — Word COM silently regenerates both
+/// every time it touches a docx, so the render-time replacement is
+/// otherwise undone. The caller plumbs the
+/// `BookMeta::body_render_use_bk_styles` flag through the finalize
+/// boundary so non-parity books (where the docx-rs default styles are
+/// intentional) skip the restoration.
+///
+/// Idempotent: re-running on an already-collapsed docx with already-
+/// matching theme/styles is a no-op.
+fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result<()> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("read {} for collapse pass", path.display()))?;
     let collapsed = agentic_export::book::collapse_empty_header_footer_parts(bytes)
         .with_context(|| format!("collapse pass for {}", path.display()))?;
-    std::fs::write(path, &collapsed)
+    let final_bytes = if restore_theme_and_styles {
+        // Round V zone B: re-inject theme1.xml + styles.xml AFTER Word COM
+        // finalize so the Office-2010 Calibri/Cambria pair + the 186-style
+        // fixture survive the round-trip. Without this step Word's save
+        // silently overwrites both with its modern Office-2016 defaults.
+        agentic_export::book::restore_reference_theme_and_styles(collapsed)
+            .with_context(|| format!("theme/styles restore for {}", path.display()))?
+    } else {
+        collapsed
+    };
+    std::fs::write(path, &final_bytes)
         .with_context(|| format!("write collapsed {}", path.display()))?;
     Ok(())
 }
@@ -843,6 +872,11 @@ fn build(
     let mut report = Vec::new();
     let mut built = 0usize;
     let mut built_docs: Vec<PathBuf> = Vec::new();
+    // Round V zone B (AI-Norms parity, 2026-06-03): track per-book whether
+    // the bk-styles parity bundle was emitted, so the post-finalize restore
+    // step (theme1.xml + styles.xml re-injection) only runs on books that
+    // opted in. Same length / index as `built_docs`.
+    let mut built_use_bk: Vec<bool> = Vec::new();
     for spec in &manifest.books {
         if let Some(k) = only {
             if spec.key != k {
@@ -866,6 +900,7 @@ fn build(
             Ok((figs, bytes, held)) => {
                 built += 1;
                 built_docs.push(out.join(format!("{}.docx", spec.key)));
+                built_use_bk.push(spec.body_render_use_bk_styles);
                 let included = spec.chapters.len() - held.len();
                 report.push(serde_json::json!({
                     "key": spec.key, "chapters": included, "held_by_review": held,
@@ -917,8 +952,8 @@ fn build(
                 // empty-part collapse to each finalized docx on disk so
                 // the parity-gate HEADER_PART_COUNT / FOOTER_PART_COUNT
                 // assertions hold against the saved bytes.
-                for path in &built_docs {
-                    if let Err(e) = post_finalize_collapse(path) {
+                for (path, &use_bk) in built_docs.iter().zip(built_use_bk.iter()) {
+                    if let Err(e) = post_finalize_collapse(path, use_bk) {
                         eprintln!(
                             "WARNING: post-finalize header/footer collapse failed for {}: {e}",
                             path.display()
