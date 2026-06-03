@@ -63,8 +63,13 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
     // Fast path: no explicit dimensions → byte-perfect copy (pure pass-through,
     // no transcode, no re-encoding artifacts).
     if w_in.is_none() && h_in.is_none() {
-        std::fs::copy(&src_path, out_path)
-            .map_err(|e| anyhow!("image-embed: copy {} → {}: {e}", src_path.display(), out_path.display()))?;
+        std::fs::copy(&src_path, out_path).map_err(|e| {
+            anyhow!(
+                "image-embed: copy {} → {}: {e}",
+                src_path.display(),
+                out_path.display()
+            )
+        })?;
         return Ok(());
     }
 

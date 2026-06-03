@@ -166,13 +166,7 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
         let x = lx0 + i as i32 * (chip_w + 8);
         fill_rect(&root, x, ly, x + chip_w, ly + 18, &severity_color(*sev))?;
         stroke_rect(&root, x, ly, x + chip_w, ly + 18, &BORDER, 1)?;
-        text(
-            &root,
-            lbl,
-            &centered(font(11)),
-            x + chip_w / 2,
-            ly + 9,
-        )?;
+        text(&root, lbl, &centered(font(11)), x + chip_w / 2, ly + 9)?;
     }
     root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
@@ -192,7 +186,11 @@ mod tests {
         let spec = parse(spec_json).unwrap();
         render(&spec, &out).unwrap();
         let meta = std::fs::metadata(&out).unwrap();
-        assert!(meta.len() > 1000, "tier-matrix png too small: {}", meta.len());
+        assert!(
+            meta.len() > 1000,
+            "tier-matrix png too small: {}",
+            meta.len()
+        );
     }
 
     #[test]

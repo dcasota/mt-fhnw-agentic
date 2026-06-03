@@ -391,8 +391,8 @@ fn parse_atx_heading(line: &str) -> Option<(u8, String)> {
 /// concatenate every `<w:t>` body inside that paragraph as the entry
 /// text.
 fn extract_toc_entries(docx: &Path) -> Result<Vec<TocEntry>> {
-    let file = std::fs::File::open(docx)
-        .with_context(|| format!("opening docx {}", docx.display()))?;
+    let file =
+        std::fs::File::open(docx).with_context(|| format!("opening docx {}", docx.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("reading docx as zip")?;
     let mut xml = String::new();
     {
@@ -537,7 +537,10 @@ fn find_subslice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 }
 
 fn memchr_byte(haystack: &[u8], byte: u8, from: usize) -> Option<usize> {
-    haystack[from..].iter().position(|&b| b == byte).map(|p| p + from)
+    haystack[from..]
+        .iter()
+        .position(|&b| b == byte)
+        .map(|p| p + from)
 }
 
 /// Decode the five XML predefined entities. Mirrors the helper in
@@ -604,8 +607,14 @@ mod tests {
 
     #[test]
     fn parse_atx_h1_h2_h3() {
-        assert_eq!(parse_atx_heading("# Introduction"), Some((1, "Introduction".into())));
-        assert_eq!(parse_atx_heading("## Theory of change"), Some((2, "Theory of change".into())));
+        assert_eq!(
+            parse_atx_heading("# Introduction"),
+            Some((1, "Introduction".into()))
+        );
+        assert_eq!(
+            parse_atx_heading("## Theory of change"),
+            Some((2, "Theory of change".into()))
+        );
         assert_eq!(parse_atx_heading("### Detail"), Some((3, "Detail".into())));
         assert_eq!(parse_atx_heading("#### too deep"), None);
         assert_eq!(parse_atx_heading("plain text"), None);

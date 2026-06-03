@@ -35,13 +35,11 @@ fn extract_from_docx(docx: &Path, out: &Path, min_bytes: u64, json_out: bool) ->
     if !docx.exists() {
         return Err(anyhow!("source docx not found: {}", docx.display()));
     }
-    fs::create_dir_all(out)
-        .with_context(|| format!("create output dir {}", out.display()))?;
+    fs::create_dir_all(out).with_context(|| format!("create output dir {}", out.display()))?;
 
-    let file = fs::File::open(docx)
-        .with_context(|| format!("open docx {}", docx.display()))?;
-    let mut zip = ZipArchive::new(file)
-        .with_context(|| format!("read docx as zip {}", docx.display()))?;
+    let file = fs::File::open(docx).with_context(|| format!("open docx {}", docx.display()))?;
+    let mut zip =
+        ZipArchive::new(file).with_context(|| format!("read docx as zip {}", docx.display()))?;
 
     let mut extracted: u64 = 0;
     let mut skipped_small: u64 = 0;
@@ -72,8 +70,7 @@ fn extract_from_docx(docx: &Path, out: &Path, min_bytes: u64, json_out: bool) ->
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut f = fs::File::create(&dst)
-            .with_context(|| format!("create {}", dst.display()))?;
+        let mut f = fs::File::create(&dst).with_context(|| format!("create {}", dst.display()))?;
         f.write_all(&bytes)?;
         extracted += 1;
         total_bytes += bytes.len() as u64;

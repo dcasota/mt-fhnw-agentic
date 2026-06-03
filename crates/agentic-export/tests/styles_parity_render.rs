@@ -5,7 +5,7 @@
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use agentic_export::book::{render_book, BookMeta};
+use agentic_export::book::{BookMeta, render_book};
 
 #[test]
 fn rendered_book_with_bk_styles_flag_emits_186_styles_in_zip() {

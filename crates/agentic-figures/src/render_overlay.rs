@@ -70,11 +70,15 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
         .unwrap_or_default();
 
     if left.items.is_empty() && right.items.is_empty() && intersection.is_empty() {
-        return Err(anyhow!("comparison-overlay: no items in left/right/intersection"));
+        return Err(anyhow!(
+            "comparison-overlay: no items in left/right/intersection"
+        ));
     }
 
     match mode {
-        "side-by-side" | "side_by_side" => render_pane(spec, out_path, &left, &right, &intersection),
+        "side-by-side" | "side_by_side" => {
+            render_pane(spec, out_path, &left, &right, &intersection)
+        }
         _ => render_venn(spec, out_path, &left, &right, &intersection),
     }
 }
@@ -121,12 +125,26 @@ fn render_venn(
     )?;
 
     // Left-only items (left half, away from intersection).
-    let only_l: Vec<&String> = left.items.iter().filter(|i| !intersection.iter().any(|j| j == *i)).collect();
-    let only_r: Vec<&String> = right.items.iter().filter(|i| !intersection.iter().any(|j| j == *i)).collect();
+    let only_l: Vec<&String> = left
+        .items
+        .iter()
+        .filter(|i| !intersection.iter().any(|j| j == *i))
+        .collect();
+    let only_r: Vec<&String> = right
+        .items
+        .iter()
+        .filter(|i| !intersection.iter().any(|j| j == *i))
+        .collect();
 
     draw_item_column(&root, cx_l - r * 6 / 10, cy, &only_l, 18)?;
     draw_item_column(&root, cx_r + r * 6 / 10, cy, &only_r, 18)?;
-    draw_item_column(&root, (cx_l + cx_r) / 2, cy, &intersection.iter().collect::<Vec<&String>>(), 16)?;
+    draw_item_column(
+        &root,
+        (cx_l + cx_r) / 2,
+        cy,
+        &intersection.iter().collect::<Vec<&String>>(),
+        16,
+    )?;
     root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
@@ -170,11 +188,7 @@ fn render_pane(
     let pane_h = h - mt - mb;
     let panes = [
         (ml, &left.label, &left.items[..]),
-        (
-            ml + pane_w + 15,
-            &"Shared".to_string(),
-            intersection,
-        ),
+        (ml + pane_w + 15, &"Shared".to_string(), intersection),
         (ml + (pane_w + 15) * 2, &right.label, &right.items[..]),
     ];
     for (x, lbl, items) in panes {

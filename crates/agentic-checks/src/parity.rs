@@ -237,9 +237,7 @@ fn check_captioned_table_count(
             reference.display(),
             current.display(),
         ),
-        message: format!(
-            "current docx contains {cur_n} captioned tables; reference has {ref_n}",
-        ),
+        message: format!("current docx contains {cur_n} captioned tables; reference has {ref_n}",),
     }
 }
 
@@ -258,7 +256,7 @@ fn count_captioned_tables(xml: &str) -> usize {
         let tbl_body = &xml[tbl_open..tbl_close];
         // First-row header check: any <w:tblHeader/> within the table body
         // implies row-1 is a header row.
-        let has_header = tbl_body.contains("<w:tblHeader") ;
+        let has_header = tbl_body.contains("<w:tblHeader");
         // Walk backwards in the preceding 4096 bytes looking for a caption
         // paragraph that starts with "Table N." (digit-anchored).
         // Adjust to the nearest char boundary to avoid panicking on a slice
@@ -750,8 +748,12 @@ fn option_eq_finding(
     current: &Path,
     evidence: &str,
 ) -> ParityFinding {
-    let exp = expected.map(|v| v.to_string()).unwrap_or_else(|| "<absent>".into());
-    let act = actual.map(|v| v.to_string()).unwrap_or_else(|| "<absent>".into());
+    let exp = expected
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<absent>".into());
+    let act = actual
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<absent>".into());
     let severity = if expected == actual {
         Severity::Info
     } else if spec_target.is_some() && actual == spec_target {
@@ -854,8 +856,8 @@ fn back_matter_order_finding(
 /// Open a docx, read its `word/document.xml`, inspect part counts and
 /// pull a few interesting sectPr/header/footer facts.
 pub fn inspect_layout(docx: &Path, document_xml: &str) -> Result<LayoutFacts> {
-    let file = std::fs::File::open(docx)
-        .with_context(|| format!("opening docx {}", docx.display()))?;
+    let file =
+        std::fs::File::open(docx).with_context(|| format!("opening docx {}", docx.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("reading docx as zip")?;
     let mut header_parts = 0usize;
     let mut footer_parts = 0usize;
@@ -993,8 +995,8 @@ fn is_heading_paragraph(para_xml: &str) -> bool {
 
 /// Read `word/document.xml` out of a docx zip into a string.
 pub fn load_document_xml(docx: &Path) -> Result<String> {
-    let file = std::fs::File::open(docx)
-        .with_context(|| format!("opening docx {}", docx.display()))?;
+    let file =
+        std::fs::File::open(docx).with_context(|| format!("opening docx {}", docx.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("reading docx as zip")?;
     let mut entry = zip
         .by_name("word/document.xml")
@@ -1154,8 +1156,7 @@ mod tests {
                  <w:tbl><w:tr><w:trPr><w:tblHeader/></w:trPr></w:tr></w:tbl>"
             ));
         }
-        let f =
-            check_captioned_table_count(&p("ref"), &p("cur"), &ref_xml, cur_xml);
+        let f = check_captioned_table_count(&p("ref"), &p("cur"), &ref_xml, cur_xml);
         assert_eq!(f.expected, "22");
         assert_eq!(f.actual, "0");
         assert_eq!(f.delta, -22);

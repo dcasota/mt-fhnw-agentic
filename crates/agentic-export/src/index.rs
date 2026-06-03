@@ -507,7 +507,11 @@ mod tests {
         let entries = collect_index_entries(&chapters, &allow(&["GDPR"]));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].term, "GDPR");
-        assert_eq!(entries[0].refs.len(), 1, "one ref per chapter even with multiple hits");
+        assert_eq!(
+            entries[0].refs.len(),
+            1,
+            "one ref per chapter even with multiple hits"
+        );
         assert_eq!(entries[0].refs[0].bookmark, "ch1");
     }
 
@@ -596,7 +600,10 @@ mod tests {
             terms = ["GDPR", "ISO/IEC 42001"]
         "#;
         let a = IndexAllowlist::parse_toml(src).unwrap();
-        assert_eq!(a.terms, vec!["GDPR".to_string(), "ISO/IEC 42001".to_string()]);
+        assert_eq!(
+            a.terms,
+            vec!["GDPR".to_string(), "ISO/IEC 42001".to_string()]
+        );
     }
 
     #[test]
@@ -636,12 +643,7 @@ mod tests {
             allow_terms.push(term.clone());
             chapters.push((format!("c{i}"), format!("# {i} Foo\n\n{term} body.")));
         }
-        let entries = collect_index_entries(
-            &chapters,
-            &IndexAllowlist {
-                terms: allow_terms,
-            },
-        );
+        let entries = collect_index_entries(&chapters, &IndexAllowlist { terms: allow_terms });
         assert_eq!(entries.len(), 113);
     }
 }

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use agentic_export::styles_xml::{
-    all_used_styles_present, count_styles, emit_styles_xml, USED_STYLE_IDS,
+    USED_STYLE_IDS, all_used_styles_present, count_styles, emit_styles_xml,
 };
 
 fn fixture_path() -> PathBuf {
@@ -29,7 +29,10 @@ fn emitted_styles_xml_matches_reference_byte_for_byte() {
         reference.len(),
         "emitted styles.xml length differs from reference"
     );
-    assert_eq!(emitted, reference, "emitted styles.xml is not byte-identical to reference");
+    assert_eq!(
+        emitted, reference,
+        "emitted styles.xml is not byte-identical to reference"
+    );
 }
 
 #[test]

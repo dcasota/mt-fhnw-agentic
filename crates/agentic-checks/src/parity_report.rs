@@ -17,8 +17,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::parity::{summarise_by_scope, ParityReport};
 use crate::Severity;
+use crate::parity::{ParityReport, summarise_by_scope};
 
 /// Write the parity report to `out_path` as a self-contained HTML page.
 pub fn write_html(report: &ParityReport, out_path: &Path) -> Result<()> {
@@ -59,7 +59,9 @@ pub fn render_html(report: &ParityReport) -> String {
         current = escape(&report.current),
     ));
 
-    out.push_str("<section class=\"summary\">\n<h2>Per-scope summary</h2>\n<div class=\"cards\">\n");
+    out.push_str(
+        "<section class=\"summary\">\n<h2>Per-scope summary</h2>\n<div class=\"cards\">\n",
+    );
     for (scope, (pass, warn, fail)) in &summary {
         let card_class = if *fail > 0 {
             "card-fail"
@@ -285,8 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn write_html_creates_parent_dirs(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn write_html_creates_parent_dirs() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let out = tmp.path().join("nested/sub/dir/report.html");
         write_html(&sample_report(), &out)?;

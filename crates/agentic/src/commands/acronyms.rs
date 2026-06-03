@@ -78,10 +78,9 @@ pub fn run(db_path: &Path, action: AcronymsAction, json: bool) -> Result<()> {
 /// candidates (`AI`, `EU`) and 4+-letter candidates (`HITL`, `AIBOM`)
 /// are always considered acronym-shaped.
 const STOPWORDS_3: &[&str] = &[
-    "AND", "BUT", "FOR", "THE", "WHO", "YOU", "ARE", "HER", "ITS", "OUR",
-    "ONE", "TWO", "ANY", "ALL", "DAY", "GET", "HAD", "HAS", "HIS", "HOW",
-    "MAY", "NEW", "NOW", "OLD", "SEE", "WAY", "BOY", "DID", "MAN", "OUT",
-    "PUT", "SAY", "SHE", "TOO", "USE",
+    "AND", "BUT", "FOR", "THE", "WHO", "YOU", "ARE", "HER", "ITS", "OUR", "ONE", "TWO", "ANY",
+    "ALL", "DAY", "GET", "HAD", "HAS", "HIS", "HOW", "MAY", "NEW", "NOW", "OLD", "SEE", "WAY",
+    "BOY", "DID", "MAN", "OUT", "PUT", "SAY", "SHE", "TOO", "USE",
 ];
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -111,8 +110,8 @@ impl PageAwareText {
 /// last render. By scanning these markers in document order we know
 /// exactly which page every text byte belongs to.
 fn extract_page_aware_text(docx: &Path) -> Result<PageAwareText> {
-    let file = std::fs::File::open(docx)
-        .with_context(|| format!("opening docx {}", docx.display()))?;
+    let file =
+        std::fs::File::open(docx).with_context(|| format!("opening docx {}", docx.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("reading docx as zip")?;
     let mut xml = String::new();
     {
@@ -226,7 +225,10 @@ fn starts_with(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn memchr(byte: u8, haystack: &[u8], from: usize) -> Option<usize> {
-    haystack[from..].iter().position(|&b| b == byte).map(|p| p + from)
+    haystack[from..]
+        .iter()
+        .position(|&b| b == byte)
+        .map(|p| p + from)
 }
 
 fn find_closing(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
@@ -262,9 +264,10 @@ fn parse_acronyms_table(md: &str) -> (Vec<String>, Vec<String>) {
             .map(str::trim)
             .collect();
         let is_sep = cells.len() >= 2
-            && cells
-                .iter()
-                .all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch.is_whitespace()));
+            && cells.iter().all(|c| {
+                c.chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+            });
         if is_sep {
             if header_seen {
                 in_body = true;
@@ -374,10 +377,7 @@ fn rewrite_pages_column(
                             .collect::<Vec<_>>()
                             .join(",")
                     };
-                    let new_line = format!(
-                        "| {} | {} | {} |",
-                        cells[0], cells[1], pages_cell
-                    );
+                    let new_line = format!("| {} | {} | {} |", cells[0], cells[1], pages_cell);
                     if new_line != *line {
                         updated += 1;
                     }
@@ -407,9 +407,7 @@ fn rewrite_pages_column(
 ///   * Surrounding bytes must not be alphanumeric (so "AI" in "AIBOM"
 ///     is still rejected, matching the canonical lookup behaviour).
 ///   * 3-letter tokens matching the English stop list are skipped.
-fn detect_candidates(
-    text: &PageAwareText,
-) -> std::collections::BTreeMap<String, Vec<u32>> {
+fn detect_candidates(text: &PageAwareText) -> std::collections::BTreeMap<String, Vec<u32>> {
     let bytes = text.text.as_bytes();
     let mut out: std::collections::BTreeMap<String, BTreeSet<u32>> =
         std::collections::BTreeMap::new();
@@ -459,7 +457,9 @@ fn detect_candidates(
             continue;
         }
         // Safe: only ASCII upper/digit/hyphen between start..k.
-        let token = std::str::from_utf8(&bytes[start..k]).unwrap_or("").to_owned();
+        let token = std::str::from_utf8(&bytes[start..k])
+            .unwrap_or("")
+            .to_owned();
         let admit = match token.len() {
             3 => !STOPWORDS_3.contains(&token.as_str()),
             _ => true,
@@ -469,7 +469,9 @@ fn detect_candidates(
         }
         i = k.max(i + 1);
     }
-    out.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect()
+    out.into_iter()
+        .map(|(k, v)| (k, v.into_iter().collect()))
+        .collect()
 }
 
 fn is_ascii_upper(b: u8) -> bool {
@@ -504,9 +506,10 @@ fn drop_zero_page_rows(
             .map(str::trim)
             .collect();
         let is_sep = cells.len() >= 2
-            && cells
-                .iter()
-                .all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch.is_whitespace()));
+            && cells.iter().all(|c| {
+                c.chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+            });
         if is_sep {
             if header_seen {
                 in_body = true;
@@ -566,9 +569,10 @@ fn append_missing_rows(
             .map(str::trim)
             .collect();
         let is_sep = cells.len() >= 2
-            && cells
-                .iter()
-                .all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch.is_whitespace()));
+            && cells.iter().all(|c| {
+                c.chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+            });
         if is_sep {
             if header_seen {
                 in_body = true;
@@ -590,11 +594,7 @@ fn append_missing_rows(
             // No body rows — append everything at the tail.
             out.extend(lines.iter().cloned());
             for (acro, ps) in new_rows {
-                let cell = ps
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let cell = ps.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
                 out.push(format!("| {acro} | TODO: define | {cell} |"));
             }
             return (out, new_rows.len());
@@ -607,10 +607,7 @@ fn append_missing_rows(
                 let cell = if ps.is_empty() {
                     String::new()
                 } else {
-                    ps.iter()
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    ps.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
                 };
                 out.push(format!("| {acro} | TODO: define | {cell} |"));
             }
@@ -635,9 +632,8 @@ fn refresh(
     let conn = agentic_core::db::open(db_path)?;
 
     // Load current acronyms.md from project worktree.
-    let blob = worktree::read_at(&conn, project, ACRONYMS_MD).with_context(|| {
-        format!("worktree::read_at {ACRONYMS_MD} in project {project}")
-    })?;
+    let blob = worktree::read_at(&conn, project, ACRONYMS_MD)
+        .with_context(|| format!("worktree::read_at {ACRONYMS_MD} in project {project}"))?;
     let md = String::from_utf8(blob.content).context("acronyms.md is not UTF-8")?;
     let (acronyms, lines) = parse_acronyms_table(&md);
     if acronyms.is_empty() {
@@ -672,8 +668,7 @@ fn refresh(
         std::collections::BTreeMap::new();
     if add_missing {
         let candidates = detect_candidates(&page_text);
-        let known: std::collections::BTreeSet<String> =
-            pages_map.keys().cloned().collect();
+        let known: std::collections::BTreeSet<String> = pages_map.keys().cloned().collect();
         for (acro, pages) in candidates {
             if known.contains(&acro) {
                 continue;
@@ -695,9 +690,8 @@ fn refresh(
     let (new_md, updated) = rewrite_pages_column(&working_lines, &pages_map);
 
     if !dry_run && new_md != md {
-        let mut msg = String::from(
-            "acronyms refresh: Pages column rebuilt from rendered docx (v4)",
-        );
+        let mut msg =
+            String::from("acronyms refresh: Pages column rebuilt from rendered docx (v4)");
         if drop_zero_page {
             msg.push_str(&format!("; dropped={dropped}"));
         }
@@ -847,7 +841,11 @@ mod tests {
         };
         let cands = detect_candidates(&t);
         // Expected: AIBOM, AI, HITL, MAPE-K. Not THE (stopword), not lowercase.
-        assert!(cands.contains_key("AIBOM"), "missing AIBOM: {:?}", cands.keys().collect::<Vec<_>>());
+        assert!(
+            cands.contains_key("AIBOM"),
+            "missing AIBOM: {:?}",
+            cands.keys().collect::<Vec<_>>()
+        );
         assert!(cands.contains_key("AI"));
         assert!(cands.contains_key("HITL"));
         assert!(cands.contains_key("MAPE-K"));
@@ -904,7 +902,8 @@ mod tests {
     #[test]
     fn combined_drop_then_add_via_helpers() {
         // Simulates the order-of-operations: drop OLD first, then append NEW.
-        let md = "| Acronym | Expansion | Pages |\n|---|---|---|\n| AI | x | 1 |\n| OLD | gone | |\n";
+        let md =
+            "| Acronym | Expansion | Pages |\n|---|---|---|\n| AI | x | 1 |\n| OLD | gone | |\n";
         let lines: Vec<String> = md.lines().map(str::to_owned).collect();
 
         let mut pages = std::collections::BTreeMap::new();

@@ -324,12 +324,12 @@ fn render_table_as_markdown(spec: &FigSpec) -> String {
     if header.is_empty() && rows.is_empty() {
         // Defensive: empty figspec emits a marker comment so the failure
         // is visible during review without breaking the chapter render.
-        return format!(
-            "<!-- figspec/table {}: missing header/rows -->\n",
-            spec.id
-        );
+        return format!("<!-- figspec/table {}: missing header/rows -->\n", spec.id);
     }
-    let ncols = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0)).max(1);
+    let ncols = header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+        .max(1);
     let esc = |s: &str| -> String {
         s.replace('\\', "\\\\")
             .replace('|', "\\|")
@@ -1993,11 +1993,26 @@ mod tests {
             !out.contains("![") || !out.contains("(figures/sub/t1.png)"),
             "table figspec must NOT resolve to an image reference: {out}"
         );
-        assert!(out.contains("Table: Acronym register"), "caption line present: {out}");
-        assert!(out.contains("| Acronym | Expansion |"), "header row present: {out}");
-        assert!(out.contains("| --- | --- |"), "separator row present: {out}");
-        assert!(out.contains("| AI | Artificial Intelligence |"), "body row 1: {out}");
-        assert!(out.contains("| ML | Machine Learning |"), "body row 2: {out}");
+        assert!(
+            out.contains("Table: Acronym register"),
+            "caption line present: {out}"
+        );
+        assert!(
+            out.contains("| Acronym | Expansion |"),
+            "header row present: {out}"
+        );
+        assert!(
+            out.contains("| --- | --- |"),
+            "separator row present: {out}"
+        );
+        assert!(
+            out.contains("| AI | Artificial Intelligence |"),
+            "body row 1: {out}"
+        );
+        assert!(
+            out.contains("| ML | Machine Learning |"),
+            "body row 2: {out}"
+        );
         assert!(out.contains("Lead-in.") && out.contains("Trailer."));
     }
 

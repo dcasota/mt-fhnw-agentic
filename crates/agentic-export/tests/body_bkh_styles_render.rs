@@ -8,7 +8,7 @@
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use agentic_export::book::{render_book, BookMeta};
+use agentic_export::book::{BookMeta, render_book};
 
 fn document_xml(bytes: Vec<u8>) -> String {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).expect("open zip");
@@ -34,8 +34,12 @@ fn body_styles_emit_bkh_when_flag_set() {
         body_render_use_bk_styles: true,
         ..Default::default()
     };
-    let bytes = render_book(&meta, &[("c1".into(), TWO_HEADING_MD.into())], Path::new("."))
-        .expect("render");
+    let bytes = render_book(
+        &meta,
+        &[("c1".into(), TWO_HEADING_MD.into())],
+        Path::new("."),
+    )
+    .expect("render");
     let xml = document_xml(bytes);
 
     assert!(
@@ -66,8 +70,12 @@ fn body_styles_emit_heading_when_flag_false() {
         // body_render_use_bk_styles defaults to false.
         ..Default::default()
     };
-    let bytes = render_book(&meta, &[("c1".into(), TWO_HEADING_MD.into())], Path::new("."))
-        .expect("render");
+    let bytes = render_book(
+        &meta,
+        &[("c1".into(), TWO_HEADING_MD.into())],
+        Path::new("."),
+    )
+    .expect("render");
     let xml = document_xml(bytes);
 
     assert!(

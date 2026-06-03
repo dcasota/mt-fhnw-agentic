@@ -306,8 +306,7 @@ pub async fn run_report(
             let cur_path = current.unwrap_or_else(|| {
                 std::path::PathBuf::from(format!("snapshots/latest/{book}.docx"))
             });
-            let parity_report =
-                agentic_checks::parity::run_parity(&reference, &cur_path)?;
+            let parity_report = agentic_checks::parity::run_parity(&reference, &cur_path)?;
             if let Some(path) = html_report.as_ref() {
                 agentic_checks::parity_report::write_html(&parity_report, path)?;
             }

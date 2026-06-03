@@ -43,8 +43,14 @@ fn parse_components(v: &Value) -> Vec<Comp> {
         .map(|a| {
             a.iter()
                 .map(|c| Comp {
-                    x: c.get("x").and_then(Value::as_f64).unwrap_or(0.5).clamp(0.0, 1.0),
-                    y: c.get("y").and_then(Value::as_f64).unwrap_or(0.5).clamp(0.0, 1.0),
+                    x: c.get("x")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.5)
+                        .clamp(0.0, 1.0),
+                    y: c.get("y")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.5)
+                        .clamp(0.0, 1.0),
                     label: c
                         .get("label")
                         .and_then(Value::as_str)
@@ -86,11 +92,8 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
     // annotation layer entirely (non-repudiation requirement).
     if let Some(bi) = &base_image {
         if let Ok(img) = image::open(bi) {
-            let resized = img.resize_exact(
-                pw as u32,
-                ph as u32,
-                image::imageops::FilterType::Triangle,
-            );
+            let resized =
+                img.resize_exact(pw as u32, ph as u32, image::imageops::FilterType::Triangle);
             let rgb = resized.to_rgb8();
             for (px, py, pix) in rgb.enumerate_pixels() {
                 let c = RGBColor(pix.0[0], pix.0[1], pix.0[2]);
@@ -205,10 +208,9 @@ mod tests {
         let dir = std::env::temp_dir().join("agentic_fig_callout_t2");
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("co_err.png");
-        let spec = parse(
-            r#"{"id":"co2","type":"callout-diagram","title":"","caption":"","data":{}}"#,
-        )
-        .unwrap();
+        let spec =
+            parse(r#"{"id":"co2","type":"callout-diagram","title":"","caption":"","data":{}}"#)
+                .unwrap();
         assert!(render(&spec, &out).is_err());
     }
 }

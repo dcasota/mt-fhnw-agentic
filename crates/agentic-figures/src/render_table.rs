@@ -24,8 +24,8 @@ use plotters::prelude::*;
 use serde_json::Value;
 
 use crate::{
-    BORDER, FigSpec, GREY, HEADBG, WHITEC, centered, draw_title, fig_seed, fill_rect, font,
-    font_b, font_c, json_str, stroke_rect, text, wrap,
+    BORDER, FigSpec, GREY, HEADBG, WHITEC, centered, draw_title, fig_seed, fill_rect, font, font_b,
+    font_c, json_str, stroke_rect, text, wrap,
 };
 
 fn parse_row(v: &Value) -> Vec<String> {
@@ -53,7 +53,10 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
     if header.is_empty() && rows.is_empty() {
         return Err(anyhow!("table: missing header/rows"));
     }
-    let n_cols = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0)).max(1);
+    let n_cols = header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+        .max(1);
 
     // Column-width hints (proportional to max content length per column).
     let col_chars: Vec<usize> = (0..n_cols)

@@ -294,7 +294,8 @@ mod strip_tests {
 
     #[test]
     fn strips_wave5_figures_section() {
-        let input = "before\n\n<!-- ai_norms-figures-wave5 -->\n## Figures\n\n```figspec\n{}\n```\n";
+        let input =
+            "before\n\n<!-- ai_norms-figures-wave5 -->\n## Figures\n\n```figspec\n{}\n```\n";
         let out = strip_wave5_figures_section(input);
         assert_eq!(out, "before");
     }
@@ -365,7 +366,10 @@ mod strip_tests {
     fn strip_keypoints_fence_removes_block() {
         let input = "Intro.\n\n```keypoints\n- one\n- two\n```\n\nMore prose.\n";
         let out = strip_keypoints_and_quiz_fences(input);
-        assert!(!out.contains("```keypoints"), "keypoints fence not stripped: {out}");
+        assert!(
+            !out.contains("```keypoints"),
+            "keypoints fence not stripped: {out}"
+        );
         assert!(!out.contains("- one"), "keypoints body not stripped: {out}");
         assert!(out.contains("Intro."), "intro lost: {out}");
         assert!(out.contains("More prose."), "trailing prose lost: {out}");
@@ -418,7 +422,10 @@ mod strip_tests {
     /// `out/sources/norms/NN_<slug>_EN.md` layout.
     #[test]
     fn slug_extracts_from_numbered_en_md() {
-        assert_eq!(norms_chapter_slug("out/sources/norms/10_usa_EN.md").as_deref(), Some("usa"));
+        assert_eq!(
+            norms_chapter_slug("out/sources/norms/10_usa_EN.md").as_deref(),
+            Some("usa")
+        );
         assert_eq!(
             norms_chapter_slug("out/sources/norms/30_humanoid_usecase_EN.md").as_deref(),
             Some("humanoid_usecase")

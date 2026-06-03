@@ -61,8 +61,7 @@ pub const USED_STYLE_IDS: &[&str] = &[
 /// embedded at compile time so the emitter is hermetic (no runtime file I/O).
 /// Wave-0 fingerprint: 353,534 bytes, SHA-256
 /// `FD1FFD44556C86CA06974593F3C9082EEAE99E5EB2EB533E119AAD47C3C62175`.
-const REFERENCE_STYLES_XML: &str =
-    include_str!("../tests/fixtures/styles_reference.xml");
+const REFERENCE_STYLES_XML: &str = include_str!("../tests/fixtures/styles_reference.xml");
 
 /// Emit the complete `<w:styles>` document (XML declaration + namespace
 /// preamble + docDefaults + 186 `<w:style>` elements + latentStyles).

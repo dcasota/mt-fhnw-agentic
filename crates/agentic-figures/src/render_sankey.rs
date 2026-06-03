@@ -57,7 +57,14 @@ fn parse_nodes(v: &Value) -> Vec<(String, Node)> {
                         .get("color")
                         .and_then(Value::as_str)
                         .map_or_else(|| WONG[i % WONG.len()], hex_color);
-                    (id, Node { label, column, color })
+                    (
+                        id,
+                        Node {
+                            label,
+                            column,
+                            color,
+                        },
+                    )
                 })
                 .collect()
         })
@@ -140,10 +147,7 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
         .iter()
         .map(|members| members.iter().map(|&i| node_total[i]).sum::<f64>().max(1.0))
         .collect();
-    let scale_for_col: Vec<f64> = col_totals
-        .iter()
-        .map(|t| f64::from(ph - 40) / t)
-        .collect();
+    let scale_for_col: Vec<f64> = col_totals.iter().map(|t| f64::from(ph - 40) / t).collect();
 
     // Position each node (top-left + h).
     let mut node_pos: Vec<(i32, i32, i32)> = vec![(0, 0, 0); nodes.len()]; // x, y, h
@@ -172,9 +176,11 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
         let (dx, dy, dh) = node_pos[f.dst];
         let _ = (sy, dy); // silence: cursors track these
         #[allow(clippy::cast_possible_truncation)]
-        let band_src = (f.weight * scale_for_col[nodes[f.src].1.column.max(0) as usize]).max(3.0) as i32;
+        let band_src =
+            (f.weight * scale_for_col[nodes[f.src].1.column.max(0) as usize]).max(3.0) as i32;
         #[allow(clippy::cast_possible_truncation)]
-        let band_dst = (f.weight * scale_for_col[nodes[f.dst].1.column.max(0) as usize]).max(3.0) as i32;
+        let band_dst =
+            (f.weight * scale_for_col[nodes[f.dst].1.column.max(0) as usize]).max(3.0) as i32;
         let ay0 = src_cursor[f.src];
         let ay1 = (ay0 + band_src).min(node_pos[f.src].1 + sh);
         let by0 = dst_cursor[f.dst];
@@ -207,7 +213,13 @@ pub fn render(spec: &FigSpec, out_path: &Path) -> Result<()> {
                 y + nh / 2,
             )?;
         } else {
-            text(&root, &n.label, &font_b(13, &INK), x + node_w + 6, y + nh / 2)?;
+            text(
+                &root,
+                &n.label,
+                &font_b(13, &INK),
+                x + node_w + 6,
+                y + nh / 2,
+            )?;
         }
     }
     // Legend strip at bottom-left.
@@ -234,11 +246,13 @@ fn draw_ribbon(
     color: &RGBColor,
 ) -> Result<()> {
     // Faint translucent fill (~38% alpha equivalent achieved by lightening).
-    let lighten = |c: &RGBColor| RGBColor(
-        ((u16::from(c.0) + 255 * 2) / 3) as u8,
-        ((u16::from(c.1) + 255 * 2) / 3) as u8,
-        ((u16::from(c.2) + 255 * 2) / 3) as u8,
-    );
+    let lighten = |c: &RGBColor| {
+        RGBColor(
+            ((u16::from(c.0) + 255 * 2) / 3) as u8,
+            ((u16::from(c.1) + 255 * 2) / 3) as u8,
+            ((u16::from(c.2) + 255 * 2) / 3) as u8,
+        )
+    };
     let fill_c = lighten(color);
     let pts = vec![(x0, sy0), (x1, dy0), (x1, dy1), (x0, sy1)];
     a.draw(&Polygon::new(pts.clone(), fill_c.filled()))
@@ -278,7 +292,9 @@ mod tests {
         let dir = std::env::temp_dir().join("agentic_fig_sankey_t2");
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("sankey_err.png");
-        let spec = parse(r#"{"id":"s2","type":"sankey","title":"","caption":"","data":{"flows":[]}}"#).unwrap();
+        let spec =
+            parse(r#"{"id":"s2","type":"sankey","title":"","caption":"","data":{"flows":[]}}"#)
+                .unwrap();
         assert!(render(&spec, &out).is_err());
     }
 }

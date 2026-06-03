@@ -47,8 +47,8 @@ pub const GATE_CATALOG: &[(&str, &str)] = &[
     ("adr-enforcement", "adr_enforcement"), // ADR-0052 §4.3
     ("term-rename", "term_rename"),         // deprecated-token surveillance
     ("toc-coverage", "toc_coverage"),       // ADR-0056 §3.2 (renderer book TOC ⇄ source headings)
-    ("artefact-cap", "artefact_cap"),       // ADR-0055 — future gate (catalog registration only; subcommand not yet implemented)
-    ("parity", "parity"),                   // ADR-0057 §3 — visual / structural parity gate
+    ("artefact-cap", "artefact_cap"), // ADR-0055 — future gate (catalog registration only; subcommand not yet implemented)
+    ("parity", "parity"),             // ADR-0057 §3 — visual / structural parity gate
 ];
 
 /// Resolve a gate subcommand to its catalog `(subcommand, checkpoint)` entry.

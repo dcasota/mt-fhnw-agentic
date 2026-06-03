@@ -212,9 +212,7 @@ fn find_url_start(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if (bytes[i] == b'h')
-            && (s[i..].starts_with("https://") || s[i..].starts_with("http://"))
-        {
+        if (bytes[i] == b'h') && (s[i..].starts_with("https://") || s[i..].starts_with("http://")) {
             let prev_ok = i == 0
                 || matches!(
                     bytes[i - 1],
@@ -605,8 +603,7 @@ mod tests {
     /// bookkit `chapters_src/*.txt` sources).
     #[test]
     fn bare_url_in_paragraph_becomes_linked_run() {
-        let blocks =
-            to_docx_blocks("See https://example.org/page for details.\n");
+        let blocks = to_docx_blocks("See https://example.org/page for details.\n");
         let runs: Vec<&DocxRun> = blocks
             .iter()
             .filter_map(|b| {
@@ -619,9 +616,9 @@ mod tests {
             .flatten()
             .collect();
         assert!(
-            runs.iter().any(|r| r.link.as_deref()
-                == Some("https://example.org/page")
-                && r.text == "https://example.org/page"),
+            runs.iter()
+                .any(|r| r.link.as_deref() == Some("https://example.org/page")
+                    && r.text == "https://example.org/page"),
             "no linked-URL run found in: {runs:?}",
         );
     }
@@ -629,13 +626,13 @@ mod tests {
     #[test]
     fn split_bare_urls_keeps_prose_and_strips_trailing_punctuation() {
         let segs = split_bare_urls("see https://a.example/x, and https://b.example.");
-        let urls: Vec<_> = segs
-            .iter()
-            .filter_map(|(_, u)| u.clone())
-            .collect();
+        let urls: Vec<_> = segs.iter().filter_map(|(_, u)| u.clone()).collect();
         assert_eq!(
             urls,
-            vec!["https://a.example/x".to_string(), "https://b.example".to_string()],
+            vec![
+                "https://a.example/x".to_string(),
+                "https://b.example".to_string()
+            ],
             "unexpected URL split: {segs:?}",
         );
     }
@@ -667,7 +664,11 @@ mod tests {
             .iter()
             .filter(|r| r.link.as_deref() == Some("https://example.org"))
             .collect();
-        assert_eq!(linked.len(), 1, "expected exactly one linked run, got: {runs:?}");
+        assert_eq!(
+            linked.len(),
+            1,
+            "expected exactly one linked run, got: {runs:?}"
+        );
         assert_eq!(linked[0].text, "the spec");
     }
 }

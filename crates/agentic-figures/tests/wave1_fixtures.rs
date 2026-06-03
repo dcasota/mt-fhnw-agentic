@@ -59,8 +59,7 @@ fn renders_all_wave1_fixtures() {
         let out = out_dir.join(format!("{name}.png"));
         agentic_figures::render_figspec(&json, &out)
             .unwrap_or_else(|e| panic!("render fixture {name}: {e}"));
-        let meta = std::fs::metadata(&out)
-            .unwrap_or_else(|e| panic!("stat {name}: {e}"));
+        let meta = std::fs::metadata(&out).unwrap_or_else(|e| panic!("stat {name}: {e}"));
         assert!(meta.len() > 100, "{name} png too small: {}", meta.len());
     }
 }

@@ -205,8 +205,7 @@ fn scan_text(
                 message: format!(
                     "deprecated token '{}' still present (replace with '{}'{}{}): {}",
                     term.token,
-                    term
-                        .replacement
+                    term.replacement
                         .as_deref()
                         .unwrap_or("(no replacement declared)"),
                     term.since
@@ -277,7 +276,9 @@ mod tests {
     #[test]
     fn is_excluded_allows_live_paths() {
         assert!(!is_excluded("thesis/fhnw_1_introduction.md"));
-        assert!(!is_excluded("out/sources/Dimension_01_agile_leadership_EN.md"));
+        assert!(!is_excluded(
+            "out/sources/Dimension_01_agile_leadership_EN.md"
+        ));
         assert!(!is_excluded("specs/adr/0001-foo.md"));
         assert!(!is_excluded("PROGRESS.md"));
     }

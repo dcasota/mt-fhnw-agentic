@@ -237,12 +237,8 @@ mod curation_tests {
         assert!(!is_curated_keeper(
             "eur-lex.europa.eu (n.d.). eur-lex.europa.eu. https://..."
         ));
-        assert!(!is_curated_keeper(
-            "arxiv (n.d.). arxiv. https://arxiv"
-        ));
-        assert!(!is_curated_keeper(
-            "www (n.d.). www. https://www"
-        ));
+        assert!(!is_curated_keeper("arxiv (n.d.). arxiv. https://arxiv"));
+        assert!(!is_curated_keeper("www (n.d.). www. https://www"));
         assert!(!is_curated_keeper(
             "blackhat (n.d.). blackhat. https://www.blackhat"
         ));
@@ -453,12 +449,7 @@ fn emit(
 
 /// Emit the rendered markdown either to stdout (default) or into the
 /// project's working tree at `BIBLIOGRAPHY_PATH` (when `write` is true).
-fn finalise(
-    conn: &rusqlite::Connection,
-    project: &str,
-    markdown: &str,
-    write: bool,
-) -> Result<()> {
+fn finalise(conn: &rusqlite::Connection, project: &str, markdown: &str, write: bool) -> Result<()> {
     if write {
         worktree::put_at(
             conn,

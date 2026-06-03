@@ -10,7 +10,7 @@
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use agentic_export::book::{render_book, BookMeta};
+use agentic_export::book::{BookMeta, render_book};
 
 fn document_xml(bytes: Vec<u8>) -> String {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).expect("open zip");
@@ -22,8 +22,7 @@ fn document_xml(bytes: Vec<u8>) -> String {
     xml
 }
 
-const TABLE_MD: &str =
-    "# Chapter\n\nTable: Demo caption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+const TABLE_MD: &str = "# Chapter\n\nTable: Demo caption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
 
 const FIGURE_TABLE_MD: &str = "# Chapter\n\n\
 ![A figure](figures/c1/missing.png)\n\n\
@@ -44,14 +43,13 @@ fn table_renders_with_tblstyle_caption_and_header() {
         body_render_use_bk_styles: true,
         ..Default::default()
     };
-    let bytes = render_book(&meta, &[("c1".into(), TABLE_MD.into())], Path::new("."))
-        .expect("render");
+    let bytes =
+        render_book(&meta, &[("c1".into(), TABLE_MD.into())], Path::new(".")).expect("render");
     let xml = document_xml(bytes);
 
     // (1) TableGrid style applied to the table block.
     assert!(
-        xml.contains("w:tblStyle w:val=\"TableGrid\"")
-            || xml.contains("w:val=\"TableGrid\""),
+        xml.contains("w:tblStyle w:val=\"TableGrid\"") || xml.contains("w:val=\"TableGrid\""),
         "table must reference the TableGrid style id; got document.xml without it"
     );
     // (2) <w:tblHeader/> emitted on the first row (by mark_header_rows).
@@ -80,9 +78,7 @@ fn table_renders_with_tblstyle_caption_and_header() {
         let after = &rest[open..];
         let gt = after.find('>').expect("w:t open");
         let body_start = open + gt + 1;
-        let body_end_rel = rest[body_start..]
-            .find("</w:t>")
-            .expect("w:t close");
+        let body_end_rel = rest[body_start..].find("</w:t>").expect("w:t close");
         caption_text.push_str(&rest[body_start..body_start + body_end_rel]);
         rest = &rest[body_start + body_end_rel + "</w:t>".len()..];
     }
@@ -132,8 +128,8 @@ fn captions_use_legacy_caption_under_default_flag() {
         // body_render_use_bk_styles defaults to false.
         ..Default::default()
     };
-    let bytes = render_book(&meta, &[("c1".into(), TABLE_MD.into())], Path::new("."))
-        .expect("render");
+    let bytes =
+        render_book(&meta, &[("c1".into(), TABLE_MD.into())], Path::new(".")).expect("render");
     let xml = document_xml(bytes);
     assert!(
         xml.contains("w:pStyle w:val=\"Caption\""),

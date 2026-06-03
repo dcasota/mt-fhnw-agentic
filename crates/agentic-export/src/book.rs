@@ -10,12 +10,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use docx_rs::{
-    AlignmentType, BorderType, BreakType, DocGrid, Docx, FieldCharType, Footer, Header,
-    HeightRule, Hyperlink, HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin,
-    PageNum, PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty,
-    Shading, Style, StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition,
-    TableCellMargins, TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType,
-    VertAlignType, WidthType,
+    AlignmentType, BorderType, BreakType, DocGrid, Docx, FieldCharType, Footer, Header, HeightRule,
+    Hyperlink, HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin, PageNum,
+    PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty, Shading, Style,
+    StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition, TableCellMargins,
+    TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType, VertAlignType,
+    WidthType,
 };
 
 use agentic_core::i18n::t;
@@ -666,7 +666,10 @@ fn should_apply_bk_bullet_prefix(text: &str) -> bool {
     };
     if allow_letter {
         // bytes[1] == '.' confirmed above; require whitespace after.
-        return bytes.get(2).map(|c| c.is_ascii_whitespace()).unwrap_or(false);
+        return bytes
+            .get(2)
+            .map(|c| c.is_ascii_whitespace())
+            .unwrap_or(false);
     }
     // Walk 1-3 digits starting at digits_start.
     let mut i = digits_start;
@@ -1096,13 +1099,15 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
         if use_bk {
             p = p.style("BkSubtitle");
         }
-        doc = doc.add_paragraph(p.add_run(
-            Run::new()
-                .add_text(&m.subtitle)
-                .size(30)
-                .color(GREY)
-                .fonts(head_fonts()),
-        ));
+        doc = doc.add_paragraph(
+            p.add_run(
+                Run::new()
+                    .add_text(&m.subtitle)
+                    .size(30)
+                    .color(GREY)
+                    .fonts(head_fonts()),
+            ),
+        );
     }
     // Blue rule + descriptive line under the title (bookkit DESCRIPTION).
     if !m.description.is_empty() {
@@ -1120,14 +1125,16 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
         if use_bk {
             p = p.style("BkSubtitle");
         }
-        doc = doc.add_paragraph(p.add_run(
-            Run::new()
-                .add_text(&m.description)
-                .italic()
-                .size(26)
-                .color(GREY)
-                .fonts(head_fonts()),
-        ));
+        doc = doc.add_paragraph(
+            p.add_run(
+                Run::new()
+                    .add_text(&m.description)
+                    .italic()
+                    .size(26)
+                    .color(GREY)
+                    .fonts(head_fonts()),
+            ),
+        );
     }
     for _ in 0..6 {
         doc = doc.add_paragraph(Paragraph::new());
@@ -1331,14 +1338,16 @@ fn antikythera_inscription_block(mut doc: Docx, m: &BookMeta) -> Docx {
     if m.body_render_use_bk_styles {
         p = p.style("BkSubtitle");
     }
-    doc = doc.add_paragraph(p.add_run(
-        Run::new()
-            .add_text(ANTIKYTHERA_INSCRIPTION_TEXT)
-            .italic()
-            .size(22)
-            .color("1A1A1A")
-            .fonts(body_fonts()),
-    ));
+    doc = doc.add_paragraph(
+        p.add_run(
+            Run::new()
+                .add_text(ANTIKYTHERA_INSCRIPTION_TEXT)
+                .italic()
+                .size(22)
+                .color("1A1A1A")
+                .fonts(body_fonts()),
+        ),
+    );
     doc.add_paragraph(page_break())
 }
 
@@ -1360,21 +1369,25 @@ fn closing_thought_block(mut doc: Docx, m: &BookMeta) -> Docx {
         heading = heading.style("BkCallout");
         body_p = body_p.style("BkCallout");
     }
-    doc = doc.add_paragraph(heading.add_run(
-        Run::new()
-            .add_text(CLOSING_THOUGHT_HEADING)
-            .bold()
-            .size(26)
-            .color(NAVY)
-            .fonts(head_fonts()),
-    ));
-    doc.add_paragraph(body_p.add_run(
-        Run::new()
-            .add_text(body.trim())
-            .size(22)
-            .color("1A1A1A")
-            .fonts(body_fonts()),
-    ))
+    doc = doc.add_paragraph(
+        heading.add_run(
+            Run::new()
+                .add_text(CLOSING_THOUGHT_HEADING)
+                .bold()
+                .size(26)
+                .color(NAVY)
+                .fonts(head_fonts()),
+        ),
+    );
+    doc.add_paragraph(
+        body_p.add_run(
+            Run::new()
+                .add_text(body.trim())
+                .size(22)
+                .color("1A1A1A")
+                .fonts(body_fonts()),
+        ),
+    )
 }
 
 /// T1.7 — Inscription-page Antikythera NOTE footer (REF parity 2026-06-02).
@@ -1524,13 +1537,11 @@ fn heading_para(
     } else {
         format!("Heading{}", level.min(4))
     };
-    let mut p = Paragraph::new()
-        .style(&style_id)
-        .line_spacing(
-            LineSpacing::new()
-                .before(SPACE_BEFORE_HEAD)
-                .after(SPACE_AFTER_HEAD),
-        );
+    let mut p = Paragraph::new().style(&style_id).line_spacing(
+        LineSpacing::new()
+            .before(SPACE_BEFORE_HEAD)
+            .after(SPACE_AFTER_HEAD),
+    );
     if page_break_before {
         p = p.add_run(Run::new().add_break(BreakType::Page));
     }
@@ -2381,7 +2392,8 @@ fn postprocess_docx_inner_layout(
                 rels_xml = Some(s);
             } else if name == "[Content_Types].xml" {
                 let mut s = String::new();
-                f.read_to_string(&mut s).context("read [Content_Types].xml")?;
+                f.read_to_string(&mut s)
+                    .context("read [Content_Types].xml")?;
                 content_types_xml = Some(s);
             } else if is_header_part(&name) {
                 let mut s = String::new();
@@ -2457,14 +2469,12 @@ fn postprocess_docx_inner_layout(
                 s = drop_refs_to_empty_parts(&s, &dropped_rids);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start document.xml")?;
-                zout.write_all(s.as_bytes())
-                    .context("write document.xml")?;
+                zout.write_all(s.as_bytes()).context("write document.xml")?;
             } else if name == "word/settings.xml" {
                 let s = inject_update_fields(settings_xml.take().unwrap_or_default());
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start settings.xml")?;
-                zout.write_all(s.as_bytes())
-                    .context("write settings.xml")?;
+                zout.write_all(s.as_bytes()).context("write settings.xml")?;
             } else if name == "word/_rels/document.xml.rels" {
                 let s = if rels_xml.is_some() {
                     // collect_dropped_rids returned the rewritten rels
@@ -2494,8 +2504,7 @@ fn postprocess_docx_inner_layout(
                 let s = headers.remove(name).unwrap_or_default();
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start header part")?;
-                zout.write_all(s.as_bytes())
-                    .context("write header part")?;
+                zout.write_all(s.as_bytes()).context("write header part")?;
             } else if is_footer_part(name) {
                 if drop_footers.contains(name) {
                     continue;
@@ -2503,8 +2512,7 @@ fn postprocess_docx_inner_layout(
                 let s = footers.remove(name).unwrap_or_default();
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start footer part")?;
-                zout.write_all(s.as_bytes())
-                    .context("write footer part")?;
+                zout.write_all(s.as_bytes()).context("write footer part")?;
             }
             // All other entries were already raw-copied during the first
             // pass, so do nothing here.
@@ -2570,7 +2578,8 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 rels_xml = Some(s);
             } else if name == "[Content_Types].xml" {
                 let mut s = String::new();
-                f.read_to_string(&mut s).context("read [Content_Types].xml")?;
+                f.read_to_string(&mut s)
+                    .context("read [Content_Types].xml")?;
                 content_types_xml = Some(s);
             } else if is_header_part(&name) {
                 let mut s = String::new();
@@ -2618,8 +2627,7 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 let s = drop_refs_to_empty_parts(&s, &dropped_rids);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start document.xml")?;
-                zout.write_all(s.as_bytes())
-                    .context("write document.xml")?;
+                zout.write_all(s.as_bytes()).context("write document.xml")?;
             } else if name == "word/_rels/document.xml.rels" {
                 let s = if rels_xml.is_some() {
                     kept_rels.clone()
@@ -2647,8 +2655,7 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 let s = headers.remove(name).unwrap_or_default();
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start header part")?;
-                zout.write_all(s.as_bytes())
-                    .context("write header part")?;
+                zout.write_all(s.as_bytes()).context("write header part")?;
             } else if is_footer_part(name) {
                 if drop_footers.contains(name) {
                     continue;
@@ -2656,8 +2663,7 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 let s = footers.remove(name).unwrap_or_default();
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start footer part")?;
-                zout.write_all(s.as_bytes())
-                    .context("write footer part")?;
+                zout.write_all(s.as_bytes()).context("write footer part")?;
             }
             // Everything else was already raw-copied in the first pass.
         }
@@ -2769,10 +2775,7 @@ fn collect_dropped_rids(
 /// Strip `<w:headerReference … r:id="rId…"/>` and `<w:footerReference …
 /// r:id="rId…"/>` whose r:id is in `dropped_rids` from every sectPr in
 /// the document. Idempotent. Counterpart to [`collect_dropped_rids`].
-fn drop_refs_to_empty_parts(
-    doc: &str,
-    dropped_rids: &std::collections::HashSet<String>,
-) -> String {
+fn drop_refs_to_empty_parts(doc: &str, dropped_rids: &std::collections::HashSet<String>) -> String {
     if dropped_rids.is_empty() {
         return doc.to_string();
     }
@@ -2859,8 +2862,8 @@ fn extract_xml_attr(tag: &str, attr: &str) -> Option<String> {
 /// test fixture and by the `inject_styles_xml` integration unit test.
 pub fn inject_styles_xml(docx_bytes: &mut Vec<u8>, styles_xml: &str) -> anyhow::Result<()> {
     use std::io::{Read, Write};
-    let mut zin = zip::ZipArchive::new(Cursor::new(std::mem::take(docx_bytes)))
-        .context("open docx zip")?;
+    let mut zin =
+        zip::ZipArchive::new(Cursor::new(std::mem::take(docx_bytes))).context("open docx zip")?;
     let mut out = Cursor::new(Vec::<u8>::new());
     {
         let mut zout = zip::ZipWriter::new(&mut out);
@@ -3040,7 +3043,9 @@ fn replace_or_insert_attr(tag: &str, name: &str, value: &str) -> String {
             return s;
         }
     }
-    let insert_at = tag.rfind("/>").unwrap_or_else(|| tag.rfind('>').unwrap_or(0));
+    let insert_at = tag
+        .rfind("/>")
+        .unwrap_or_else(|| tag.rfind('>').unwrap_or(0));
     let mut s = String::with_capacity(tag.len() + name.len() + value.len() + 4);
     s.push_str(&tag[..insert_at]);
     s.push(' ');
@@ -3647,8 +3652,7 @@ fn render_block(
                 );
                 // Breathing room below the table (ADR-0030 relaxed placement).
                 doc.add_paragraph(
-                    Paragraph::new()
-                        .line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE)),
+                    Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE)),
                 )
             }
         }
@@ -3930,7 +3934,10 @@ fn try_parse_table_caption_marker(text: &str) -> Option<String> {
 
     // Form 1: bare `:` / `.` immediately after the keyword
     // (e.g. "Table: foo", "Table. foo").
-    if let Some(rest) = after_kw.strip_prefix(':').or_else(|| after_kw.strip_prefix('.')) {
+    if let Some(rest) = after_kw
+        .strip_prefix(':')
+        .or_else(|| after_kw.strip_prefix('.'))
+    {
         return Some(rest.trim().to_string());
     }
 
@@ -3982,10 +3989,7 @@ fn fold_table_captions(blocks: Vec<DocxBlock>) -> Vec<DocxBlock> {
                     // text, so number-only markers above the next table
                     // still work via the `pending` slot below.
                     let consumed_below = if !cap.is_empty() {
-                        if let Some(DocxBlock::Table {
-                            caption: tcap, ..
-                        }) = out.last_mut()
-                        {
+                        if let Some(DocxBlock::Table { caption: tcap, .. }) = out.last_mut() {
                             if tcap.is_none() {
                                 *tcap = Some(cap.clone());
                                 true
@@ -4112,14 +4116,16 @@ pub fn render_book(
     if meta.body_render_use_bk_styles {
         contents_p = contents_p.style("BkH1");
     }
-    doc = doc.add_paragraph(contents_p.add_run(
-        Run::new()
-            .add_text("Contents")
-            .bold()
-            .size(44)
-            .color(NAVY)
-            .fonts(head_fonts()),
-    ));
+    doc = doc.add_paragraph(
+        contents_p.add_run(
+            Run::new()
+                .add_text("Contents")
+                .bold()
+                .size(44)
+                .color(NAVY)
+                .fonts(head_fonts()),
+        ),
+    );
     doc = doc.add_table_of_contents(
         TableOfContents::new()
             .heading_styles_range(1, 3)
@@ -4375,11 +4381,7 @@ pub fn render_book(
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
     let layout = LayoutOverrides::from_meta(meta);
-    postprocess_docx_inner_layout(
-        cur.into_inner(),
-        meta.body_render_use_bk_styles,
-        &layout,
-    )
+    postprocess_docx_inner_layout(cur.into_inner(), meta.body_render_use_bk_styles, &layout)
 }
 
 /// FHNW thesis front/back-matter slot a chapter belongs to, decided by its first
@@ -4735,11 +4737,7 @@ fn render_thesis_book(
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack thesis docx")?;
     let layout = LayoutOverrides::from_meta(meta);
-    postprocess_docx_inner_layout(
-        cur.into_inner(),
-        meta.body_render_use_bk_styles,
-        &layout,
-    )
+    postprocess_docx_inner_layout(cur.into_inner(), meta.body_render_use_bk_styles, &layout)
 }
 
 #[cfg(test)]
@@ -4812,7 +4810,10 @@ mod tests {
         let header_rels = rels.matches("Target=\"header").count();
         let footer_rels = rels.matches("Target=\"footer").count();
         assert_eq!(header_rels, 0, "stale header relationship in rels: {rels}");
-        assert_eq!(footer_rels, 1, "expected exactly 1 footer relationship in rels");
+        assert_eq!(
+            footer_rels, 1,
+            "expected exactly 1 footer relationship in rels"
+        );
 
         let mut ct = String::new();
         zip.by_name("[Content_Types].xml")
@@ -4945,7 +4946,8 @@ mod tests {
 <Relationship Id="rId9011" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer11.xml"/>
 <Relationship Id="rId9012" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer12.xml"/>
 "#;
-            let patched_rels = original_rels.replace("</Relationships>", &format!("{extra_rels}</Relationships>"));
+            let patched_rels =
+                original_rels.replace("</Relationships>", &format!("{extra_rels}</Relationships>"));
             zout.start_file(
                 "word/_rels/document.xml.rels",
                 zip::write::SimpleFileOptions::default(),
@@ -4968,7 +4970,10 @@ mod tests {
                 if let Some(idx) = original_doc.find("<w:sectPr") {
                     let after = idx + "<w:sectPr".len();
                     // Find end of opening tag (`>` or `/>`).
-                    let close = original_doc[after..].find('>').map(|p| after + p + 1).unwrap_or(after);
+                    let close = original_doc[after..]
+                        .find('>')
+                        .map(|p| after + p + 1)
+                        .unwrap_or(after);
                     let mut s = String::new();
                     s.push_str(&original_doc[..close]);
                     s.push_str(extra_refs);
@@ -5116,7 +5121,10 @@ mod tests {
         let out = drop_refs_to_empty_parts(doc, &dropped);
         assert!(!out.contains("rId1"), "rId1 ref not stripped: {out}");
         assert!(!out.contains("rId2"), "rId2 ref not stripped: {out}");
-        assert!(out.contains("rId3"), "rId3 (non-dropped) was removed: {out}");
+        assert!(
+            out.contains("rId3"),
+            "rId3 (non-dropped) was removed: {out}"
+        );
         assert!(out.contains("<w:pgSz/>"));
     }
 
@@ -6376,10 +6384,16 @@ mod tests {
         // Body content survives in paragraph runs.
         assert!(xml.contains("Alpha"), "keypoint line emitted");
         assert!(xml.contains("Key takeaway"), "callout title emitted");
-        assert!(xml.contains("Lines below the title"), "callout body emitted");
+        assert!(
+            xml.contains("Lines below the title"),
+            "callout body emitted"
+        );
         assert!(xml.contains("informational aside"), "note body emitted");
         assert!(xml.contains("Speed up your workflow"), "tip body emitted");
-        assert!(xml.contains("Do not skip this step"), "warning body emitted");
+        assert!(
+            xml.contains("Do not skip this step"),
+            "warning body emitted"
+        );
         // BkCallout style is now applied (Wave 2 reference port supplies the
         // visual flavour previously hard-coded as cell shading).
         assert!(
@@ -6624,8 +6638,8 @@ mod tests {
             author: "A".into(),
             ..Default::default()
         };
-        let md = "# C\n\n```callout\n**Orientation.** Why this matters in practice.\n```\n"
-            .to_string();
+        let md =
+            "# C\n\n```callout\n**Orientation.** Why this matters in practice.\n```\n".to_string();
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         let xml = doc_xml(bytes);
         let bk_callout = xml.matches("w:pStyle w:val=\"BkCallout\"").count();
@@ -6744,23 +6758,16 @@ mod tests {
             ..Default::default()
         };
         // Baseline chapter without URLs.
-        let baseline =
-            "# Chapter\n\nThis chapter has no URLs at all.\n".to_string();
-        let xml_base = doc_xml(
-            render_book(&meta, &[("c1".into(), baseline)], Path::new(".")).unwrap(),
-        );
+        let baseline = "# Chapter\n\nThis chapter has no URLs at all.\n".to_string();
+        let xml_base =
+            doc_xml(render_book(&meta, &[("c1".into(), baseline)], Path::new(".")).unwrap());
         let base_drawings = xml_base.matches("<w:drawing").count();
 
         // Chapter with three bare-text URLs (no markdown link wrappers).
         let with_urls = "# Chapter\n\nReferences include https://example.org/a , \
             https://example.org/b. and (https://example.org/c).\n"
             .to_string();
-        let bytes = render_book(
-            &meta,
-            &[("c1".into(), with_urls)],
-            Path::new("."),
-        )
-        .unwrap();
+        let bytes = render_book(&meta, &[("c1".into(), with_urls)], Path::new(".")).unwrap();
         let xml = doc_xml(bytes.clone());
         let urls_drawings = xml.matches("<w:drawing").count();
         assert!(
@@ -6989,8 +6996,8 @@ mod tests {
     fn fold_table_captions_handles_pre_numbered_marker_above() {
         // `Table N: …` above a pipe table → caption is on the table and
         // the marker paragraph is consumed (not rendered as body text).
-        let md = "# C\n\nTable 2: pre-numbered caption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
-            .to_string();
+        let md =
+            "# C\n\nTable 2: pre-numbered caption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n".to_string();
         let meta = BookMeta {
             title: "T".into(),
             ..Default::default()
@@ -7036,8 +7043,9 @@ mod tests {
         // A body paragraph that merely mentions a table must NOT be
         // folded; it stays in the body and the table renders captioned
         // by its own (absent) caption — i.e. just "Table N" via SEQ.
-        let md = "# C\n\nThe table below illustrates the point.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
-            .to_string();
+        let md =
+            "# C\n\nThe table below illustrates the point.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
+                .to_string();
         let meta = BookMeta {
             title: "T".into(),
             ..Default::default()
