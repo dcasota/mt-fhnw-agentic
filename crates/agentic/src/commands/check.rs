@@ -81,6 +81,26 @@ pub async fn run_report(
             agentic_checks::adr_enforcement_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::TermRename {
+            project,
+            token,
+            replacement,
+            since,
+        } => {
+            let report = if let Some(tok) = token {
+                let term = agentic_checks::term_rename_gate::DeprecatedTerm {
+                    token: tok,
+                    replacement,
+                    since,
+                    severity: "warn".into(),
+                    note: None,
+                };
+                agentic_checks::term_rename_gate::run_with_terms(&conn, &project, &[term])?
+            } else {
+                agentic_checks::term_rename_gate::run(&conn, &project)?
+            };
+            (report, Some(project))
+        }
         CheckAction::FactsIntegrity { project } => (
             agentic_checks::facts_gate::run(&conn, &project)?,
             Some(project),
@@ -269,6 +289,33 @@ pub async fn run_report(
             )?,
             Some(project),
         ),
+        CheckAction::TocCoverage {
+            project,
+            snapshot_dir,
+        } => (
+            agentic_checks::toc_coverage_gate::run(&conn, &project, &snapshot_dir)?,
+            Some(project),
+        ),
+        CheckAction::Parity {
+            project,
+            book,
+            reference,
+            current,
+            html_report,
+        } => {
+            let cur_path = current.unwrap_or_else(|| {
+                std::path::PathBuf::from(format!("snapshots/latest/{book}.docx"))
+            });
+            let parity_report =
+                agentic_checks::parity::run_parity(&reference, &cur_path)?;
+            if let Some(path) = html_report.as_ref() {
+                agentic_checks::parity_report::write_html(&parity_report, path)?;
+            }
+            (
+                agentic_checks::parity::into_check_report(&parity_report),
+                Some(project),
+            )
+        }
     };
 
     // Record the verdict so the gate run is itself auditable (ADR-0041).

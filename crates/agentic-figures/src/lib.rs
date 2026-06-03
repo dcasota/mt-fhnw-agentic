@@ -14,9 +14,20 @@ use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 use serde_json::Value;
 
+// Wave 1 figspec types (image-embed, sankey, wheel, tier-matrix,
+// callout-diagram, comparison-overlay, table) — Rust-foundation parity
+// renderers for the AI Norms reference book.
+mod render_callout;
+mod render_image_embed;
+mod render_overlay;
+mod render_sankey;
+mod render_table;
+mod render_tier_matrix;
+mod render_wheel;
+
 // Wong colour-blind-safe palette (matches render_figspec).
-const NAVY: RGBColor = RGBColor(0x1F, 0x49, 0x7D);
-const WONG: [RGBColor; 8] = [
+pub(crate) const NAVY: RGBColor = RGBColor(0x1F, 0x49, 0x7D);
+pub(crate) const WONG: [RGBColor; 8] = [
     RGBColor(0x00, 0x72, 0xB2),
     RGBColor(0xE6, 0x9F, 0x00),
     RGBColor(0x00, 0x9E, 0x73),
@@ -26,12 +37,12 @@ const WONG: [RGBColor; 8] = [
     RGBColor(0xF0, 0xE4, 0x42),
     RGBColor(0x99, 0x99, 0x99),
 ];
-const INK: RGBColor = RGBColor(0x1a, 0x1a, 0x1a);
-const GRID: RGBColor = RGBColor(0xD7, 0xDD, 0xE5);
-const GREY: RGBColor = RGBColor(0x66, 0x66, 0x66);
-const BORDER: RGBColor = RGBColor(0x9B, 0xA7, 0xB8);
-const HEADBG: RGBColor = RGBColor(0x1F, 0x38, 0x64);
-const WHITEC: RGBColor = RGBColor(0xFF, 0xFF, 0xFF);
+pub(crate) const INK: RGBColor = RGBColor(0x1a, 0x1a, 0x1a);
+pub(crate) const GRID: RGBColor = RGBColor(0xD7, 0xDD, 0xE5);
+pub(crate) const GREY: RGBColor = RGBColor(0x66, 0x66, 0x66);
+pub(crate) const BORDER: RGBColor = RGBColor(0x9B, 0xA7, 0xB8);
+pub(crate) const HEADBG: RGBColor = RGBColor(0x1F, 0x38, 0x64);
+pub(crate) const WHITEC: RGBColor = RGBColor(0xFF, 0xFF, 0xFF);
 // SWOT quadrant tints (tl, tr, bl, br) matching the matplotlib renderer.
 const SWOT: [RGBColor; 4] = [
     RGBColor(0xE3, 0xEE, 0xF6),
@@ -40,23 +51,23 @@ const SWOT: [RGBColor; 4] = [
     RGBColor(0xE6, 0xF2, 0xEC),
 ];
 
-fn font(size: i32) -> TextStyle<'static> {
+pub(crate) fn font(size: i32) -> TextStyle<'static> {
     ("sans-serif", size).into_font().color(&INK)
 }
-fn font_c(size: i32, color: &RGBColor) -> TextStyle<'static> {
+pub(crate) fn font_c(size: i32, color: &RGBColor) -> TextStyle<'static> {
     ("sans-serif", size).into_font().color(color)
 }
-fn font_b(size: i32, color: &RGBColor) -> TextStyle<'static> {
+pub(crate) fn font_b(size: i32, color: &RGBColor) -> TextStyle<'static> {
     ("sans-serif", size)
         .into_font()
         .style(FontStyle::Bold)
         .color(color)
 }
-fn centered(style: TextStyle<'static>) -> TextStyle<'static> {
+pub(crate) fn centered(style: TextStyle<'static>) -> TextStyle<'static> {
     style.pos(Pos::new(HPos::Center, VPos::Center))
 }
 /// Draw the figure title (centred, bold, navy) at the top of the canvas.
-fn draw_title(a: &Area<'_>, s: &str, w: i32) -> Result<()> {
+pub(crate) fn draw_title(a: &Area<'_>, s: &str, w: i32) -> Result<()> {
     text(a, s, &centered(font_b(22, &NAVY)), w / 2, 30)
 }
 /// "Nice" axis ticks from 0 to max: returns (tick_max, step).
@@ -80,17 +91,24 @@ fn nice_ticks(max: f64) -> (f64, f64) {
     (tick_max, step)
 }
 
-type Area<'a> = DrawingArea<BitMapBackend<'a>, plotters::coord::Shift>;
+pub(crate) type Area<'a> = DrawingArea<BitMapBackend<'a>, plotters::coord::Shift>;
 
-fn text(a: &Area<'_>, s: &str, st: &TextStyle<'_>, x: i32, y: i32) -> Result<()> {
+pub(crate) fn text(a: &Area<'_>, s: &str, st: &TextStyle<'_>, x: i32, y: i32) -> Result<()> {
     a.draw_text(s, st, (x, y))
         .map_err(|e| anyhow!("draw_text: {e}"))
 }
-fn fill_rect(a: &Area<'_>, x0: i32, y0: i32, x1: i32, y1: i32, c: &RGBColor) -> Result<()> {
+pub(crate) fn fill_rect(
+    a: &Area<'_>,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    c: &RGBColor,
+) -> Result<()> {
     a.draw(&Rectangle::new([(x0, y0), (x1, y1)], c.filled()))
         .map_err(|e| anyhow!("rect: {e}"))
 }
-fn stroke_rect(
+pub(crate) fn stroke_rect(
     a: &Area<'_>,
     x0: i32,
     y0: i32,
@@ -105,35 +123,47 @@ fn stroke_rect(
     ))
     .map_err(|e| anyhow!("rect: {e}"))
 }
-fn line(a: &Area<'_>, pts: Vec<(i32, i32)>, c: &RGBColor, w: u32) -> Result<()> {
+pub(crate) fn line(a: &Area<'_>, pts: Vec<(i32, i32)>, c: &RGBColor, w: u32) -> Result<()> {
     a.draw(&PathElement::new(pts, ShapeStyle::from(c).stroke_width(w)))
         .map_err(|e| anyhow!("line: {e}"))
 }
 
 // ---- data helpers ----
-fn strs(v: &Value, key: &str) -> Vec<String> {
+pub(crate) fn strs(v: &Value, key: &str) -> Vec<String> {
     v.get(key)
         .and_then(Value::as_array)
         .map(|a| a.iter().map(json_str).collect())
         .unwrap_or_default()
 }
-fn nums(v: &Value, key: &str) -> Vec<f64> {
+pub(crate) fn nums(v: &Value, key: &str) -> Vec<f64> {
     v.get(key)
         .and_then(Value::as_array)
         .map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect())
         .unwrap_or_default()
 }
-fn json_str(v: &Value) -> String {
+pub(crate) fn json_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
 }
-fn wrap(s: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(s: &str, width: usize) -> Vec<String> {
     textwrap::wrap(s, width)
         .into_iter()
         .map(|c| c.to_string())
         .collect()
+}
+
+/// Deterministic 64-bit hash of a string (FNV-1a). Used by Wave-1 renderers
+/// that need a seed derived from the figspec content so identical specs always
+/// produce identical PNGs (no `rand` dep, no time/process variance).
+pub(crate) fn fig_seed(s: &str) -> u64 {
+    let mut h = 0xcbf29ce484222325_u64;
+    for b in s.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 // ---- public API ----
@@ -192,12 +222,29 @@ pub fn render_figspec(spec_json: &str, out_path: &Path) -> Result<()> {
         "govmap" => render_govmap(&spec, out_path),
         "treemap" => render_treemap(&spec, out_path),
         "procmap" => render_procmap(&spec, out_path),
+        // ---- Wave 1 parity types (AI Norms reference book) ----
+        "image-embed" => render_image_embed::render(&spec, out_path),
+        "sankey" => render_sankey::render(&spec, out_path),
+        "wheel" => render_wheel::render(&spec, out_path),
+        "tier-matrix" => render_tier_matrix::render(&spec, out_path),
+        "callout-diagram" => render_callout::render(&spec, out_path),
+        "comparison-overlay" => render_overlay::render(&spec, out_path),
+        "table" => render_table::render(&spec, out_path),
         other => Err(anyhow!("unknown figspec type '{other}'")),
     }
 }
 
 /// Replace each ```figspec block in `md` with an image reference, writing PNGs
 /// to `<fig_base>/figures/<subdir>/<id>.png`. Returns the resolved markdown.
+///
+/// **Wave 3 (AI-Norms parity, 2026-06-03)**: figspecs of `type: "table"`
+/// are intercepted and emitted as a native pipe-style markdown table
+/// (with a preceding `Table: <caption>` line so the downstream
+/// `fold_table_captions` pass attaches the caption to a SEQ-numbered
+/// `<w:tbl>` carrying the `TableGrid` style). This is the bridge that
+/// turns the 22 AI-Norms reference tables — currently shipped as
+/// figspec JSON sidecars — into real Word tables that satisfy the
+/// `captioned_table_parity` gate.
 pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(String, usize)> {
     let figdir = fig_base.join("figures").join(subdir);
     std::fs::create_dir_all(&figdir)?;
@@ -213,23 +260,123 @@ pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(Stri
             .ok_or_else(|| anyhow!("unterminated figspec block"))?;
         let json = &after[body_start..body_start + end_rel];
         let spec = parse(json)?;
-        let png = figdir.join(format!("{}.png", spec.id));
-        // Surface a render failure instead of silently dropping the figure: a
-        // deliverable must never lose a figspec without a trace (non-repudiation).
-        render_figspec(json, &png).map_err(|e| anyhow!("rendering figspec '{}': {e}", spec.id))?;
-        out.push_str(&format!(
-            "![{}](figures/{}/{}.png)",
-            spec.caption.replace(['[', ']'], ""),
-            subdir,
-            spec.id
-        ));
-        n += 1;
+        if spec.kind == "table" {
+            // Native-Word-table path: emit a markdown pipe table so the
+            // downstream DocxBlock::Table renderer applies TableGrid and
+            // the SEQ-numbered "Table N." caption. Image-mode rendering is
+            // skipped entirely for table figspecs.
+            out.push_str(&render_table_as_markdown(&spec));
+            n += 1;
+        } else {
+            let png = figdir.join(format!("{}.png", spec.id));
+            // Surface a render failure instead of silently dropping the figure: a
+            // deliverable must never lose a figspec without a trace (non-repudiation).
+            render_figspec(json, &png)
+                .map_err(|e| anyhow!("rendering figspec '{}': {e}", spec.id))?;
+            out.push_str(&format!(
+                "![{}](figures/{}/{}.png)",
+                spec.caption.replace(['[', ']'], ""),
+                subdir,
+                spec.id
+            ));
+            n += 1;
+        }
         // skip past the closing ```
         let consumed = body_start + end_rel + 3;
         rest = &after[consumed..];
     }
     out.push_str(rest);
     Ok((out, n))
+}
+
+/// Emit a `table` figspec as a pipe-style markdown table preceded by a
+/// `Table: <caption>` line. The downstream
+/// `agentic_export::book::fold_table_captions` pass folds the caption into
+/// the table block, and `DocxBlock::Table` then renders a TableGrid-styled
+/// `<w:tbl>` with a SEQ-numbered caption.
+///
+/// Pipe escaping: any literal `|` inside a cell is escaped as `\|` so the
+/// markdown parser does not split the cell. Newlines inside cells are
+/// flattened to a single space (Word table cells receive a single inline
+/// paragraph; multi-paragraph cells were never part of the reference
+/// table inventory).
+fn render_table_as_markdown(spec: &FigSpec) -> String {
+    let header: Vec<String> = spec
+        .data
+        .get("header")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(json_str).collect())
+        .unwrap_or_default();
+    let rows: Vec<Vec<String>> = spec
+        .data
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    v.as_array()
+                        .map(|c| c.iter().map(json_str).collect())
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if header.is_empty() && rows.is_empty() {
+        // Defensive: empty figspec emits a marker comment so the failure
+        // is visible during review without breaking the chapter render.
+        return format!(
+            "<!-- figspec/table {}: missing header/rows -->\n",
+            spec.id
+        );
+    }
+    let ncols = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0)).max(1);
+    let esc = |s: &str| -> String {
+        s.replace('\\', "\\\\")
+            .replace('|', "\\|")
+            .replace('\n', " ")
+            .replace('\r', " ")
+    };
+    let pad = |row: &[String]| -> String {
+        let mut cells: Vec<String> = (0..ncols)
+            .map(|c| esc(row.get(c).map(String::as_str).unwrap_or("")))
+            .collect();
+        if cells.iter().all(String::is_empty) {
+            cells = vec!["—".into(); ncols];
+        }
+        format!("| {} |", cells.join(" | "))
+    };
+
+    let caption = if spec.caption.is_empty() {
+        spec.title.clone()
+    } else {
+        spec.caption.clone()
+    };
+    let mut out = String::with_capacity(256 + 64 * rows.len() * ncols);
+    out.push('\n');
+    if !caption.is_empty() {
+        // The `fold_table_captions` pass picks this up and folds it into
+        // the immediately-following Table block.
+        out.push_str(&format!("Table: {}\n\n", caption.trim()));
+    }
+    if !header.is_empty() {
+        out.push_str(&pad(&header));
+        out.push('\n');
+        let sep: Vec<&str> = (0..ncols).map(|_| "---").collect();
+        out.push_str(&format!("| {} |\n", sep.join(" | ")));
+    } else {
+        // Synthesize an empty header so the markdown remains a valid table.
+        let blank: Vec<String> = (0..ncols).map(|_| String::new()).collect();
+        out.push_str(&pad(&blank));
+        out.push('\n');
+        let sep: Vec<&str> = (0..ncols).map(|_| "---").collect();
+        out.push_str(&format!("| {} |\n", sep.join(" | ")));
+    }
+    for row in &rows {
+        out.push_str(&pad(row));
+        out.push('\n');
+    }
+    out.push('\n');
+    out
 }
 
 // ---- renderers (pixel space) ----
@@ -257,12 +404,13 @@ fn render_bar(spec: &FigSpec, path: &Path, horizontal: bool) -> Result<()> {
         for k in 0..=nt {
             let xv = ml + ((f64::from(k) * step / tmax) * f64::from(pw)) as i32;
             line(&root, vec![(xv, mt), (xv, mt + ph)], &GRID, 1)?;
+            // x-axis tick numbers: +4pt (11 → 15) — clearly visible bump
             text(
                 &root,
                 &fmt_num(f64::from(k) * step),
-                &centered(font_c(11, &GREY)),
+                &centered(font_c(15, &GREY)),
                 xv,
-                mt + ph + 14,
+                mt + ph + 16,
             )?;
         }
         line(&root, vec![(ml, mt), (ml, mt + ph)], &BORDER, 1)?;
@@ -274,30 +422,33 @@ fn render_bar(spec: &FigSpec, path: &Path, horizontal: bool) -> Result<()> {
             let bw = ((v / tmax) * f64::from(pw)) as i32;
             fill_rect(&root, ml, y0, ml + bw, y0 + bh, &WONG[i as usize % 8])?;
             let lbl = labels.get(i as usize).map(String::as_str).unwrap_or("");
-            for (li, ln) in wrap(lbl, 28).iter().take(2).enumerate() {
+            for (li, ln) in wrap(lbl, 26).iter().take(2).enumerate() {
+                // bar category labels: +4pt (12 → 16) — clearly visible bump
                 text(
                     &root,
                     ln,
-                    &font(12).pos(Pos::new(HPos::Right, VPos::Center)),
+                    &font(16).pos(Pos::new(HPos::Right, VPos::Center)),
                     ml - 8,
-                    y0 + bh / 2 - 7 + li as i32 * 14,
+                    y0 + bh / 2 - 9 + li as i32 * 17,
                 )?;
             }
+            // value labels on bars: +4pt (12 → 16) — clearly visible bump
             text(
                 &root,
                 &fmt_num(v),
-                &font_c(12, &NAVY).pos(Pos::new(HPos::Left, VPos::Center)),
+                &font_c(16, &NAVY).pos(Pos::new(HPos::Left, VPos::Center)),
                 ml + bw + 6,
                 y0 + bh / 2,
             )?;
         }
         if !xlabel.is_empty() {
+            // x-axis name: +4pt (13 → 17) — clearly visible bump
             text(
                 &root,
                 xlabel,
-                &centered(font_c(13, &GREY)),
+                &centered(font_c(17, &GREY)),
                 ml + pw / 2,
-                h - 20,
+                h - 18,
             )?;
         }
         root.present().map_err(|e| anyhow!("present: {e}"))?;
@@ -312,10 +463,11 @@ fn render_bar(spec: &FigSpec, path: &Path, horizontal: bool) -> Result<()> {
         for k in 0..=nt {
             let yv = mt + ph - ((f64::from(k) * step / tmax) * f64::from(ph)) as i32;
             line(&root, vec![(ml, yv), (ml + pw, yv)], &GRID, 1)?;
+            // y-axis tick numbers: +4pt (11 → 15) — clearly visible bump
             text(
                 &root,
                 &fmt_num(f64::from(k) * step),
-                &font_c(11, &GREY).pos(Pos::new(HPos::Right, VPos::Center)),
+                &font_c(15, &GREY).pos(Pos::new(HPos::Right, VPos::Center)),
                 ml - 8,
                 yv,
             )?;
@@ -330,29 +482,32 @@ fn render_bar(spec: &FigSpec, path: &Path, horizontal: bool) -> Result<()> {
             let bh = ((v / tmax) * f64::from(ph)) as i32;
             fill_rect(&root, bx, y1 - bh, bx + bw, y1, &WONG[i as usize % 8])?;
             let lbl = labels.get(i as usize).map(String::as_str).unwrap_or("");
-            for (li, ln) in wrap(lbl, 14).iter().take(2).enumerate() {
+            for (li, ln) in wrap(lbl, 12).iter().take(2).enumerate() {
+                // bar category labels (x-axis): +4pt (12 → 16) — clearly visible bump
                 text(
                     &root,
                     ln,
-                    &centered(font(12)),
+                    &centered(font(16)),
                     bx + bw / 2,
-                    y1 + 16 + li as i32 * 14,
+                    y1 + 19 + li as i32 * 18,
                 )?;
             }
+            // value labels on bars: +4pt (12 → 16) — clearly visible bump
             text(
                 &root,
                 &fmt_num(v),
-                &centered(font_c(12, &NAVY)),
+                &centered(font_c(16, &NAVY)),
                 bx + bw / 2,
-                y1 - bh - 11,
+                y1 - bh - 13,
             )?;
         }
         if !xlabel.is_empty() {
+            // y-axis name (rotated): +4pt (13 → 17) — clearly visible bump
             text(
                 &root,
                 xlabel,
-                &centered(font_c(13, &GREY).transform(FontTransform::Rotate270)),
-                26,
+                &centered(font_c(17, &GREY).transform(FontTransform::Rotate270)),
+                28,
                 mt + ph / 2,
             )?;
         }
@@ -458,13 +613,14 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
     for (c, ch) in cols.iter().enumerate() {
         let x0 = ox + rowlab_w + c as i32 * cell_w;
         fill_rect(&root, x0, oy, x0 + cell_w, oy + head_h, &HEADBG)?;
-        for (li, ln) in wrap(ch, 16).iter().take(2).enumerate() {
+        // column headers: +4pt (13 → 17) — clearly visible bump
+        for (li, ln) in wrap(ch, 14).iter().take(2).enumerate() {
             text(
                 &root,
                 ln,
-                &centered(font_b(13, &WHITEC)),
+                &centered(font_b(17, &WHITEC)),
                 x0 + cell_w / 2,
-                oy + 22 + li as i32 * 16,
+                oy + 24 + li as i32 * 19,
             )?;
         }
     }
@@ -473,7 +629,10 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
         // row label — navy fill, bold white (like the header)
         fill_rect(&root, ox, y0, ox + rowlab_w, y0 + cell_h, &HEADBG)?;
         stroke_rect(&root, ox, y0, ox + rowlab_w, y0 + cell_h, &BORDER, 1)?;
-        for (li, ln) in wrap(rows.get(r).map(String::as_str).unwrap_or(""), 30)
+        // row labels: +4pt (12 → 16) per user readability fix (the columns
+        // run through the rows, so "table columns" includes the row-anchored
+        // labels and the per-row cell content)
+        for (li, ln) in wrap(rows.get(r).map(String::as_str).unwrap_or(""), 26)
             .iter()
             .take(3)
             .enumerate()
@@ -481,9 +640,9 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
             text(
                 &root,
                 ln,
-                &font_b(12, &WHITEC).pos(Pos::new(HPos::Left, VPos::Center)),
+                &font_b(16, &WHITEC).pos(Pos::new(HPos::Left, VPos::Center)),
                 ox + 10,
-                y0 + cell_h / 2 - 12 + li as i32 * 15,
+                y0 + cell_h / 2 - 14 + li as i32 * 18,
             )?;
         }
         let shade = if r % 2 == 0 {
@@ -500,23 +659,25 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
                 .and_then(|cr| cr.get(c))
                 .map(String::as_str)
                 .unwrap_or("");
-            for (li, ln) in wrap(val, 18).iter().take(3).enumerate() {
+            // cell values: +4pt (12 → 16) per user readability fix
+            for (li, ln) in wrap(val, 16).iter().take(3).enumerate() {
                 text(
                     &root,
                     ln,
-                    &centered(font(12)),
+                    &centered(font(16)),
                     x0 + cell_w / 2,
-                    y0 + cell_h / 2 - 10 + li as i32 * 14,
+                    y0 + cell_h / 2 - 12 + li as i32 * 18,
                 )?;
             }
         }
     }
     if !legend.is_empty() {
         let ly = oy + head_h + nr as i32 * cell_h + 18;
+        // legend: +4pt (11 → 15) — clearly visible bump
         text(
             &root,
             &format!("Legend: {legend}"),
-            &font_c(11, &GREY).pos(Pos::new(HPos::Left, VPos::Center)),
+            &font_c(15, &GREY).pos(Pos::new(HPos::Left, VPos::Center)),
             ox,
             ly,
         )?;
@@ -584,7 +745,7 @@ fn render_quadrant(spec: &FigSpec, path: &Path) -> Result<()> {
 }
 
 /// Draw a connector line ending in a filled arrowhead at `end`.
-fn arrow(a: &Area<'_>, start: (i32, i32), end: (i32, i32), c: &RGBColor) -> Result<()> {
+pub(crate) fn arrow(a: &Area<'_>, start: (i32, i32), end: (i32, i32), c: &RGBColor) -> Result<()> {
     line(a, vec![start, end], c, 3)?;
     let (dx, dy) = ((end.0 - start.0) as f64, (end.1 - start.1) as f64);
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -738,20 +899,27 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
 // (dimension / campaign / solution) can embed them.
 // ===========================================================================
 
-fn fill_circle(a: &Area<'_>, x: i32, y: i32, r: i32, c: &RGBColor) -> Result<()> {
+pub(crate) fn fill_circle(a: &Area<'_>, x: i32, y: i32, r: i32, c: &RGBColor) -> Result<()> {
     a.draw(&Circle::new((x, y), r, c.filled()))
         .map_err(|e| anyhow!("circle: {e}"))
 }
-fn stroke_circle(a: &Area<'_>, x: i32, y: i32, r: i32, c: &RGBColor, w: u32) -> Result<()> {
+pub(crate) fn stroke_circle(
+    a: &Area<'_>,
+    x: i32,
+    y: i32,
+    r: i32,
+    c: &RGBColor,
+    w: u32,
+) -> Result<()> {
     a.draw(&Circle::new((x, y), r, ShapeStyle::from(c).stroke_width(w)))
         .map_err(|e| anyhow!("circle: {e}"))
 }
-fn fill_poly(a: &Area<'_>, pts: Vec<(i32, i32)>, c: &RGBColor) -> Result<()> {
+pub(crate) fn fill_poly(a: &Area<'_>, pts: Vec<(i32, i32)>, c: &RGBColor) -> Result<()> {
     a.draw(&Polygon::new(pts, c.filled()))
         .map_err(|e| anyhow!("poly: {e}"))
 }
 /// Parse "#RRGGBB" → RGBColor (falls back to grey).
-fn hex_color(s: &str) -> RGBColor {
+pub(crate) fn hex_color(s: &str) -> RGBColor {
     let h = s.trim_start_matches('#');
     if h.len() == 6 {
         if let (Ok(r), Ok(g), Ok(b)) = (
@@ -1121,14 +1289,21 @@ fn render_regstack(spec: &FigSpec, out: &Path) -> Result<()> {
 }
 
 /// Split an explicit-`\n` label, else word-wrap to `width` chars.
-fn box_lines(label: &str, width: usize) -> Vec<String> {
+pub(crate) fn box_lines(label: &str, width: usize) -> Vec<String> {
     if label.contains('\n') {
         label.split('\n').map(str::to_string).collect()
     } else {
         wrap(label, width)
     }
 }
-fn ml_centered(a: &Area<'_>, lines: &[String], st: &TextStyle<'static>, cx: i32, cy: i32, lh: i32) {
+pub(crate) fn ml_centered(
+    a: &Area<'_>,
+    lines: &[String],
+    st: &TextStyle<'static>,
+    cx: i32,
+    cy: i32,
+    lh: i32,
+) {
     let n = lines.len() as i32;
     let y0 = cy - (n - 1) * lh / 2;
     for (i, ln) in lines.iter().enumerate() {
@@ -1802,5 +1977,37 @@ mod tests {
         assert_eq!(n, 1);
         assert!(out.contains("![cap](figures/sub/m1.png)"), "got: {out}");
         assert!(out.contains("Intro") && out.contains("Outro"));
+    }
+
+    /// Wave-3 (AI-Norms parity, 2026-06-03): a `type: "table"` figspec must
+    /// resolve to a pipe-style markdown table with a `Table:` caption line
+    /// — NOT to an image reference. This is the bridge that turns table
+    /// figspecs into native `<w:tbl>` elements in the rendered docx.
+    #[test]
+    fn resolves_table_figspec_to_markdown_table() {
+        let dir = std::env::temp_dir().join("agentic_fig_md_table");
+        let md = "Lead-in.\n\n```figspec\n{\"id\":\"t1\",\"type\":\"table\",\"title\":\"Acronyms\",\"caption\":\"Acronym register\",\"data\":{\"header\":[\"Acronym\",\"Expansion\"],\"rows\":[[\"AI\",\"Artificial Intelligence\"],[\"ML\",\"Machine Learning\"]]}}\n```\n\nTrailer.\n";
+        let (out, n) = resolve_markdown(md, &dir, "sub").unwrap();
+        assert_eq!(n, 1);
+        assert!(
+            !out.contains("![") || !out.contains("(figures/sub/t1.png)"),
+            "table figspec must NOT resolve to an image reference: {out}"
+        );
+        assert!(out.contains("Table: Acronym register"), "caption line present: {out}");
+        assert!(out.contains("| Acronym | Expansion |"), "header row present: {out}");
+        assert!(out.contains("| --- | --- |"), "separator row present: {out}");
+        assert!(out.contains("| AI | Artificial Intelligence |"), "body row 1: {out}");
+        assert!(out.contains("| ML | Machine Learning |"), "body row 2: {out}");
+        assert!(out.contains("Lead-in.") && out.contains("Trailer."));
+    }
+
+    /// Cells containing literal `|` characters must be escaped so the
+    /// pipe-table parser does not split them into extra columns.
+    #[test]
+    fn table_figspec_escapes_pipes_in_cells() {
+        let dir = std::env::temp_dir().join("agentic_fig_md_table_esc");
+        let md = "x\n\n```figspec\n{\"id\":\"t2\",\"type\":\"table\",\"title\":\"\",\"caption\":\"\",\"data\":{\"header\":[\"A\",\"B\"],\"rows\":[[\"x|y\",\"q\"]]}}\n```\n";
+        let (out, _n) = resolve_markdown(md, &dir, "sub").unwrap();
+        assert!(out.contains("x\\|y"), "literal pipe must be escaped: {out}");
     }
 }

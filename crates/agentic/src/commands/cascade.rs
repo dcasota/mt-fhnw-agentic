@@ -211,6 +211,7 @@ fn build_plan(
     push_review(&mut steps, opts);
     push_regenerate(&mut steps, opts, dim_paths);
     push_merge(&mut steps, opts);
+    push_bibliography_emit(&mut steps, opts);
     push_build_book(&mut steps, opts);
     push_audit_gates(&mut steps, opts, gate_suite);
     push_seal(&mut steps, opts);
@@ -367,6 +368,35 @@ fn push_merge(steps: &mut Vec<Step>, opts: &CascadeOpts) {
                 "dimensions".into(),
                 "--project".into(),
                 opts.project.clone(),
+            ],
+        ));
+    }
+}
+
+/// 4b. BIBLIOGRAPHY REFRESH — emit the curated alphabetical APA7 References
+/// chapter from the literature_corpus passport and ingest into the worktree
+/// at `out/sources/Dimensions_bibliography_EN.md`. Runs after merge so newly-
+/// landed dimension content (which may have introduced URLs the previous
+/// `harvest` already collected) is reflected in the rendered References. The
+/// step is idempotent: when the passport hasn't changed the worktree blob
+/// stays identical, so the input-fingerprint guard naturally skips it on
+/// `--resume`.
+fn push_bibliography_emit(steps: &mut Vec<Step>, opts: &CascadeOpts) {
+    if opts.dry_run {
+        steps.push(Step::note(
+            4,
+            "bibliography emit --write — skipped (dry-run); would refresh out/sources/Dimensions_bibliography_EN.md",
+        ));
+    } else {
+        steps.push(Step::run(
+            4,
+            "bibliography emit --write",
+            vec![
+                "bibliography".into(),
+                "emit".into(),
+                "--project".into(),
+                opts.project.clone(),
+                "--write".into(),
             ],
         ));
     }

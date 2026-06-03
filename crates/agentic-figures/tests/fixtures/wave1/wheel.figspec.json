@@ -1,0 +1,19 @@
+{
+  "id": "wave1-wheel",
+  "type": "wheel",
+  "title": "NIST CSF 2.0 Core",
+  "caption": "Six functions around a central hub.",
+  "data": {
+    "center_label": "CSF Core",
+    "inner_ring": "v2.0",
+    "outer_ring": "functions",
+    "spokes": [
+      {"label": "GOVERN",   "color": "#1F497D"},
+      {"label": "IDENTIFY", "color": "#0072B2"},
+      {"label": "PROTECT",  "color": "#009E73"},
+      {"label": "DETECT",   "color": "#E69F00"},
+      {"label": "RESPOND",  "color": "#D55E00"},
+      {"label": "RECOVER",  "color": "#CC79A7"}
+    ]
+  }
+}

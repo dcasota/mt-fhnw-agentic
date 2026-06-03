@@ -259,6 +259,18 @@ pub enum Command {
         action: ExternalSessionAction,
     },
 
+    /// Refresh the Pages column of the front-matter acronyms table from a
+    /// rendered `master_thesis.docx`. Uses the v4 token-aware algorithm
+    /// (case-sensitive substring scan with alphanumeric-neighbour
+    /// post-filter) so `AI` matches "AI-First" but not "AIBOM".
+    /// Pages come from Word's `lastRenderedPageBreak` hints embedded in
+    /// `word/document.xml` (written by Word on every save — the
+    /// `agentic book finalize` step guarantees this).
+    Acronyms {
+        #[command(subcommand)]
+        action: AcronymsAction,
+    },
+
     /// Deterministically normalise content-store markdown (expand prediction×mode
     /// codes, shorten over-long figure captions, apply verified-facts
     /// corrections). Writes changed blobs back in a single commit.
@@ -351,6 +363,38 @@ pub enum Command {
     Cascade {
         #[command(subcommand)]
         action: CascadeAction,
+    },
+
+    /// Figure-asset utilities (extraction, manifests). The Rust renderer in
+    /// `agentic-figures` only handles figspec→PNG; this verb covers the bulk
+    /// asset-pipeline steps the renderer does not.
+    Figures {
+        #[command(subcommand)]
+        action: FiguresAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FiguresAction {
+    /// Extract every embedded raster from a `.docx` (treated as a zip) into
+    /// `<out>/` per source filename. Useful for harvesting the
+    /// `word/media/` assets of a reference book so they can be authored as
+    /// `image-embed` figspecs (Wave-5 AI-Norms parity flow).
+    ///
+    /// The output is a flat copy of every file under `word/media/` — no
+    /// transcoding, no filtering, no rewriting. Optional `--min-bytes` skips
+    /// trivial admonition glyphs (default 0 = keep all).
+    ExtractFromDocx {
+        /// Source docx to harvest.
+        #[arg(long)]
+        docx: PathBuf,
+        /// Destination directory; created if missing.
+        #[arg(long)]
+        out: PathBuf,
+        /// Skip files smaller than this many bytes (e.g. 5120 to drop tiny
+        /// admonition icons). 0 keeps everything.
+        #[arg(long, default_value_t = 0u64)]
+        min_bytes: u64,
     },
 }
 
@@ -1032,6 +1076,31 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// Deprecated-token surveillance: scan the live worktree for tokens
+    /// that have been retired (e.g. an old phrasing replaced by a rename
+    /// like "12-week AI-First plan" → "100-days AI-First plan"). Reads
+    /// the registry from `specs/deprecated-terms.json` by default;
+    /// alternatively, `--token` runs a single-token ad-hoc check.
+    /// Frozen artefacts (`inbox/`, `thesis-draft-v*/`, `proposal/citations/`,
+    /// the audit ledger, CHANGELOG, and the registry itself) are
+    /// excluded by design — they intentionally preserve historical text.
+    TermRename {
+        #[arg(long)]
+        project: String,
+        /// One-shot mode: scan for a single token without consulting the
+        /// registry file. Use `--replacement` to record the intended
+        /// replacement in the finding messages.
+        #[arg(long)]
+        token: Option<String>,
+        /// Intended replacement for the one-shot token (reported in
+        /// findings; ignored otherwise).
+        #[arg(long, requires = "token")]
+        replacement: Option<String>,
+        /// Optional ISO date the deprecation took effect (e.g.
+        /// `2026-05-31`). Reported in findings.
+        #[arg(long, requires = "token")]
+        since: Option<String>,
+    },
     /// Verified-facts integrity (ADR-0036/0042): every anchored fact has a real
     /// source; needs_verification placeholders are surfaced as outstanding HITL.
     FactsIntegrity {
@@ -1249,6 +1318,47 @@ pub enum CheckAction {
         #[arg(long, default_value_t = 12)]
         max_age_months: u32,
     },
+    /// Book-manifest ⇄ rendered-TOC coverage (TODO-16): for every book in
+    /// `out/book_manifest.json`, compare the declared chapter list against
+    /// the TOC paragraphs Word actually emitted into
+    /// `<snapshot_dir>/<book_key>.docx`. Missing entries WARN, extras WARN,
+    /// level mismatches are INFO. Books without a rendered docx emit
+    /// `TOC_NO_SNAPSHOT` INFO and are skipped (the gate never FAILs on
+    /// missing renders).
+    TocCoverage {
+        #[arg(long)]
+        project: String,
+        /// Directory containing the rendered `<book_key>.docx` files
+        /// (typically `snapshots/<ts>-books-cascade/`).
+        #[arg(long, default_value = "snapshots/latest")]
+        snapshot_dir: std::path::PathBuf,
+    },
+    /// Visual / structural parity gate (ADR-0057): compare a rendered book
+    /// against a frozen reference docx along four scopes — figures (`<w:drawing>`
+    /// count), captioned tables (`<w:tbl>` with "Table N." caption + row-1
+    /// `<w:tblHeader/>`), style usage (16 named styles within ±10 %), and
+    /// layout (sectPr / header/footer parts / back-matter order). The gate
+    /// is auditable: the verdict lands in `audit_verdicts` under the
+    /// `parity` checkpoint.
+    Parity {
+        #[arg(long)]
+        project: String,
+        /// Project-internal book id (informational; the inputs come from
+        /// `--reference` and `--book`).
+        #[arg(long)]
+        book: String,
+        /// The frozen reference docx the current rendering is compared against.
+        #[arg(long)]
+        reference: std::path::PathBuf,
+        /// The current docx to grade. If absent, the gate reads
+        /// `snapshots/latest/<book>.docx`.
+        #[arg(long)]
+        current: Option<std::path::PathBuf>,
+        /// Optional path to write a self-contained HTML report alongside
+        /// the CLI output (parity diff page).
+        #[arg(long)]
+        html_report: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1404,12 +1514,32 @@ pub enum BibAction {
         #[arg(long, default_value = "")]
         prefix: String,
     },
-    /// Emit the per-dimension APA7 reference list (all dimensions or one).
+    /// Emit the APA7 reference list. Default: **curated alphabetical**
+    /// (one unified list sorted by first author, deduplicated across
+    /// dimensions, placeholder entries filtered). Pass `--per-dimension`
+    /// for the legacy grouped output (one `## Dimension N — References`
+    /// section per dimension, bullets). Use `--dimension N` to restrict
+    /// to one dimension's references (implies `--per-dimension`).
+    /// Pass `--write` to ingest the output into the project worktree
+    /// at `out/sources/Dimensions_bibliography_EN.md` (the path the
+    /// thesis renderer reads the References chapter from). When
+    /// `--write` is set, stdout is silent so the cascade subprocess
+    /// can call this without capturing.
     Emit {
         #[arg(long)]
         project: String,
         #[arg(long)]
         dimension: Option<i64>,
+        /// Force the legacy per-dimension grouped output even when no
+        /// `--dimension` is given. Default off — the alphabetical view
+        /// is what the FHNW MAS References chapter requires.
+        #[arg(long)]
+        per_dimension: bool,
+        /// Write the emitted markdown into the project worktree at
+        /// `out/sources/Dimensions_bibliography_EN.md` (the path the
+        /// thesis renderer reads). Suppresses stdout output.
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -1649,6 +1779,36 @@ pub enum ContentAction {
         /// allowed.
         #[arg(long)]
         allow_deprecated_out: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AcronymsAction {
+    /// Walk the rendered DOCX, re-extract per-acronym page lists, and
+    /// rewrite the Pages column of `out/sources/frontmatter/acronyms.md`
+    /// in the project's working tree.
+    Refresh {
+        #[arg(long)]
+        project: String,
+        /// Path to the rendered `master_thesis.docx` (typically the
+        /// latest `snapshots/<ts>-books-cascade/master_thesis.docx`).
+        #[arg(long)]
+        docx: PathBuf,
+        /// Print the page lists but do not commit the updated blob.
+        #[arg(long)]
+        dry_run: bool,
+        /// Detect ALL-CAPS acronym candidates in the rendered DOCX that
+        /// are missing from the table and add them with the placeholder
+        /// expansion `TODO: define`. The author keeps editorial control
+        /// over the canonical definition.
+        #[arg(long)]
+        add_missing: bool,
+        /// Drop rows whose acronym has zero page-occurrences in the
+        /// rendered DOCX (stale entries from earlier drafts). Applied
+        /// BEFORE `--add-missing` so a stale row re-introduced by the
+        /// detector is kept (with the placeholder expansion).
+        #[arg(long)]
+        drop_zero_page: bool,
     },
 }
 

@@ -1,0 +1,32 @@
+{
+  "id": "wave1-tier-matrix",
+  "type": "tier-matrix",
+  "title": "MITRE ATT&CK (3 tactics)",
+  "caption": "Column-grouped technique cells with severity tinting.",
+  "data": {
+    "tiers": [
+      {
+        "label": "Reconnaissance",
+        "items": [
+          {"label": "Active Scanning",        "severity": 2},
+          {"label": "Phishing for Information","severity": 3}
+        ]
+      },
+      {
+        "label": "Initial Access",
+        "items": [
+          {"label": "Phishing",                   "severity": 4},
+          {"label": "Drive-by Compromise",        "severity": 2},
+          {"label": "Exploit Public-Facing App",  "severity": 3}
+        ]
+      },
+      {
+        "label": "Execution",
+        "items": [
+          {"label": "Command & Scripting", "severity": 3},
+          {"label": "User Execution",      "severity": 2}
+        ]
+      }
+    ]
+  }
+}

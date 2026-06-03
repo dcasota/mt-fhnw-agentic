@@ -172,6 +172,90 @@ impl DocxRun {
     }
 }
 
+/// Split a text run on bare/plain-text URLs (Round-D AI-Norms parity,
+/// 2026-06-03). Returns a sequence of `(text, link)` segments: ordinary text
+/// gets `None`, each detected URL gets `Some(url)` so the run carrying it can
+/// be registered as a clickable hyperlink by `add_runs` (and therefore reach
+/// the per-chapter Sources & QR-codes box).
+///
+/// A bare URL is a contiguous run starting with `http://` or `https://`, ending
+/// at the first ASCII whitespace OR at one of the common trailing punctuation
+/// characters `,;:.!?` when followed by whitespace / end-of-string. We do NOT
+/// strip a trailing `)` because URLs frequently contain balanced parens (e.g.
+/// Wikipedia article titles). This matches bookkit `_autolink` behaviour
+/// closely enough to reproduce the reference book's QR-code count without
+/// false-positives on prose punctuation.
+pub fn split_bare_urls(s: &str) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    let mut rest = s;
+    while !rest.is_empty() {
+        let Some(pos) = find_url_start(rest) else {
+            out.push((rest.to_string(), None));
+            break;
+        };
+        if pos > 0 {
+            out.push((rest[..pos].to_string(), None));
+        }
+        let after = &rest[pos..];
+        let end = url_end(after);
+        let url = after[..end].to_string();
+        out.push((url.clone(), Some(url)));
+        rest = &after[end..];
+    }
+    out
+}
+
+/// Find the byte offset of the next `http://` or `https://` in `s`, or None.
+/// The match must start at a word boundary (string start or non-URL-char
+/// preceding) so we don't split mid-token like `foo:https://...`.
+fn find_url_start(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if (bytes[i] == b'h')
+            && (s[i..].starts_with("https://") || s[i..].starts_with("http://"))
+        {
+            let prev_ok = i == 0
+                || matches!(
+                    bytes[i - 1],
+                    b' ' | b'\t' | b'\n' | b'(' | b'[' | b'<' | b'"' | b'\''
+                );
+            if prev_ok {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find where a URL ends inside `s` (which is guaranteed to begin with the
+/// scheme). Stops at the first whitespace or sentinel character, then strips
+/// any trailing sentence-ending punctuation `,;:.!?` so prose punctuation
+/// adjacent to a URL is not absorbed into it.
+fn url_end(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'<' | b'>' | b'"' | b'\'') {
+            break;
+        }
+        i += 1;
+    }
+    // Strip a trailing run of sentence punctuation. URLs rarely end with
+    // `,;:.!?` — readers expect these to belong to the surrounding prose.
+    while i > 0 {
+        let last = bytes[i - 1];
+        if matches!(last, b',' | b';' | b':' | b'.' | b'!' | b'?') {
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    i
+}
+
 /// Parse markdown into a flat `Vec<DocxBlock>`.
 #[must_use]
 pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
@@ -308,7 +392,8 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                     alt.push_str(&s);
                 } else if matches!(state, ParseState::Code) {
                     code_body.push_str(&s);
-                } else {
+                } else if cur_link.is_some() {
+                    // Inside an explicit markdown link — keep as-is.
                     current_runs.push(DocxRun {
                         text: s.to_string(),
                         bold: style.bold,
@@ -316,6 +401,22 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
                         code: false,
                         link: cur_link.clone(),
                     });
+                } else {
+                    // Round-D AI-Norms parity (2026-06-03): split bare/plain-text
+                    // URLs out of the run so they reach `add_runs` as `link =
+                    // Some(url)` and get registered in the chapter Sources & QR
+                    // box. Without this the reference book's autodetected bare
+                    // URLs (~20 per AI-Norms volume) miss the per-chapter QR
+                    // emission and we under-shoot the FIGURE_COUNT_PARITY gate.
+                    for (text, url) in split_bare_urls(&s) {
+                        current_runs.push(DocxRun {
+                            text,
+                            bold: style.bold,
+                            italic: style.italic,
+                            code: false,
+                            link: url,
+                        });
+                    }
                 }
             }
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -494,5 +595,79 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, DocxBlock::CodeBlock { lang, body } if lang == "rust" && body.contains("fn main")))
         );
+    }
+
+    /// Round-D AI-Norms parity (2026-06-03): a bare-text URL in a paragraph
+    /// must surface as a run with `link = Some(url)` so `add_runs` registers
+    /// it for the chapter Sources & QR-codes box. Without this the
+    /// FIGURE_COUNT_PARITY gate undershoots the reference by ~20 QR codes
+    /// (the AI-Norms reference book autodetected bare URLs from the legacy
+    /// bookkit `chapters_src/*.txt` sources).
+    #[test]
+    fn bare_url_in_paragraph_becomes_linked_run() {
+        let blocks =
+            to_docx_blocks("See https://example.org/page for details.\n");
+        let runs: Vec<&DocxRun> = blocks
+            .iter()
+            .filter_map(|b| {
+                if let DocxBlock::Paragraph(r) = b {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect();
+        assert!(
+            runs.iter().any(|r| r.link.as_deref()
+                == Some("https://example.org/page")
+                && r.text == "https://example.org/page"),
+            "no linked-URL run found in: {runs:?}",
+        );
+    }
+
+    #[test]
+    fn split_bare_urls_keeps_prose_and_strips_trailing_punctuation() {
+        let segs = split_bare_urls("see https://a.example/x, and https://b.example.");
+        let urls: Vec<_> = segs
+            .iter()
+            .filter_map(|(_, u)| u.clone())
+            .collect();
+        assert_eq!(
+            urls,
+            vec!["https://a.example/x".to_string(), "https://b.example".to_string()],
+            "unexpected URL split: {segs:?}",
+        );
+    }
+
+    #[test]
+    fn split_bare_urls_ignores_non_urls() {
+        let segs = split_bare_urls("plain text only — no URL here.");
+        assert_eq!(segs.len(), 1);
+        assert!(segs[0].1.is_none());
+    }
+
+    #[test]
+    fn explicit_markdown_link_is_not_double_processed() {
+        // `[label](url)` should still be a single linked run, NOT also
+        // re-split by the bare-URL heuristic.
+        let blocks = to_docx_blocks("See [the spec](https://example.org) here.\n");
+        let runs: Vec<&DocxRun> = blocks
+            .iter()
+            .filter_map(|b| {
+                if let DocxBlock::Paragraph(r) = b {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect();
+        let linked: Vec<&&DocxRun> = runs
+            .iter()
+            .filter(|r| r.link.as_deref() == Some("https://example.org"))
+            .collect();
+        assert_eq!(linked.len(), 1, "expected exactly one linked run, got: {runs:?}");
+        assert_eq!(linked[0].text, "the spec");
     }
 }

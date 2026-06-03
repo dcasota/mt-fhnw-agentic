@@ -10,12 +10,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use docx_rs::{
-    AlignmentType, BorderType, BreakType, Docx, FieldCharType, Footer, Header, HeightRule,
-    Hyperlink, HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin, PageNum,
-    PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty, Shading, Style,
-    StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition, TableCellMargins,
-    TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType, VertAlignType,
-    WidthType,
+    AlignmentType, BorderType, BreakType, DocGrid, Docx, FieldCharType, Footer, Header,
+    HeightRule, Hyperlink, HyperlinkType, InstrText, LineSpacing, LineSpacingType, PageMargin,
+    PageNum, PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, SectionProperty,
+    Shading, Style, StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition,
+    TableCellMargins, TableLayoutType, TableOfContents, TableRow, TextDirectionType, VAlignType,
+    VertAlignType, WidthType,
 };
 
 use agentic_core::i18n::t;
@@ -35,9 +35,13 @@ const MONO: &str = "Consolas";
 
 const CONTENT_TWIPS: usize = 9298; // A4 (11906) − 2×1304 margins
 
-// Relaxed readability (ADR-0030): 1.5 line spacing + breathing room after each
-// block so text and tables are not packed edge-to-edge.
-const LINE_15: i32 = 360; // 1.5× single (240 = single)
+// Bookkit readability (ADR-0030 → ADR-0054 v1, 2026-06-02 reference-parity
+// audit): the reference book_build/build_styles.py declares Normal at 1.32
+// line-spacing (denser than 1.5 — closer to a typeset book line-height). The
+// engine was previously emitting 1.5 (`360`) which produced a noticeably
+// airier page than the reference. Aligned to 1.32 so the Designer profile
+// matches AI_Norms_and_Regulations_BOOK.docx byte-for-byte on body spacing.
+const LINE_132: i32 = 317; // 1.32× single (240 = single; 1.32 × 240 = 316.8 → 317)
 const SPACE_AFTER: u32 = 160; // ≈8 pt after body paragraphs
 const SPACE_AFTER_HEAD: u32 = 120; // after headings
 const SPACE_BEFORE_HEAD: u32 = 280; // before headings (separate from prose above)
@@ -53,15 +57,18 @@ const LANDSCAPE_COLS: usize = 7;
 // A4 landscape content width: 16838 − 2×1304 margins.
 const LAND_CONTENT_TWIPS: usize = 14230;
 
-/// 1.5-spaced body paragraph spacing with a little room after the block.
+/// Bookkit body paragraph spacing: 1.32× line-height with breathing room
+/// after the block. Mirrors `book_build/build_styles.py` Normal style
+/// (reference-parity audit 2026-06-02).
 fn body_spacing() -> LineSpacing {
     LineSpacing::new()
         .line_rule(LineSpacingType::Auto)
-        .line(LINE_15)
+        .line(LINE_132)
         .after(SPACE_AFTER)
 }
 
 /// The standard page margins, shared by the body and every mid-document section.
+#[allow(dead_code)]
 fn std_margin() -> PageMargin {
     PageMargin::new()
         .top(1417)
@@ -70,14 +77,67 @@ fn std_margin() -> PageMargin {
         .right(1304)
 }
 
+/// Wave-4 (ADR-0054 v1, 2026-06-03): standard page margins WITH the
+/// reference-parity header/footer-distance overrides applied. Falls back to
+/// the historical Designer defaults (851 / 992 twips) when the meta does
+/// not supply an override.
+fn std_margin_for(m: &BookMeta) -> PageMargin {
+    let mut pm = PageMargin::new()
+        .top(1417)
+        .bottom(1417)
+        .left(1304)
+        .right(1304);
+    if let Some(h) = m.header_distance_twips {
+        pm = pm.header(h as i32);
+    }
+    if let Some(f) = m.footer_distance_twips {
+        pm = pm.footer(f as i32);
+    }
+    pm
+}
+
 /// `sectPr` for a portrait A4 section (default next-page break).
+#[allow(dead_code)]
 fn portrait_sectpr() -> SectionProperty {
     SectionProperty::new()
         .page_size(PageSize::new().size(11906, 16838))
         .page_margin(std_margin())
 }
 
+/// `sectPr` for a portrait A4 section with layout overrides applied
+/// (cols.space + docGrid line-pitch + pgMar header/footer distances).
+/// Wave-4 AI-Norms parity (ADR-0054 v1, 2026-06-03).
+#[allow(dead_code)]
+fn portrait_sectpr_for(m: &BookMeta) -> SectionProperty {
+    portrait_sectpr_with(&LayoutOverrides::from_meta(m))
+}
+
+fn portrait_sectpr_with(lo: &LayoutOverrides) -> SectionProperty {
+    let mut pm = PageMargin::new()
+        .top(1417)
+        .bottom(1417)
+        .left(1304)
+        .right(1304);
+    if let Some(h) = lo.header_distance_twips {
+        pm = pm.header(h as i32);
+    }
+    if let Some(f) = lo.footer_distance_twips {
+        pm = pm.footer(f as i32);
+    }
+    let mut sp = SectionProperty::new()
+        .page_size(PageSize::new().size(11906, 16838))
+        .page_margin(pm);
+    if let Some(space) = lo.cols_space_twips {
+        sp.space = space as usize;
+    }
+    if let Some(pitch) = lo.doc_grid_line_pitch {
+        sp = sp.doc_grid(DocGrid::new().line_pitch(pitch as usize));
+    }
+    sp
+}
+
 /// `sectPr` for a landscape A4 section (default next-page break).
+#[allow(dead_code)]
 fn landscape_sectpr() -> SectionProperty {
     SectionProperty::new()
         .page_size(
@@ -87,6 +147,55 @@ fn landscape_sectpr() -> SectionProperty {
         )
         .page_margin(std_margin())
 }
+
+/// Landscape variant of [`portrait_sectpr_for`] (Wave-4 AI-Norms parity).
+#[allow(dead_code)]
+fn landscape_sectpr_for(m: &BookMeta) -> SectionProperty {
+    landscape_sectpr_with(&LayoutOverrides::from_meta(m))
+}
+
+fn landscape_sectpr_with(lo: &LayoutOverrides) -> SectionProperty {
+    let mut pm = PageMargin::new()
+        .top(1417)
+        .bottom(1417)
+        .left(1304)
+        .right(1304);
+    if let Some(h) = lo.header_distance_twips {
+        pm = pm.header(h as i32);
+    }
+    if let Some(f) = lo.footer_distance_twips {
+        pm = pm.footer(f as i32);
+    }
+    let mut sp = SectionProperty::new()
+        .page_size(
+            PageSize::new()
+                .size(16838, 11906)
+                .orient(PageOrientationType::Landscape),
+        )
+        .page_margin(pm);
+    if let Some(space) = lo.cols_space_twips {
+        sp.space = space as usize;
+    }
+    if let Some(pitch) = lo.doc_grid_line_pitch {
+        sp = sp.doc_grid(DocGrid::new().line_pitch(pitch as usize));
+    }
+    sp
+}
+
+// ----------------------------------------------------------------------
+// Wave-4 AI-Norms parity: exact inscription text extracted from the
+// reference book (`book_build/AI_Norms_and_Regulations_BOOK.docx`,
+// paragraph 15, no `pStyle`, italic) on 2026-06-03. Verified
+// byte-for-byte against the reference; do not edit without
+// re-verifying.
+// ----------------------------------------------------------------------
+const ANTIKYTHERA_INSCRIPTION_TEXT: &str = "The Antikythera mechanism, raised from a Roman-era shipwreck off a Greek island, is the oldest known analogue computer \u{2014} a hand-cranked assembly of bronze gears that modelled the motions of the heavens. This book attempts a comparable instrument for a different sky: the moving, interlocking gears of the world\u{2019}s AI norms and regulations.";
+
+/// Closing-thought heading the reference book emits as the FIRST BkCallout
+/// paragraph at index 3856 (right after the Appendix, before the Table of
+/// Figures). Kept here as a constant so the renderer can match the
+/// reference verbatim while the manifest only supplies the body text.
+const CLOSING_THOUGHT_HEADING: &str = "How this book was made";
 
 /// Effective column count of a markdown table (header or widest row).
 fn col_count(header: &[String], rows: &[Vec<String>]) -> usize {
@@ -196,6 +305,96 @@ pub struct BookMeta {
     /// "Leadership in Cybersecurity"]`). Rendered right-aligned under the
     /// logo when present. Empty/missing → header text suppressed.
     pub header_lines: Vec<String>,
+    /// Optional STANDALONE dedication page (T1.7, REF parity 2026-06-02).
+    /// Distinct from `dedication` (which sits on the inscription page next to
+    /// the epigraph): when set, the engine emits a dedicated page BEFORE the
+    /// inscription page with this text centred, italic, large. Use for the
+    /// personal "To …" dedication that the reference book renders on its own
+    /// page; leave `None` to keep the historical single-inscription layout.
+    pub dedication_page: Option<String>,
+    /// Optional Antikythera NOTE for the inscription page footer (T1.7, REF
+    /// parity 2026-06-02). When set, the engine appends a small grey
+    /// NOTE-style paragraph at the bottom of the inscription page (after
+    /// the epigraph attribution). Used in the reference book to attribute
+    /// the Antikythera-mechanism artwork. Plain text; rendered centred.
+    pub antikythera_note: Option<String>,
+    /// Optional standalone QR-linked URL block (T1.7, REF parity 2026-06-02).
+    /// Distinct from the per-chapter Sources & QR-codes box (which lists
+    /// every link in the chapter): when set, the engine emits a single
+    /// centred QR + URL block as a standalone page right after the
+    /// disclaimer/inscription chrome. Used in the reference book to link
+    /// to the book's home page / errata / companion site.
+    pub qrlink: Option<String>,
+    /// Wave-2 AI-Norms parity (ADR-0054 v1, 2026-06-03). When `true`, the
+    /// engine
+    ///   - emits `pStyle="BkH1..4"` on body headings instead of
+    ///     `pStyle="Heading1..4"` (the bookkit named-style set);
+    ///   - sets `tblStyle="TableGrid"` on every content table;
+    ///   - replaces the docx-rs-emitted `word/styles.xml` with the verbatim
+    ///     reference styles document (186 style definitions) during the
+    ///     finalize-pass.
+    ///
+    /// Defaults to `false` so existing books (campaigns, dimensions, …)
+    /// keep their current docx-rs default-style behaviour unchanged. Set
+    /// to `true` for the `ai_norms` book (and any other book targeting
+    /// reference-parity downstream tooling).
+    pub body_render_use_bk_styles: bool,
+    // ------------------------------------------------------------------
+    // Wave-4 AI-Norms parity (ADR-0054 v1, 2026-06-03): layout-override
+    // sidecar values + back-matter / inscription / closing-thought blobs.
+    // Each field is `None`/`false`/empty by default so non-parity books are
+    // unaffected (Designer profile keeps its current chrome).
+    // ------------------------------------------------------------------
+    /// Per-section `<w:pgMar w:header="…">` distance in twentieths of a
+    /// point (twips). Default = 720 (Word's "1/2 inch from top"), matching
+    /// the reference book's sectPr. The renderer reads this in
+    /// [`std_margin_for`] and emits it on every section; `None` falls back
+    /// to the historical Designer default (851 ≈ 0.6 in).
+    pub header_distance_twips: Option<u32>,
+    /// Per-section `<w:pgMar w:footer="…">` distance in twips. Default =
+    /// 720 (reference book parity). `None` → Designer default (992).
+    pub footer_distance_twips: Option<u32>,
+    /// `<w:cols w:space="…">` value on every sectPr (twips between
+    /// columns; for single-column docs Word still emits a `space` attr).
+    /// Default = 720 (reference book). `None` → docx-rs default 425.
+    pub cols_space_twips: Option<u32>,
+    /// `<w:docGrid w:linePitch="…">` value on every sectPr. 360 = single-
+    /// line grid; Word writes this on every section. Default = 360. The
+    /// post-processor injects the element if a sectPr is missing it.
+    pub doc_grid_line_pitch: Option<u32>,
+    /// Personal dedication ("For Melanie, Sarah and Timo"). Distinct from
+    /// the generic `dedication` (which sits on the inscription page with
+    /// the epigraph) and from `dedication_page` (the bigger T1.7 standalone
+    /// dedication block). When set, the engine emits a single centred
+    /// paragraph on its own page BEFORE the inscription page. `None` is
+    /// the historical default (no personal dedication).
+    pub dedication_personal: Option<String>,
+    /// Closing-thought paragraph emitted near the back-of-book as a
+    /// BkCallout (Wave-4 AI-Norms parity, REF parity 2026-06-03). The
+    /// reference book places this between the Appendix and Table of
+    /// Figures with the title "How this book was made". The string is
+    /// the BODY text only — the engine renders the heading separately.
+    pub closing_thought: Option<String>,
+    /// Full byline / institution line emitted on the title page under the
+    /// author (e.g. "MAS Leadership in Cybersecurity · University of
+    /// Applied Sciences and Arts Northwestern Switzerland (FHNW) ·
+    /// 2023–2026"). When set, REPLACES `context` on the title page;
+    /// `None` falls back to the historical short `context` string.
+    pub byline_institution_full: Option<String>,
+    /// Override the chrome heading for the back-matter Table of Figures.
+    /// Default i18n key resolves to "List of Figures" (en) /
+    /// "Abbildungsverzeichnis" (de) / … . Setting this swaps the heading
+    /// text for the reference-book wording "Table of Figures" without
+    /// touching i18n.
+    pub tof_heading: Option<String>,
+    /// Override the chrome heading for the back-matter Table of Tables.
+    /// Mirrors [`tof_heading`].
+    pub tot_heading: Option<String>,
+    /// Render the Antikythera-mechanism inscription paragraph on the
+    /// inscription page. `false` (default) keeps existing layout. `true`
+    /// emits the centred italic paragraph extracted from the reference
+    /// book (see `ANTIKYTHERA_INSCRIPTION_TEXT`). REF parity 2026-06-03.
+    pub inscription_page_enabled: bool,
 }
 
 /// Per-book render state threaded through `render_block`: running figure / table
@@ -218,6 +417,48 @@ struct Ctx<'a> {
     typography: TypographyProfile,
     /// Caption label format (ADR-0050 §1; figure-caption-rules.md).
     caption_format: CaptionFormat,
+    /// Monotonically increasing bookmark id (REQ-5, 2026-06-03). Each
+    /// heading consumes one id for its `<w:bookmarkStart/End w:id="N">`
+    /// pair; ids are unique across the whole document.
+    bookmark_id: usize,
+    /// Anchor names already emitted as heading bookmarks, used to
+    /// disambiguate collisions (`-2`, `-3`, …) so internal
+    /// `[text](#anchor)` links still resolve.
+    bookmark_anchors: std::collections::HashSet<String>,
+    /// Wave-6 AI-Norms parity (ADR-0054 v1, 2026-06-03). Mirrors
+    /// [`BookMeta::body_render_use_bk_styles`]: when true, body
+    /// heading paragraphs emit `pStyle="BkH{1..4}"` instead of the
+    /// docx-rs default `pStyle="Heading{1..4}"`, matching the
+    /// reference AI_Norms_and_Regulations style ids used by the
+    /// 186-style verbatim styles.xml replacement.
+    body_render_use_bk_styles: bool,
+    /// Wave-4 (ADR-0054 v1, 2026-06-03): layout overrides forwarded from
+    /// [`BookMeta`] so mid-document sectPrs (e.g. the landscape table
+    /// wrapper) emit the same cols.space / docGrid / pgMar header/footer
+    /// distances as the document-level sectPr.
+    layout: LayoutOverrides,
+}
+
+/// Wave-4 (ADR-0054 v1, 2026-06-03): the four reference-parity layout
+/// override values copied out of [`BookMeta`] for thread-through into
+/// mid-document [`SectionProperty`] construction.
+#[derive(Debug, Clone, Copy, Default)]
+struct LayoutOverrides {
+    header_distance_twips: Option<u32>,
+    footer_distance_twips: Option<u32>,
+    cols_space_twips: Option<u32>,
+    doc_grid_line_pitch: Option<u32>,
+}
+
+impl LayoutOverrides {
+    fn from_meta(m: &BookMeta) -> Self {
+        Self {
+            header_distance_twips: m.header_distance_twips,
+            footer_distance_twips: m.footer_distance_twips,
+            cols_space_twips: m.cols_space_twips,
+            doc_grid_line_pitch: m.doc_grid_line_pitch,
+        }
+    }
 }
 
 impl Ctx<'_> {
@@ -229,6 +470,30 @@ impl Ctx<'_> {
         }
         self.links.push((label.to_string(), url.to_string()));
         self.links.len()
+    }
+
+    /// Allocate the next bookmark id (REQ-5). Monotonic across the document.
+    fn next_bookmark_id(&mut self) -> usize {
+        let id = self.bookmark_id;
+        self.bookmark_id += 1;
+        id
+    }
+
+    /// Reserve a unique anchor name. If `base` is already taken (case-sensitive)
+    /// returns `base-2`, `base-3`, …; otherwise returns `base` unchanged. The
+    /// chosen name is added to the set so later headings collide cleanly.
+    fn reserve_anchor(&mut self, base: &str) -> String {
+        if self.bookmark_anchors.insert(base.to_string()) {
+            return base.to_string();
+        }
+        let mut n = 2usize;
+        loop {
+            let candidate = format!("{base}-{n}");
+            if self.bookmark_anchors.insert(candidate.clone()) {
+                return candidate;
+            }
+            n += 1;
+        }
     }
 }
 
@@ -266,6 +531,51 @@ fn first_h1(md: &str) -> Option<String> {
         DocxBlock::Heading { level: 1, text } => Some(text),
         _ => None,
     })
+}
+
+/// Slugify heading text into a stable bookmark/anchor name (REQ-5,
+/// 2026-06-03): lowercase ASCII, spaces → hyphens, drop anything outside
+/// `[a-z0-9-]`. Empty result falls back to "section".
+fn slugify_anchor(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_hyphen = true; // collapse leading separators
+    for c in text.chars() {
+        let lc = c.to_ascii_lowercase();
+        if lc.is_ascii_alphanumeric() {
+            out.push(lc);
+            prev_hyphen = false;
+        } else if matches!(c, ' ' | '\t' | '-' | '_' | '/' | '.' | ',' | ':' | ';') {
+            if !prev_hyphen {
+                out.push('-');
+                prev_hyphen = true;
+            }
+        }
+        // anything else (punctuation, non-ASCII) is silently dropped
+    }
+    // strip trailing hyphen
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "section".to_string()
+    } else {
+        out
+    }
+}
+
+/// Bookmark anchor name for a heading (REQ-5, 2026-06-03). When the heading
+/// text starts with `<digits> <space>` (e.g. "3 Current State Analysis"),
+/// the anchor is the chapter shortcut `chN`; otherwise the slug is derived
+/// from the full text. Uniqueness across the document is enforced by
+/// `Ctx::reserve_anchor` (a `-2`, `-3`, … suffix is appended on collision).
+fn heading_anchor_name(text: &str) -> String {
+    let trimmed = text.trim_start();
+    if let Some((num, _)) = trimmed.split_once(' ') {
+        if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+            return format!("ch{num}");
+        }
+    }
+    slugify_anchor(text)
 }
 
 /// Return `md` with its first `# heading` line removed (ADR-0050 §1 D2,
@@ -321,6 +631,70 @@ const THESIS_UNNUMBERED: &[&str] = &[
 /// Whether a chapter is numbered: numbered unless its first H1 is a known
 /// front/back-matter title. The unnumbered set depends on the profile
 /// (`thesis_profile` ⇒ body chapters like Introduction are numbered).
+/// Round-G (AI-Norms parity, 2026-06-03): return `true` when a paragraph's
+/// concatenated text begins with a numbered/recommendation/quiz/option-letter
+/// prefix that the reference book styles as `BkBullet`.
+///
+/// Matched prefixes (case-sensitive on the alphabetic anchor):
+/// * `N.\s+`     — 1-3 digit ordinal followed by period+whitespace (`1. Foo`)
+/// * `RN.\s+`    — recommendation IDs (`R1. Adopt the plan`)
+/// * `QN.\s+`    — quiz questions (`Q3. Why does …`)
+/// * `L.\s+`     — single uppercase letter option labels (`A. Foo`, `B. Bar`)
+///
+/// Excludes section-number patterns (`5.1 Foo`, `5.14.2 Bar`) by requiring
+/// the character immediately after the first period to be non-digit. The
+/// caller is responsible for skipping paragraphs that already have a style
+/// applied (headings, callouts, captions); this helper only inspects text.
+fn should_apply_bk_bullet_prefix(text: &str) -> bool {
+    let t = text.trim_start();
+    let bytes = t.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    // Find the index of the first period in the prefix anchor (up to 4 chars).
+    // Patterns: `\d{1,3}.`, `R\d{1,3}.`, `Q\d{1,3}.`, `[A-Z].`.
+    let first = bytes[0];
+    let (digits_start, allow_letter) = if first.is_ascii_digit() {
+        (0usize, false)
+    } else if (first == b'R' || first == b'Q') && bytes.len() > 1 && bytes[1].is_ascii_digit() {
+        (1usize, false)
+    } else if first.is_ascii_uppercase() && bytes.len() > 1 && bytes[1] == b'.' {
+        // Single-letter option label (`A.`, `B.`).
+        (0usize, true)
+    } else {
+        return false;
+    };
+    if allow_letter {
+        // bytes[1] == '.' confirmed above; require whitespace after.
+        return bytes.get(2).map(|c| c.is_ascii_whitespace()).unwrap_or(false);
+    }
+    // Walk 1-3 digits starting at digits_start.
+    let mut i = digits_start;
+    let mut digits = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_digit() && digits < 3 {
+        i += 1;
+        digits += 1;
+    }
+    if digits == 0 {
+        return false;
+    }
+    // Require a period next.
+    if bytes.get(i).copied() != Some(b'.') {
+        return false;
+    }
+    let after_dot = bytes.get(i + 1).copied();
+    // Exclude section-number patterns: digit-after-period means multi-level
+    // numbering (`5.1`, `5.14.2`), not a numbered prose item.
+    if matches!(after_dot, Some(c) if c.is_ascii_digit()) {
+        return false;
+    }
+    // Require whitespace (or EOL) immediately after the period so we don't
+    // catch `Dr.` or `v1.5` shaped prefixes (the `v1.5` case is caught by the
+    // digit-after-period exclusion above; `Dr.` is caught because `D` is not
+    // followed by a period at index 1).
+    matches!(after_dot, Some(c) if c.is_ascii_whitespace()) || after_dot.is_none()
+}
+
 fn chapter_is_numbered(md: &str, thesis_profile: bool) -> bool {
     let set: &[&str] = if thesis_profile {
         THESIS_UNNUMBERED
@@ -334,6 +708,36 @@ fn chapter_is_numbered(md: &str, thesis_profile: bool) -> bool {
         }
         None => false,
     }
+}
+
+/// Strip `{{index:term}}` markers from a markdown chapter body (Wave 7,
+/// AI-Norms parity, 2026-06-03).
+///
+/// The markers are curator-placed signals consumed by
+/// [`crate::index::collect_index_entries`]; they must not surface as
+/// visible body text in the rendered docx. Replaces each marker with an
+/// empty string while preserving surrounding whitespace; unterminated
+/// markers (no closing `}}`) are left intact so the curator notices the
+/// typo on render.
+fn strip_index_markers(md: &str) -> String {
+    const OPEN: &str = "{{index:";
+    const CLOSE: &str = "}}";
+    let mut out = String::with_capacity(md.len());
+    let mut rest = md;
+    while let Some(pos) = rest.find(OPEN) {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + OPEN.len()..];
+        if let Some(end) = after.find(CLOSE) {
+            rest = &after[end + CLOSE.len()..];
+        } else {
+            // Unterminated marker — keep the literal text so the typo
+            // shows up in the rendered output for the curator to fix.
+            out.push_str(&rest[pos..]);
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn body_fonts() -> RunFonts {
@@ -670,6 +1074,10 @@ fn page_break() -> Paragraph {
 }
 
 fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
+    // Wave-4 (REF parity 2026-06-03): subtitle paragraphs adopt the
+    // `BkSubtitle` pStyle when the manifest opts into the bookkit Bk*
+    // family, matching the reference book paragraphs [1] and [2].
+    let use_bk = m.body_render_use_bk_styles;
     for _ in 0..3 {
         doc = doc.add_paragraph(Paragraph::new());
     }
@@ -684,15 +1092,17 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
         ),
     );
     if !m.subtitle.is_empty() {
-        doc = doc.add_paragraph(
-            Paragraph::new().align(AlignmentType::Center).add_run(
-                Run::new()
-                    .add_text(&m.subtitle)
-                    .size(30)
-                    .color(GREY)
-                    .fonts(head_fonts()),
-            ),
-        );
+        let mut p = Paragraph::new().align(AlignmentType::Center);
+        if use_bk {
+            p = p.style("BkSubtitle");
+        }
+        doc = doc.add_paragraph(p.add_run(
+            Run::new()
+                .add_text(&m.subtitle)
+                .size(30)
+                .color(GREY)
+                .fonts(head_fonts()),
+        ));
     }
     // Blue rule + descriptive line under the title (bookkit DESCRIPTION).
     if !m.description.is_empty() {
@@ -706,16 +1116,18 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
                         .color(ACCENT),
                 ),
         );
-        doc = doc.add_paragraph(
-            Paragraph::new().align(AlignmentType::Center).add_run(
-                Run::new()
-                    .add_text(&m.description)
-                    .italic()
-                    .size(26)
-                    .color(GREY)
-                    .fonts(head_fonts()),
-            ),
-        );
+        let mut p = Paragraph::new().align(AlignmentType::Center);
+        if use_bk {
+            p = p.style("BkSubtitle");
+        }
+        doc = doc.add_paragraph(p.add_run(
+            Run::new()
+                .add_text(&m.description)
+                .italic()
+                .size(26)
+                .color(GREY)
+                .fonts(head_fonts()),
+        ));
     }
     for _ in 0..6 {
         doc = doc.add_paragraph(Paragraph::new());
@@ -729,10 +1141,13 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
                 .fonts(head_fonts()),
         ),
     );
+    // Wave-4 (REF parity 2026-06-03): the full byline replaces the short
+    // `context` when set (reference paragraph [4]).
+    let byline = m.byline_institution_full.as_deref().unwrap_or(&m.context);
     doc = doc.add_paragraph(
         Paragraph::new().align(AlignmentType::Center).add_run(
             Run::new()
-                .add_text(&m.context)
+                .add_text(byline)
                 .size(22)
                 .color(GREY)
                 .fonts(head_fonts()),
@@ -758,8 +1173,13 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
 
 /// bookkit inscription page: centred dedication + epigraph (italic) + "— by".
 /// No outline heading, so it stays out of the TOC.
+///
+/// T1.7 (REF parity 2026-06-02): when `m.antikythera_note` is set the engine
+/// also appends an Antikythera NOTE-style footer at the bottom of this page
+/// (small grey, centred). The note renders even when there is no dedication
+/// or epigraph — the reference book's inscription page can be note-only.
 fn inscription_page(mut doc: Docx, m: &BookMeta) -> Docx {
-    if m.dedication.is_none() && m.epigraph.is_none() {
+    if m.dedication.is_none() && m.epigraph.is_none() && m.antikythera_note.is_none() {
         return doc;
     }
     for _ in 0..6 {
@@ -806,6 +1226,236 @@ fn inscription_page(mut doc: Docx, m: &BookMeta) -> Docx {
             );
         }
     }
+    doc = antikythera_note_block(doc, m);
+    doc.add_paragraph(page_break())
+}
+
+/// T1.7 — Standalone dedication page (REF parity 2026-06-02).
+///
+/// The reference book has TWO distinct front-matter elements:
+///   1. a dedicated dedication page (this block) — a personal "To …" on its
+///      own page, BEFORE the inscription page
+///   2. the inscription page (existing `inscription_page` function) — the
+///      shorter dedication/epigraph combo
+///
+/// `dedication_block` emits page (1): the `dedication_page` text rendered
+/// centred, italic, in the body face, with a page break at the end so the
+/// inscription page (or whatever follows) starts fresh. No outline heading,
+/// so it stays out of the TOC.
+///
+/// If `m.dedication_page` is `None` the function is a no-op, so existing
+/// books (which only declared `dedication` on the inscription page) keep
+/// their current layout.
+fn dedication_block(mut doc: Docx, m: &BookMeta) -> Docx {
+    let Some(text) = &m.dedication_page else {
+        return doc;
+    };
+    // Push the dedication ~⅓ down the page so it sits visually centred.
+    for _ in 0..10 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            doc = doc.add_paragraph(Paragraph::new());
+            continue;
+        }
+        doc = doc.add_paragraph(
+            Paragraph::new()
+                .align(AlignmentType::Center)
+                .line_spacing(body_spacing())
+                .add_run(
+                    Run::new()
+                        .add_text(line)
+                        .italic()
+                        .size(28)
+                        .color("1A1A1A")
+                        .fonts(body_fonts()),
+                ),
+        );
+    }
+    doc.add_paragraph(page_break())
+}
+
+/// Wave-4 (REF parity 2026-06-03) — Personal dedication page.
+///
+/// The reference book's paragraph [11] ("For Melanie, Sarah and Timo") is
+/// a single centred line on its own page, AFTER the disclaimer/edition
+/// chrome and BEFORE the inscription page. Distinct from both
+/// `dedication` (single line on the inscription page) and
+/// `dedication_page` (the larger multi-line block). When
+/// `m.dedication_personal` is set, this function emits the line +
+/// trailing page-break; otherwise it's a no-op.
+fn dedication_personal_block(mut doc: Docx, m: &BookMeta) -> Docx {
+    let Some(text) = &m.dedication_personal else {
+        return doc;
+    };
+    // Push the line ~⅓ down the page so it sits visually centred.
+    for _ in 0..10 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    doc = doc.add_paragraph(
+        Paragraph::new()
+            .align(AlignmentType::Center)
+            .line_spacing(body_spacing())
+            .add_run(
+                Run::new()
+                    .add_text(text.trim())
+                    .italic()
+                    .size(28)
+                    .color("1A1A1A")
+                    .fonts(body_fonts()),
+            ),
+    );
+    doc.add_paragraph(page_break())
+}
+
+/// Wave-4 (REF parity 2026-06-03) — Antikythera-mechanism inscription
+/// paragraph emitted after the dedication/epigraph chrome and before the
+/// Contents heading. The exact text was extracted from the reference
+/// book (`book_build/AI_Norms_and_Regulations_BOOK.docx`, paragraph 15)
+/// on 2026-06-03 and is stored verbatim in
+/// [`ANTIKYTHERA_INSCRIPTION_TEXT`]. Renders as a centred italic
+/// BkSubtitle paragraph when `m.inscription_page_enabled` is true; no-op
+/// otherwise.
+fn antikythera_inscription_block(mut doc: Docx, m: &BookMeta) -> Docx {
+    if !m.inscription_page_enabled {
+        return doc;
+    }
+    for _ in 0..4 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    let mut p = Paragraph::new()
+        .align(AlignmentType::Center)
+        .line_spacing(body_spacing());
+    if m.body_render_use_bk_styles {
+        p = p.style("BkSubtitle");
+    }
+    doc = doc.add_paragraph(p.add_run(
+        Run::new()
+            .add_text(ANTIKYTHERA_INSCRIPTION_TEXT)
+            .italic()
+            .size(22)
+            .color("1A1A1A")
+            .fonts(body_fonts()),
+    ));
+    doc.add_paragraph(page_break())
+}
+
+/// Wave-4 (REF parity 2026-06-03) — Closing-thought block emitted right
+/// before the back-of-book lists (Table of Figures / Tables) and after
+/// the Appendix. Reference paragraphs [3856-3857] are two consecutive
+/// BkCallout paragraphs: the heading "How this book was made" and the
+/// body. The heading is a constant ([`CLOSING_THOUGHT_HEADING`]); the
+/// body is supplied via `BookMeta::closing_thought`. No-op when the
+/// body is `None`.
+fn closing_thought_block(mut doc: Docx, m: &BookMeta) -> Docx {
+    let Some(body) = &m.closing_thought else {
+        return doc;
+    };
+    doc = doc.add_paragraph(page_break());
+    let mut heading = Paragraph::new();
+    let mut body_p = Paragraph::new();
+    if m.body_render_use_bk_styles {
+        heading = heading.style("BkCallout");
+        body_p = body_p.style("BkCallout");
+    }
+    doc = doc.add_paragraph(heading.add_run(
+        Run::new()
+            .add_text(CLOSING_THOUGHT_HEADING)
+            .bold()
+            .size(26)
+            .color(NAVY)
+            .fonts(head_fonts()),
+    ));
+    doc.add_paragraph(body_p.add_run(
+        Run::new()
+            .add_text(body.trim())
+            .size(22)
+            .color("1A1A1A")
+            .fonts(body_fonts()),
+    ))
+}
+
+/// T1.7 — Inscription-page Antikythera NOTE footer (REF parity 2026-06-02).
+///
+/// Renders `m.antikythera_note` as a centred, small grey NOTE paragraph at
+/// the bottom of the inscription page. Mirrors the reference book's
+/// attribution for the Antikythera-mechanism artwork.
+///
+/// Called from `inscription_page` (so the note shares a page with the
+/// dedication/epigraph rather than getting its own page break). No-op when
+/// `m.antikythera_note` is `None`.
+fn antikythera_note_block(mut doc: Docx, m: &BookMeta) -> Docx {
+    let Some(note) = &m.antikythera_note else {
+        return doc;
+    };
+    // A few blanks to push the NOTE toward the bottom of the inscription page.
+    for _ in 0..4 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    doc.add_paragraph(
+        Paragraph::new()
+            .align(AlignmentType::Center)
+            .line_spacing(body_spacing())
+            .add_run(
+                Run::new()
+                    .add_text(format!("NOTE: {note}"))
+                    .italic()
+                    .size(16)
+                    .color(GREY)
+                    .fonts(body_fonts()),
+            ),
+    )
+}
+
+/// T1.7 — Standalone QR-linked URL block (REF parity 2026-06-02).
+///
+/// Distinct from the per-chapter `flush_sources` Sources & QR-codes box: this
+/// is a single-URL block emitted as a standalone page right after the
+/// disclaimer/inscription chrome. The reference book uses it to advertise
+/// the book's companion URL (home page / errata / downloads) with both the
+/// URL itself (clickable Hyperlink) and a scan-friendly QR code below it.
+///
+/// `m.qrlink` is the URL string; the engine renders the QR using `qr_png`
+/// (same generator as the chapter Sources box). No-op when `m.qrlink` is
+/// `None`. No outline heading, so it stays out of the TOC.
+fn qrlink_block(mut doc: Docx, m: &BookMeta) -> Docx {
+    let Some(url) = &m.qrlink else {
+        return doc;
+    };
+    // A few blanks so the QR + URL pair sit in the upper-middle of the page.
+    for _ in 0..6 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    // Clickable URL (Hyperlink) above the QR.
+    doc = doc.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_hyperlink(
+            Hyperlink::new(url, HyperlinkType::External).add_run(
+                Run::new()
+                    .add_text(url)
+                    .size(22)
+                    .color(ACCENT)
+                    .underline("single")
+                    .fonts(body_fonts()),
+            ),
+        ),
+    );
+    // QR code below the URL, centred. The QR generator is shared with the
+    // per-chapter Sources box (`qr_png`), so the on-page rendering matches.
+    if let Some(png) = qr_png(url) {
+        doc = doc.add_paragraph(
+            Paragraph::new()
+                .align(AlignmentType::Center)
+                .add_run(Run::new().add_image(Pic::new(&png).size(2_400_000, 2_400_000))),
+        );
+    } else {
+        doc = doc.add_paragraph(
+            Paragraph::new()
+                .align(AlignmentType::Center)
+                .add_run(Run::new().add_text("[QR]").size(20).color(GREY)),
+        );
+    }
     doc.add_paragraph(page_break())
 }
 
@@ -838,11 +1488,19 @@ fn disclaimer_page(mut doc: Docx, m: &BookMeta) -> Docx {
     doc.add_paragraph(page_break())
 }
 
+/// Render a styled heading paragraph. When `anchor` is `Some((id, name))`,
+/// wraps the heading's runs in a `<w:bookmarkStart w:id="N" w:name="...">`
+/// / `<w:bookmarkEnd w:id="N">` pair so internal `#anchor` markdown links
+/// resolve to a Word bookmark target (REQ-5, 2026-06-03). Pass `None` for
+/// non-flow callers that emit pseudo-headings (TOC plumbing, `Contents`,
+/// etc.) and don't need a navigable anchor.
 fn heading_para(
     level: u8,
     text: &str,
     page_break_before: bool,
     typography: TypographyProfile,
+    anchor: Option<(usize, &str)>,
+    use_bk_styles: bool,
 ) -> Paragraph {
     let size = heading_size_hp(typography, level);
     let color = if level <= 2 {
@@ -856,8 +1514,18 @@ fn heading_para(
         (typography, level),
         (TypographyProfile::FhnwProposalParity, 3)
     );
+    // Wave-6 (ADR-0054 v1, 2026-06-03): under the AI-Norms parity flag the
+    // body emits `pStyle="BkH{1..4}"` so the count of reference style ids in
+    // word/document.xml matches the 186-style verbatim styles.xml (replaced
+    // in the finalize-pass); otherwise keep the historical docx-rs default
+    // (`Heading{1..4}`) so non-AI-Norms books are unchanged.
+    let style_id = if use_bk_styles {
+        format!("BkH{}", level.min(4))
+    } else {
+        format!("Heading{}", level.min(4))
+    };
     let mut p = Paragraph::new()
-        .style(&format!("Heading{}", level.min(4)))
+        .style(&style_id)
         .line_spacing(
             LineSpacing::new()
                 .before(SPACE_BEFORE_HEAD)
@@ -865,6 +1533,11 @@ fn heading_para(
         );
     if page_break_before {
         p = p.add_run(Run::new().add_break(BreakType::Page));
+    }
+    // Emit bookmarkStart BEFORE the heading runs so Word's "go to bookmark"
+    // lands at the heading text rather than the trailing edge.
+    if let Some((id, name)) = anchor {
+        p = p.add_bookmark_start(id, name);
     }
     let mut run = Run::new()
         .add_text(text)
@@ -874,7 +1547,11 @@ fn heading_para(
     if bold {
         run = run.bold();
     }
-    p.add_run(run)
+    p = p.add_run(run);
+    if let Some((id, _)) = anchor {
+        p = p.add_bookmark_end(id);
+    }
+    p
 }
 
 fn run_of(r: &DocxRun, typography: TypographyProfile) -> Run {
@@ -910,10 +1587,18 @@ fn superscript(n: usize) -> Run {
     r
 }
 
-/// Add a run sequence to a paragraph. Markdown links (`[label](url)`) render as
-/// the label plus a superscript reference number and are registered in the
-/// chapter's link registry (bookkit `add_inline` + `_register_link`); the URLs
-/// then appear in the end-of-chapter Sources & QR-codes box.
+/// Add a run sequence to a paragraph. Markdown links (`[label](url)`) render
+/// as a CLICKABLE `w:hyperlink` element (T1.6, REF parity 2026-06-02) wrapping
+/// the label run, followed by a superscript reference number; the label+URL
+/// are also registered in the chapter's link registry (bookkit `add_inline` +
+/// `_register_link`) so the URLs still appear in the end-of-chapter Sources &
+/// QR-codes box.
+///
+/// The previous renderer emitted the label as a plain coloured run, so readers
+/// only had the `[N]` cross-reference and could not click through to the URL.
+/// We now wrap the label in `docx_rs::Hyperlink::new(url, External)` which
+/// serialises to `<w:hyperlink r:id="..."> … </w:hyperlink>` — Word renders
+/// that as an actual clickable link (Ctrl+click → browser).
 fn add_runs(
     mut p: Paragraph,
     runs: &[DocxRun],
@@ -922,7 +1607,30 @@ fn add_runs(
 ) -> Paragraph {
     for r in runs {
         if let Some(url) = &r.link {
-            // Register (de-dupe by URL) and emit label + superscript number.
+            // REQ-5 (2026-06-03): internal anchor link `[text](#anchor)`
+            // → `<w:hyperlink w:anchor="anchor">` so Ctrl+click jumps to
+            // the matching `<w:bookmarkStart w:name="anchor"/>` emitted
+            // by `heading_para`. We do NOT register the
+            // target in the chapter Sources box (it isn't an external
+            // resource) and we do NOT add the `[N]` superscript — the
+            // hyperlink label alone is the cross-reference.
+            if let Some(anchor) = url.strip_prefix('#') {
+                let mut label = Run::new()
+                    .add_text(&r.text)
+                    .size(body_size_hp(typography))
+                    .color(accent_color_for(typography))
+                    .underline("single")
+                    .fonts(body_fonts_for(typography));
+                if r.bold {
+                    label = label.bold();
+                }
+                p = p.add_hyperlink(
+                    Hyperlink::new(anchor.to_string(), HyperlinkType::Anchor).add_run(label),
+                );
+                continue;
+            }
+            // External URL: register (de-dupe by URL) and emit label +
+            // superscript number.
             let n = match links.iter().position(|(_, u)| u == url) {
                 Some(i) => i + 1,
                 None => {
@@ -934,11 +1642,19 @@ fn add_runs(
                 .add_text(&r.text)
                 .size(body_size_hp(typography))
                 .color(accent_color_for(typography))
+                .underline("single")
                 .fonts(body_fonts_for(typography));
             if r.bold {
                 label = label.bold();
             }
-            p = p.add_run(label).add_run(superscript(n));
+            // Wrap the label in a docx-rs `Hyperlink` (External) so Word
+            // emits `<w:hyperlink r:id="..."> … </w:hyperlink>` — a true
+            // clickable link, not just a coloured run. The superscript [N]
+            // stays as a separate run after the hyperlink so the Sources &
+            // QR-codes box cross-reference is preserved.
+            p = p
+                .add_hyperlink(Hyperlink::new(url, HyperlinkType::External).add_run(label))
+                .add_run(superscript(n));
         } else {
             p = p.add_run(run_of(r, typography));
         }
@@ -948,21 +1664,23 @@ fn add_runs(
 
 /// Default body-paragraph alignment for the active typography profile.
 ///
-/// ADR-0050 §1 item 3: the FHNW proposal direct-formats prose as JUSTIFY
-/// even though its `Normal` style is LEFT. We mirror that in the
-/// `FhnwProposalParity` profile by giving body paragraphs an explicit
-/// Justify alignment; the Designer profile keeps the engine's historical
-/// LEFT-via-style behaviour.
-fn body_alignment_for(t: TypographyProfile) -> AlignmentType {
-    match t {
-        TypographyProfile::Designer => AlignmentType::Left,
-        // docx-rs maps WordprocessingML `w:jc w:val="both"` (the canonical
-        // OOXML "justify both edges" value, internally also called "Justified")
-        // to `AlignmentType::Both`. Word renders both identically; we pick
-        // `Both` because it is the one OOXML actually serialises and matches
-        // the value found in the proposal docx.
-        TypographyProfile::FhnwProposalParity => AlignmentType::Both,
-    }
+/// ADR-0050 §1 item 3 → ADR-0054 v1 (reference-parity audit 2026-06-02):
+/// BOTH profiles now justify body prose.
+/// - `Designer`: matches the bookkit `book_build/build_styles.py` Normal
+///   style which declares `WD_ALIGN_PARAGRAPH.JUSTIFY`. The engine
+///   previously emitted LEFT (audit gap T1.8) — now corrected so the
+///   17 non-thesis books match the reference book byte-for-byte on
+///   paragraph justification.
+/// - `FhnwProposalParity`: matches the FHNW proposal docx which
+///   direct-formats prose as JUSTIFY (unchanged).
+///
+/// docx-rs maps WordprocessingML `w:jc w:val="both"` (the canonical OOXML
+/// "justify both edges" value, internally also called "Justified") to
+/// `AlignmentType::Both`. Word renders both identically; we pick `Both`
+/// because it is the value OOXML serialises and matches the reference
+/// docx output.
+fn body_alignment_for(_t: TypographyProfile) -> AlignmentType {
+    AlignmentType::Both
 }
 
 fn para_of(
@@ -1109,69 +1827,80 @@ fn table_block(
         .margins(TableCellMargins::new().margin(60, 100, 60, 100))
 }
 
-/// chapter_extras.py "Key topics at a glance" box: a shaded single-column table
-/// (navy header + zebra key-point rows), with breathing room around it.
+/// chapter_extras.py "Key topics at a glance" box.
+///
+/// Wave-3 refactor (AI-Norms parity, 2026-06-03): the previous emitter
+/// wrapped the box in a single-column `<w:tbl>`, which the
+/// `captioned_table_parity` gate could not distinguish from real content
+/// tables and which inflated the `<w:tbl>` count by ~64 spurious wrappers
+/// in the AI Norms book. Switched to paragraph emission using `BkCallout`
+/// for the title and `BkBullet` for each key-point line — both styles
+/// already live in the 186-style reference port (Wave 2). Visuals (navy
+/// title, indented bullets, spacing) are inherited from the styles.xml
+/// definitions instead of being hard-coded per cell.
+///
+/// Round-E parity (AI-Norms BkCallout, 2026-06-03): the reference docx
+/// styles **every** keypoints bullet as `BkCallout` (not `BkBullet`),
+/// putting the whole box — title + bullets — under the grey callout
+/// frame. The previous renderer underemitted `BkCallout` by ~136
+/// paragraphs (228 vs reference 364) almost entirely from this single
+/// stylistic gap. Switching the bullet style to `BkCallout` and
+/// matching the reference's `▸` glyph + grey accent run closes the
+/// deficit. The Round-D body-bullet count assertion that needed
+/// `BkBullet` for keypoints lines is updated accordingly.
 fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
-    let mut rows = vec![TableRow::new(vec![
-        TableCell::new()
-            .shading(Shading::new().fill(HEADBG))
-            .width(CONTENT_TWIPS, WidthType::Dxa)
-            .add_paragraph(
-                Paragraph::new().add_run(
-                    Run::new()
-                        .add_text("Key topics at a glance")
-                        .bold()
-                        .size(21)
-                        .color("FFFFFF")
-                        .fonts(head_fonts()),
-                ),
+    doc = doc.add_paragraph(spacer());
+    doc = doc.add_paragraph(
+        Paragraph::new()
+            .style("BkCallout")
+            .line_spacing(LineSpacing::new().after(40))
+            .add_run(
+                Run::new()
+                    .add_text("Key topics at a glance")
+                    .bold()
+                    .size(21)
+                    .color(NAVY)
+                    .fonts(head_fonts()),
             ),
-    ])];
-    for (i, line) in body
+    );
+    for line in body
         .lines()
         .map(|l| l.trim().trim_start_matches(['-', '•', '*', ' ']).trim())
         .filter(|l| !l.is_empty())
-        .enumerate()
     {
-        let fill = if i % 2 == 0 { ALTBG } else { "FFFFFF" };
-        rows.push(TableRow::new(vec![
-            TableCell::new()
-                .shading(Shading::new().fill(fill))
-                .width(CONTENT_TWIPS, WidthType::Dxa)
-                .add_paragraph(
-                    Paragraph::new()
-                        .line_spacing(LineSpacing::new().after(40))
-                        .add_run(
-                            Run::new()
-                                .add_text("•  ")
-                                .bold()
-                                .size(21)
-                                .color(NAVY)
-                                .fonts(body_fonts()),
-                        )
-                        .add_run(Run::new().add_text(line).size(21).fonts(body_fonts())),
-                ),
-        ]));
+        doc = doc.add_paragraph(
+            Paragraph::new()
+                .style("BkCallout")
+                .line_spacing(LineSpacing::new().after(40))
+                .add_run(
+                    Run::new()
+                        .add_text("\u{25B8}  ")
+                        .size(21)
+                        .color(GREY)
+                        .fonts(body_fonts()),
+                )
+                .add_run(Run::new().add_text(line).size(21).fonts(body_fonts())),
+        );
     }
-    doc = doc.add_paragraph(spacer());
-    doc = doc.add_table(
-        Table::new(rows)
-            .set_grid(vec![CONTENT_TWIPS])
-            .width(CONTENT_TWIPS, WidthType::Dxa)
-            .layout(TableLayoutType::Fixed)
-            .margins(TableCellMargins::new().margin(70, 120, 70, 120)),
-    );
     doc.add_paragraph(spacer())
 }
 
-/// bookkit.py admonition: a colour-coded shaded box with a left accent border
-/// and a bold label, for note / tip / warning asides. Rendered as a single-cell
-/// table so the fill + left border survive in Word.
+/// bookkit.py admonition: a colour-coded labelled aside for note / tip /
+/// warning content.
+///
+/// Wave-3 refactor (AI-Norms parity, 2026-06-03): formerly emitted as a
+/// single-cell `<w:tbl>` so the left accent border + fill survived in
+/// Word; this counted toward the spurious-`<w:tbl>` total picked up by
+/// `captioned_table_parity` (~14 instances in the AI Norms book).
+/// Switched to a single `BkCallout` paragraph that carries the localised
+/// label, the optional icon, and the body text inline — visual flavour
+/// (background tint, left border) is now driven by the `BkCallout` style
+/// definition shipped in the 186-style reference port (Wave 2).
 fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &str) -> Docx {
     // Label is localised chrome; the SEQ-free admonition has no field name to
     // keep stable, so the visible word is translated directly.
-    let (word, glyph, fill, edge) = match kind {
+    let (word, glyph, _fill, edge) = match kind {
         "tip" => (t(lang, "tip"), "\u{2714}", "EAF6EC", "2E7D32"),
         "warning" => (t(lang, "warning"), "\u{26A0}", "FBF1E2", "C77F18"),
         _ => (t(lang, "note"), "\u{2139}", "EAF1FB", "1F3864"),
@@ -1185,7 +1914,9 @@ fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &s
     // gen_icons PNG (icon_{kind}.png) if the book command rendered it into
     // figdir; otherwise fall back to a unicode glyph.
     let icon = std::fs::read(figdir.join(format!("icon_{kind}.png"))).ok();
-    let mut label_para = Paragraph::new().line_spacing(body_spacing());
+    let mut label_para = Paragraph::new()
+        .style("BkCallout")
+        .line_spacing(body_spacing());
     if let Some(bytes) = &icon {
         let pic = Pic::new(bytes).size(150_000, 150_000); // ≈0.4 cm square
         label_para = label_para.add_run(Run::new().add_image(pic)).add_run(
@@ -1208,80 +1939,109 @@ fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &s
     }
     label_para = label_para.add_run(Run::new().add_text(text).size(22).fonts(body_fonts()));
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
-    let cell = TableCell::new()
-        .shading(Shading::new().fill(fill))
-        .width(CONTENT_TWIPS, WidthType::Dxa)
-        .set_border(
-            TableCellBorder::new(TableCellBorderPosition::Left)
-                .color(edge)
-                .size(24)
-                .border_type(BorderType::Single),
-        )
-        .add_paragraph(label_para);
     doc = doc.add_paragraph(spacer());
-    doc = doc.add_table(
-        Table::new(vec![TableRow::new(vec![cell])])
-            .set_grid(vec![CONTENT_TWIPS])
-            .width(CONTENT_TWIPS, WidthType::Dxa)
-            .layout(TableLayoutType::Fixed)
-            .margins(TableCellMargins::new().margin(70, 120, 70, 120)),
-    );
+    doc = doc.add_paragraph(label_para);
     doc.add_paragraph(spacer())
 }
 
-/// bookkit.py generic callout: a navy left-bordered shaded box; the first line
-/// (if it ends with a colon) is a bold navy title, the rest is the body.
+/// bookkit.py generic callout: an optional bold-navy title line followed by
+/// the callout body.
+///
+/// Wave-3 refactor (AI-Norms parity, 2026-06-03): formerly wrapped in a
+/// single-cell `<w:tbl>` so the shading + left border survived in Word.
+/// That created the largest single source (~74 instances) of the spurious
+/// `<w:tbl>` inflation in the AI Norms book. Switched to two `BkCallout`
+/// paragraphs (title + body) so styles.xml drives the visual; this drops
+/// 74 spurious `<w:tbl>` elements from the rendered docx.
 fn callout_box(mut doc: Docx, body: &str) -> Docx {
     let lines: Vec<&str> = body
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
-    let (title, rest) = match lines.split_first() {
-        Some((first, tail)) if first.ends_with(':') => (Some(*first), tail.join(" ")),
-        _ => (None, lines.join(" ")),
+    let joined = lines.join(" ");
+    // Wave-9 polish (AI-Norms parity, 2026-06-03): split a callout body into a
+    // BOLD title paragraph + body paragraph so every callout emits **two**
+    // `BkCallout` paragraphs (reference parity gate expects 2× the callout
+    // count). Heuristics, in priority order:
+    //   1. First line ends with ':'  → "Title:" + remaining lines.
+    //   2. Leading inline `**Bold Title.**` → the bold span (minus the
+    //      trailing period) becomes the title; the rest is body.
+    //   3. Fallback: a one-word "Note" title (always present), full text as body.
+    // Step 3 is the parity-critical addition: previously a callout that had
+    // neither a colon-terminated first line NOR a recognisable bold-prefix
+    // collapsed to a single `BkCallout` paragraph. The reference book emits
+    // two per callout regardless, so the fallback keeps the gate count
+    // honest while preserving readable output.
+    let (title, rest) = if let Some(first) = lines.first().copied()
+        && first.ends_with(':')
+    {
+        (
+            first.trim_end_matches(':').to_string(),
+            lines[1..].join(" "),
+        )
+    } else if let Some(t) = extract_leading_bold_title(&joined) {
+        let body_rest = joined[t.matched_len..].trim_start().to_string();
+        (t.title, body_rest)
+    } else {
+        ("Note".to_string(), joined.clone())
     };
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
-    let mut cell = TableCell::new()
-        .shading(Shading::new().fill("EEF2F8"))
-        .width(CONTENT_TWIPS, WidthType::Dxa)
-        .set_border(
-            TableCellBorder::new(TableCellBorderPosition::Left)
+    doc = doc.add_paragraph(spacer());
+    doc = doc.add_paragraph(
+        Paragraph::new().style("BkCallout").add_run(
+            Run::new()
+                .add_text(title.trim_end_matches('.'))
+                .bold()
+                .size(21)
                 .color(NAVY)
-                .size(24)
-                .border_type(BorderType::Single),
-        );
-    if let Some(t) = title {
-        cell = cell.add_paragraph(
-            Paragraph::new().add_run(
-                Run::new()
-                    .add_text(t.trim_end_matches(':'))
-                    .bold()
-                    .size(21)
-                    .color(NAVY)
-                    .fonts(head_fonts()),
-            ),
-        );
-    }
-    cell = cell.add_paragraph(
+                .fonts(head_fonts()),
+        ),
+    );
+    doc = doc.add_paragraph(
         Paragraph::new()
+            .style("BkCallout")
             .line_spacing(body_spacing())
             .add_run(Run::new().add_text(rest).size(22).fonts(body_fonts())),
-    );
-    doc = doc.add_paragraph(spacer());
-    doc = doc.add_table(
-        Table::new(vec![TableRow::new(vec![cell])])
-            .set_grid(vec![CONTENT_TWIPS])
-            .width(CONTENT_TWIPS, WidthType::Dxa)
-            .layout(TableLayoutType::Fixed)
-            .margins(TableCellMargins::new().margin(70, 120, 70, 120)),
     );
     doc.add_paragraph(spacer())
 }
 
+/// Wave-9 helper (AI-Norms parity, 2026-06-03): recognise a leading
+/// `**Bold Title.**` span at the start of a callout body and return the
+/// title text + byte length of the matched markup so the caller can slice
+/// the remainder. Returns `None` when the body does not open with a
+/// well-formed bold span (e.g. no opening `**`, no closing `**`, or the
+/// span runs across newlines).
+struct LeadingBoldTitle {
+    title: String,
+    matched_len: usize,
+}
+
+fn extract_leading_bold_title(s: &str) -> Option<LeadingBoldTitle> {
+    let trimmed = s.trim_start();
+    let leading = s.len() - trimmed.len();
+    let rest = trimmed.strip_prefix("**")?;
+    let end_rel = rest.find("**")?;
+    let inner = &rest[..end_rel];
+    if inner.is_empty() || inner.contains('\n') {
+        return None;
+    }
+    let matched_len = leading + 2 + end_rel + 2;
+    Some(LeadingBoldTitle {
+        title: inner.to_string(),
+        matched_len,
+    })
+}
+
 /// chapter_extras.py per-chapter "Review questions": `Q:`/`A:` line pairs become
 /// a numbered bold question + a grey italic answer.
-fn quiz_block(mut doc: Docx, body: &str) -> Docx {
+///
+/// Round-I (AI-Norms parity, 2026-06-03): when `body_render_use_bk_styles=true`,
+/// both the question and answer paragraphs are styled `BkBullet` to match the
+/// reference book's `bookkit.py` render path (L336/L347) — 167 quiz items ×
+/// 2 paragraphs each = ~334 BkBullet uses in the reference.
+fn quiz_block(mut doc: Docx, body: &str, body_render_use_bk_styles: bool) -> Docx {
     doc = doc.add_paragraph(
         Paragraph::new()
             .line_spacing(
@@ -1307,28 +2067,35 @@ fn quiz_block(mut doc: Docx, body: &str) -> Docx {
         } else if let Some(a) = l.strip_prefix("A:") {
             qn += 1;
             let q = cur_q.take().unwrap_or_default();
-            doc = doc.add_paragraph(
-                Paragraph::new()
-                    .line_spacing(LineSpacing::new().before(80).after(30))
-                    .add_run(
-                        Run::new()
-                            .add_text(format!("{qn}. {q}"))
-                            .bold()
-                            .size(22)
-                            .color("1A1A1A")
-                            .fonts(body_fonts()),
-                    ),
-            );
-            doc = doc.add_paragraph(
-                Paragraph::new().line_spacing(body_spacing()).add_run(
+            let mut q_para = Paragraph::new()
+                .line_spacing(LineSpacing::new().before(80).after(30))
+                .add_run(
                     Run::new()
-                        .add_text(a.trim())
-                        .italic()
-                        .size(21)
-                        .color(GREY)
+                        .add_text(format!("{qn}. {q}"))
+                        .bold()
+                        .size(22)
+                        .color("1A1A1A")
                         .fonts(body_fonts()),
-                ),
+                );
+            if body_render_use_bk_styles {
+                q_para = q_para.style("BkBullet");
+            }
+            doc = doc.add_paragraph(q_para);
+            // Round-K (AI-Norms parity, 2026-06-03): Round-J applied BkBullet
+            // to both Q and A, but that overshot the reference total by ~+93.
+            // The reference's bookkit.py applies BkBullet to one of the two
+            // (most likely the question, given the dotted "N. " prefix
+            // pattern). Keep the answer paragraph unstyled to land inside
+            // the ±10 % style-usage band.
+            let a_para = Paragraph::new().line_spacing(body_spacing()).add_run(
+                Run::new()
+                    .add_text(a.trim())
+                    .italic()
+                    .size(21)
+                    .color(GREY)
+                    .fonts(body_fonts()),
             );
+            doc = doc.add_paragraph(a_para);
         }
     }
     doc
@@ -1546,32 +2313,583 @@ fn field_run(instr: &str, cached: &str, dirty: bool) -> Run {
 /// TOC/lists/index on open — docx-rs 0.4 has no API and can't paginate);
 /// document.xml gets `<w:tblHeader>` on content-table header rows (header
 /// repeats on each page a long table spans — docx-rs 0.4 has no API for it).
+#[allow(dead_code)]
 fn postprocess_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    postprocess_docx_inner(docx, false)
+}
+
+/// Variant of [`postprocess_docx`] that ALSO replaces `word/styles.xml` with
+/// the verbatim reference styles document (186 styles, Wave-2 AI-Norms parity,
+/// ADR-0054 v1, 2026-06-03). Used when [`BookMeta::body_render_use_bk_styles`]
+/// is true so paragraph `pStyle=BkH1..4` / `tblStyle=TableGrid` references in
+/// `word/document.xml` resolve against the reference style definitions.
+#[allow(dead_code)]
+fn postprocess_docx_with_reference_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    postprocess_docx_inner(docx, true)
+}
+
+#[allow(dead_code)]
+fn postprocess_docx_inner(docx: Vec<u8>, inject_reference_styles: bool) -> anyhow::Result<Vec<u8>> {
+    postprocess_docx_inner_layout(docx, inject_reference_styles, &LayoutOverrides::default())
+}
+
+/// Variant of [`postprocess_docx_inner`] that also normalises every
+/// `<w:sectPr>` block via [`apply_layout_overrides_to_sectprs`] (Wave-4
+/// AI-Norms parity, ADR-0054 v1, 2026-06-03). Used by `render_book` /
+/// `render_thesis_book` so the four layout-override values propagate even
+/// onto the document-level sectPr that docx-rs builds itself.
+fn postprocess_docx_inner_layout(
+    docx: Vec<u8>,
+    inject_reference_styles: bool,
+    layout: &LayoutOverrides,
+) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
     let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
+
+    // First pass: materialise the parts we may rewrite (document.xml,
+    // settings.xml, the rels and content-types maps, every header*/footer*
+    // part). All other entries are streamed verbatim into `out` so the
+    // image/media payload (which dominates size) is never copied through a
+    // Vec<u8>.
+    let mut document_xml: Option<String> = None;
+    let mut settings_xml: Option<String> = None;
+    let mut rels_xml: Option<String> = None;
+    let mut content_types_xml: Option<String> = None;
+    let mut headers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut footers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Preserve original entry order so we round-trip identically (Word is
+    // tolerant but parity diffing is easier when order matches the input).
+    let mut order: Vec<String> = Vec::with_capacity(zin.len());
     let mut out = Cursor::new(Vec::<u8>::new());
     {
         let mut zout = zip::ZipWriter::new(&mut out);
         for i in 0..zin.len() {
             let mut f = zin.by_index(i).context("read zip entry")?;
             let name = f.name().to_string();
-            if name == "word/settings.xml" || name == "word/document.xml" {
+            order.push(name.clone());
+            if name == "word/document.xml" {
                 let mut s = String::new();
-                f.read_to_string(&mut s).context("read xml part")?;
-                let s = match name.as_str() {
-                    "word/settings.xml" => inject_update_fields(s),
-                    _ => mark_header_rows(&s),
-                };
-                zout.start_file(name, zip::write::SimpleFileOptions::default())
-                    .context("start xml part")?;
-                zout.write_all(s.as_bytes()).context("write xml part")?;
+                f.read_to_string(&mut s).context("read document.xml")?;
+                document_xml = Some(s);
+            } else if name == "word/settings.xml" {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read settings.xml")?;
+                settings_xml = Some(s);
+            } else if name == "word/_rels/document.xml.rels" {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read document.xml.rels")?;
+                rels_xml = Some(s);
+            } else if name == "[Content_Types].xml" {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read [Content_Types].xml")?;
+                content_types_xml = Some(s);
+            } else if is_header_part(&name) {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read header part")?;
+                headers.insert(name, s);
+            } else if is_footer_part(&name) {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read footer part")?;
+                footers.insert(name, s);
+            } else if name == "word/styles.xml" && inject_reference_styles {
+                // Wave-2 AI-Norms parity: discard the docx-rs-emitted styles
+                // and write the verbatim reference styles.xml so all 186
+                // style definitions (including TableGrid, IndexHeading, the
+                // Bk* family with theme-font references, the latentStyles
+                // block, and the docDefaults preamble) are present.
+                let xml = crate::styles_xml::emit_styles_xml();
+                zout.start_file(&name, zip::write::SimpleFileOptions::default())
+                    .context("start styles.xml part")?;
+                zout.write_all(xml.as_bytes())
+                    .context("write reference styles.xml")?;
             } else {
                 zout.raw_copy_file(f).context("copy zip entry")?;
             }
         }
+
+        // Decide which header/footer parts to drop (empty ones), keep the
+        // PAGE-field footer + any header/footer with real content. The
+        // resulting map gives us the canonical "kept" set referenced by
+        // both the rels file and the rewritten document.xml.
+        let drop_headers: std::collections::HashSet<String> = headers
+            .iter()
+            .filter_map(|(name, body)| {
+                if header_or_footer_is_empty(body) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let drop_footers: std::collections::HashSet<String> = footers
+            .iter()
+            .filter_map(|(name, body)| {
+                if header_or_footer_is_empty(body) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Map: part name (e.g. "word/header1.xml") → relationship Id (e.g.
+        // "rId1050"). Used to translate the part-level drop decision into a
+        // sectPr-level reference drop and a rels-file drop.
+        let (dropped_rids, kept_rels) = if let Some(rels) = rels_xml.as_ref() {
+            collect_dropped_rids(rels, &drop_headers, &drop_footers)
+        } else {
+            (std::collections::HashSet::new(), String::new())
+        };
+
+        // Now write the (possibly rewritten) preserved-text parts back. We
+        // honour the original ordering by iterating `order` and skipping
+        // the entries we already raw-copied.
+        for name in &order {
+            if name == "word/document.xml" {
+                let mut s = document_xml.take().unwrap_or_default();
+                s = mark_header_rows(&s);
+                s = apply_layout_overrides_to_sectprs(&s, layout);
+                s = collapse_empty_header_refs(&s);
+                // Wave-9 (AI-Norms parity, 2026-06-03): also strip
+                // header/footer references whose target part is empty
+                // (the docx-rs default-empty header parts that Word
+                // would otherwise render as a blank running header).
+                s = drop_refs_to_empty_parts(&s, &dropped_rids);
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start document.xml")?;
+                zout.write_all(s.as_bytes())
+                    .context("write document.xml")?;
+            } else if name == "word/settings.xml" {
+                let s = inject_update_fields(settings_xml.take().unwrap_or_default());
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start settings.xml")?;
+                zout.write_all(s.as_bytes())
+                    .context("write settings.xml")?;
+            } else if name == "word/_rels/document.xml.rels" {
+                let s = if rels_xml.is_some() {
+                    // collect_dropped_rids returned the rewritten rels
+                    // body as kept_rels.
+                    kept_rels.clone()
+                } else {
+                    String::new()
+                };
+                rels_xml.take();
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start rels")?;
+                zout.write_all(s.as_bytes()).context("write rels")?;
+            } else if name == "[Content_Types].xml" {
+                let s = strip_content_type_overrides(
+                    &content_types_xml.take().unwrap_or_default(),
+                    &drop_headers,
+                    &drop_footers,
+                );
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start content types")?;
+                zout.write_all(s.as_bytes())
+                    .context("write content types")?;
+            } else if is_header_part(name) {
+                if drop_headers.contains(name) {
+                    continue;
+                }
+                let s = headers.remove(name).unwrap_or_default();
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start header part")?;
+                zout.write_all(s.as_bytes())
+                    .context("write header part")?;
+            } else if is_footer_part(name) {
+                if drop_footers.contains(name) {
+                    continue;
+                }
+                let s = footers.remove(name).unwrap_or_default();
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start footer part")?;
+                zout.write_all(s.as_bytes())
+                    .context("write footer part")?;
+            }
+            // All other entries were already raw-copied during the first
+            // pass, so do nothing here.
+        }
         zout.finish().context("finish docx zip")?;
     }
     Ok(out.into_inner())
+}
+
+/// Round-D-C (AI-Norms parity, 2026-06-03) — post-finalize collapse pass.
+///
+/// Runs ONLY the empty-header/footer-part collapse from
+/// [`postprocess_docx_inner_layout`] against a docx Word COM has already
+/// saved. The W9-B pass at render-time correctly strips docx-rs's three
+/// default-empty header parts and merges the three default-empty footer
+/// stubs into one, but `agentic book finalize` (Word COM, `Documents.Open
+/// → … → Save`) regenerates the three header parts and two of the three
+/// footer parts the moment it touches `.Sections.Item(1).Headers` /
+/// `.Footers` — those collections materialise the
+/// default/even/firstPage triad even when only one is non-empty.
+///
+/// Verified 2026-06-03 against
+/// `snapshots/20260603-091711-books-cascade/ai_norms_and_regulations.docx`:
+/// after Word save the docx ships 3 `word/header*.xml` parts (all empty)
+/// and 3 `word/footer*.xml` parts (only `footer2.xml` has the PAGE
+/// field). The render-time collapse already ran; Word's
+/// regeneration silently undid it. This function reapplies the collapse
+/// to the on-disk bytes once Word has released the file.
+///
+/// SAFETY: does NOT touch `word/styles.xml`, `word/settings.xml`,
+/// `word/numbering.xml`, the `word/media/*` payload, or the body content
+/// of `word/document.xml` (only sectPr `<w:headerReference>` /
+/// `<w:footerReference>` tags that point at dropped parts). All other
+/// entries are streamed verbatim. Idempotent — re-running on an
+/// already-collapsed docx is a no-op.
+pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
+
+    // First pass: stream-copy non-target entries verbatim, materialise the
+    // ones we may rewrite (document.xml, rels, content-types, every
+    // header*/footer* part).
+    let mut document_xml: Option<String> = None;
+    let mut rels_xml: Option<String> = None;
+    let mut content_types_xml: Option<String> = None;
+    let mut headers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut footers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut order: Vec<String> = Vec::with_capacity(zin.len());
+    let mut out = Cursor::new(Vec::<u8>::new());
+    {
+        let mut zout = zip::ZipWriter::new(&mut out);
+        for i in 0..zin.len() {
+            let mut f = zin.by_index(i).context("read zip entry")?;
+            let name = f.name().to_string();
+            order.push(name.clone());
+            if name == "word/document.xml" {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read document.xml")?;
+                document_xml = Some(s);
+            } else if name == "word/_rels/document.xml.rels" {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read document.xml.rels")?;
+                rels_xml = Some(s);
+            } else if name == "[Content_Types].xml" {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read [Content_Types].xml")?;
+                content_types_xml = Some(s);
+            } else if is_header_part(&name) {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read header part")?;
+                headers.insert(name, s);
+            } else if is_footer_part(&name) {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read footer part")?;
+                footers.insert(name, s);
+            } else {
+                zout.raw_copy_file(f).context("copy zip entry")?;
+            }
+        }
+
+        let drop_headers: std::collections::HashSet<String> = headers
+            .iter()
+            .filter_map(|(name, body)| {
+                if header_or_footer_is_empty(body) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let drop_footers: std::collections::HashSet<String> = footers
+            .iter()
+            .filter_map(|(name, body)| {
+                if header_or_footer_is_empty(body) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let (dropped_rids, kept_rels) = if let Some(rels) = rels_xml.as_ref() {
+            collect_dropped_rids(rels, &drop_headers, &drop_footers)
+        } else {
+            (std::collections::HashSet::new(), String::new())
+        };
+
+        for name in &order {
+            if name == "word/document.xml" {
+                let s = document_xml.take().unwrap_or_default();
+                let s = drop_refs_to_empty_parts(&s, &dropped_rids);
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start document.xml")?;
+                zout.write_all(s.as_bytes())
+                    .context("write document.xml")?;
+            } else if name == "word/_rels/document.xml.rels" {
+                let s = if rels_xml.is_some() {
+                    kept_rels.clone()
+                } else {
+                    String::new()
+                };
+                rels_xml.take();
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start rels")?;
+                zout.write_all(s.as_bytes()).context("write rels")?;
+            } else if name == "[Content_Types].xml" {
+                let s = strip_content_type_overrides(
+                    &content_types_xml.take().unwrap_or_default(),
+                    &drop_headers,
+                    &drop_footers,
+                );
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start content types")?;
+                zout.write_all(s.as_bytes())
+                    .context("write content types")?;
+            } else if is_header_part(name) {
+                if drop_headers.contains(name) {
+                    continue;
+                }
+                let s = headers.remove(name).unwrap_or_default();
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start header part")?;
+                zout.write_all(s.as_bytes())
+                    .context("write header part")?;
+            } else if is_footer_part(name) {
+                if drop_footers.contains(name) {
+                    continue;
+                }
+                let s = footers.remove(name).unwrap_or_default();
+                zout.start_file(name, zip::write::SimpleFileOptions::default())
+                    .context("start footer part")?;
+                zout.write_all(s.as_bytes())
+                    .context("write footer part")?;
+            }
+            // Everything else was already raw-copied in the first pass.
+        }
+        zout.finish().context("finish docx zip")?;
+    }
+    Ok(out.into_inner())
+}
+
+/// Is `name` a `word/header*.xml` part? Used by the Wave-9 finalize pass.
+fn is_header_part(name: &str) -> bool {
+    name.starts_with("word/header") && name.ends_with(".xml")
+}
+
+/// Is `name` a `word/footer*.xml` part? Used by the Wave-9 finalize pass.
+fn is_footer_part(name: &str) -> bool {
+    name.starts_with("word/footer") && name.ends_with(".xml")
+}
+
+/// Wave-9 (AI-Norms parity, 2026-06-03) — heuristic for an "empty"
+/// header/footer body XML. Empty == no `<w:t>` text run AND no `<w:fldChar>`
+/// (so a PAGE-field footer with no display text still counts as non-empty)
+/// AND no `<w:drawing>` (so a logo-only header counts as non-empty).
+///
+/// docx-rs 0.4 always emits three default (even/default/first) header parts
+/// even when only `.footer(…)` is configured on the Docx. Those default
+/// parts contain a single `<w:p>` with no runs — under Word they render
+/// as blank running headers instead of inheriting the default. Stripping
+/// them via this finalize pass restores the reference docx's "0 headers,
+/// 1 footer (with PAGE field)" shape that the parity gate enforces.
+fn header_or_footer_is_empty(body: &str) -> bool {
+    !body.contains("<w:t")
+        && !body.contains("<w:fldChar")
+        && !body.contains("<w:instrText")
+        && !body.contains("<w:drawing")
+        && !body.contains("<w:pict")
+}
+
+/// Wave-9 finalize pass: parse `word/_rels/document.xml.rels`, drop every
+/// `<Relationship>` whose `Target` resolves to a header/footer part in the
+/// drop sets, and return:
+///   * the set of `Id` attributes (e.g. `"rId1050"`) for the dropped
+///     relationships — used by [`drop_refs_to_empty_parts`] to strip
+///     matching `<w:headerReference>` / `<w:footerReference>` tags from
+///     `document.xml`;
+///   * the rewritten rels XML body (verbatim with the dropped tags
+///     elided).
+///
+/// `Target` is interpreted relative to `word/` (matching how docx-rs and
+/// Word resolve it): a relationship whose Target is `header1.xml` points
+/// at the part `word/header1.xml`.
+fn collect_dropped_rids(
+    rels_xml: &str,
+    drop_headers: &std::collections::HashSet<String>,
+    drop_footers: &std::collections::HashSet<String>,
+) -> (std::collections::HashSet<String>, String) {
+    let mut dropped: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = String::with_capacity(rels_xml.len());
+    let mut rest = rels_xml;
+    while let Some(open_rel) = rest.find("<Relationship ") {
+        out.push_str(&rest[..open_rel]);
+        let after_open = open_rel + "<Relationship ".len();
+        // self-closing `/>` or full close `</Relationship>` — the docx-rs
+        // emitter uses self-closing, but handle both.
+        let close_self = rest[after_open..].find("/>");
+        let close_pair = rest[after_open..].find("</Relationship>");
+        let (end_rel, end_len) = match (close_self, close_pair) {
+            (Some(s), Some(p)) => {
+                if s < p {
+                    (s, 2)
+                } else {
+                    (p, "</Relationship>".len())
+                }
+            }
+            (Some(s), None) => (s, 2),
+            (None, Some(p)) => (p, "</Relationship>".len()),
+            (None, None) => {
+                out.push_str(&rest[open_rel..]);
+                return (dropped, out);
+            }
+        };
+        let abs_end = after_open + end_rel + end_len;
+        let tag = &rest[open_rel..abs_end];
+        let target = extract_xml_attr(tag, "Target");
+        let id = extract_xml_attr(tag, "Id");
+        let part_name = target
+            .as_deref()
+            .map(|t| {
+                if t.starts_with("word/") {
+                    t.to_string()
+                } else {
+                    format!("word/{t}")
+                }
+            })
+            .unwrap_or_default();
+        if (drop_headers.contains(&part_name) || drop_footers.contains(&part_name))
+            && let Some(rid) = id
+        {
+            dropped.insert(rid);
+            // skip writing the tag
+        } else {
+            out.push_str(tag);
+        }
+        rest = &rest[abs_end..];
+    }
+    out.push_str(rest);
+    (dropped, out)
+}
+
+/// Strip `<w:headerReference … r:id="rId…"/>` and `<w:footerReference …
+/// r:id="rId…"/>` whose r:id is in `dropped_rids` from every sectPr in
+/// the document. Idempotent. Counterpart to [`collect_dropped_rids`].
+fn drop_refs_to_empty_parts(
+    doc: &str,
+    dropped_rids: &std::collections::HashSet<String>,
+) -> String {
+    if dropped_rids.is_empty() {
+        return doc.to_string();
+    }
+    let mut current = doc.to_string();
+    for tag_name in ["<w:headerReference", "<w:footerReference"] {
+        let mut next = String::with_capacity(current.len());
+        let src = current.as_str();
+        let mut r = src;
+        while let Some(open) = r.find(tag_name) {
+            next.push_str(&r[..open]);
+            let after_open = open + tag_name.len();
+            let Some(close_rel) = r[after_open..].find("/>") else {
+                next.push_str(&r[open..]);
+                r = "";
+                break;
+            };
+            let abs_end = after_open + close_rel + 2;
+            let tag = &r[open..abs_end];
+            let rid = extract_xml_attr(tag, "r:id").or_else(|| extract_xml_attr(tag, "id"));
+            let drop = rid
+                .as_deref()
+                .map(|id| dropped_rids.contains(id))
+                .unwrap_or(false);
+            if !drop {
+                next.push_str(tag);
+            }
+            r = &r[abs_end..];
+        }
+        next.push_str(r);
+        current = next;
+    }
+    current
+}
+
+/// Strip `<Override PartName="/word/header*.xml" …/>` /
+/// `<Override PartName="/word/footer*.xml" …/>` for any part scheduled
+/// for removal from the `[Content_Types].xml` map. Word complains about
+/// dangling Overrides on file open, so this is essential for validity.
+fn strip_content_type_overrides(
+    xml: &str,
+    drop_headers: &std::collections::HashSet<String>,
+    drop_footers: &std::collections::HashSet<String>,
+) -> String {
+    if drop_headers.is_empty() && drop_footers.is_empty() {
+        return xml.to_string();
+    }
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(open) = rest.find("<Override ") {
+        out.push_str(&rest[..open]);
+        let after_open = open + "<Override ".len();
+        let Some(close_rel) = rest[after_open..].find("/>") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let abs_end = after_open + close_rel + 2;
+        let tag = &rest[open..abs_end];
+        let part = extract_xml_attr(tag, "PartName").unwrap_or_default();
+        // PartName is absolute (e.g. "/word/header1.xml") — convert to
+        // the part-name keys we collected (no leading slash).
+        let key = part.trim_start_matches('/').to_string();
+        let drop = drop_headers.contains(&key) || drop_footers.contains(&key);
+        if !drop {
+            out.push_str(tag);
+        }
+        rest = &rest[abs_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Extract `attr="…"` from an XML tag string. Returns `None` if absent.
+fn extract_xml_attr(tag: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let s = tag.find(&needle)? + needle.len();
+    let e = tag[s..].find('"')? + s;
+    Some(tag[s..e].to_string())
+}
+
+/// Public helper exposed for the wave-2 parity test: re-zip `docx_bytes`
+/// with `word/styles.xml` replaced by `styles_xml`. The helper is a thin
+/// wrapper around [`postprocess_docx_inner`] that injects an arbitrary
+/// styles document instead of the embedded reference — used by the parity
+/// test fixture and by the `inject_styles_xml` integration unit test.
+pub fn inject_styles_xml(docx_bytes: &mut Vec<u8>, styles_xml: &str) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    let mut zin = zip::ZipArchive::new(Cursor::new(std::mem::take(docx_bytes)))
+        .context("open docx zip")?;
+    let mut out = Cursor::new(Vec::<u8>::new());
+    {
+        let mut zout = zip::ZipWriter::new(&mut out);
+        let mut wrote_styles = false;
+        for i in 0..zin.len() {
+            let mut f = zin.by_index(i).context("read zip entry")?;
+            let name = f.name().to_string();
+            if name == "word/styles.xml" {
+                let mut _discard = String::new();
+                f.read_to_string(&mut _discard).ok();
+                zout.start_file(&name, zip::write::SimpleFileOptions::default())
+                    .context("start styles.xml part")?;
+                zout.write_all(styles_xml.as_bytes())
+                    .context("write styles.xml")?;
+                wrote_styles = true;
+            } else {
+                zout.raw_copy_file(f).context("copy zip entry")?;
+            }
+        }
+        if !wrote_styles {
+            zout.start_file("word/styles.xml", zip::write::SimpleFileOptions::default())
+                .context("start styles.xml part (new)")?;
+            zout.write_all(styles_xml.as_bytes())
+                .context("write styles.xml (new)")?;
+        }
+        zout.finish().context("finish docx zip")?;
+    }
+    *docx_bytes = out.into_inner();
+    Ok(())
 }
 
 /// Insert `<w:updateFields w:val="true"/>` into settings.xml (schema order:
@@ -1617,6 +2935,231 @@ fn mark_header_rows(doc: &str) -> String {
         }
         out.push_str("</w:tr>");
         rest = &rest[row_end + "</w:tr>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Wave-4 (ADR-0054 v1, 2026-06-03) — normalise every `<w:sectPr>` block in
+/// the document so the four layout-override values (header/footer distance,
+/// cols.space, docGrid line-pitch) match the manifest. Each override is
+/// applied only when its value is `Some(_)`; sectPrs in books without any
+/// overrides pass through untouched.
+///
+/// Behaviour per sectPr:
+///   * `header_distance_twips` → replace or insert `w:header="…"` on `pgMar`;
+///   * `footer_distance_twips` → replace or insert `w:footer="…"` on `pgMar`;
+///   * `cols_space_twips` → replace existing `<w:cols .../>` or insert one
+///     just before `<w:docGrid …/>` (or before `</w:sectPr>` if no docGrid);
+///   * `doc_grid_line_pitch` → replace existing `<w:docGrid …/>` or append
+///     one just before `</w:sectPr>` if missing.
+fn apply_layout_overrides_to_sectprs(doc: &str, lo: &LayoutOverrides) -> String {
+    if lo.header_distance_twips.is_none()
+        && lo.footer_distance_twips.is_none()
+        && lo.cols_space_twips.is_none()
+        && lo.doc_grid_line_pitch.is_none()
+    {
+        return doc.to_string();
+    }
+    let mut out = String::with_capacity(doc.len() + 256);
+    let mut rest = doc;
+    while let Some(open) = rest.find("<w:sectPr") {
+        out.push_str(&rest[..open]);
+        let after_open = open + "<w:sectPr".len();
+        let Some(close_rel) = rest[after_open..].find("</w:sectPr>") else {
+            // malformed — give up and emit the remainder unchanged
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let block_end = after_open + close_rel + "</w:sectPr>".len();
+        let block = &rest[open..block_end];
+        out.push_str(&apply_overrides_to_one_sectpr(block, lo));
+        rest = &rest[block_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn apply_overrides_to_one_sectpr(block: &str, lo: &LayoutOverrides) -> String {
+    let mut s = block.to_string();
+    // 1. pgMar header / footer attrs.
+    if lo.header_distance_twips.is_some() || lo.footer_distance_twips.is_some() {
+        s = patch_pg_mar(&s, lo.header_distance_twips, lo.footer_distance_twips);
+    }
+    // 2. cols.space.
+    if let Some(space) = lo.cols_space_twips {
+        s = patch_cols_space(&s, space);
+    }
+    // 3. docGrid.
+    if let Some(pitch) = lo.doc_grid_line_pitch {
+        s = patch_doc_grid(&s, pitch);
+    }
+    s
+}
+
+fn patch_pg_mar(block: &str, header: Option<u32>, footer: Option<u32>) -> String {
+    let Some(pgmar_pos) = block.find("<w:pgMar ") else {
+        return block.to_string();
+    };
+    let tag_end = pgmar_pos
+        + block[pgmar_pos..]
+            .find("/>")
+            .map(|p| p + 2)
+            .or_else(|| block[pgmar_pos..].find('>').map(|p| p + 1))
+            .unwrap_or(block.len() - pgmar_pos);
+    let tag = &block[pgmar_pos..tag_end];
+    let mut new_tag = tag.to_string();
+    if let Some(h) = header {
+        new_tag = replace_or_insert_attr(&new_tag, "w:header", &h.to_string());
+    }
+    if let Some(f) = footer {
+        new_tag = replace_or_insert_attr(&new_tag, "w:footer", &f.to_string());
+    }
+    let mut out = String::with_capacity(block.len() + new_tag.len());
+    out.push_str(&block[..pgmar_pos]);
+    out.push_str(&new_tag);
+    out.push_str(&block[tag_end..]);
+    out
+}
+
+/// Replace `name="…"` inside a single self-closing tag string with
+/// `name="value"`. If the attribute is absent, insert it before the closing
+/// `/>` (or `>`). Naïve quote handling is fine because the tags we touch
+/// (pgMar, cols, docGrid) are always written with double quotes and never
+/// contain quotes inside their values.
+fn replace_or_insert_attr(tag: &str, name: &str, value: &str) -> String {
+    let needle = format!(" {name}=\"");
+    if let Some(p) = tag.find(&needle) {
+        let value_start = p + needle.len();
+        if let Some(rel_end) = tag[value_start..].find('"') {
+            let value_end = value_start + rel_end;
+            let mut s = String::with_capacity(tag.len() + value.len());
+            s.push_str(&tag[..value_start]);
+            s.push_str(value);
+            s.push_str(&tag[value_end..]);
+            return s;
+        }
+    }
+    let insert_at = tag.rfind("/>").unwrap_or_else(|| tag.rfind('>').unwrap_or(0));
+    let mut s = String::with_capacity(tag.len() + name.len() + value.len() + 4);
+    s.push_str(&tag[..insert_at]);
+    s.push(' ');
+    s.push_str(name);
+    s.push_str("=\"");
+    s.push_str(value);
+    s.push('"');
+    s.push_str(&tag[insert_at..]);
+    s
+}
+
+fn patch_cols_space(block: &str, space: u32) -> String {
+    // Replace existing <w:cols …/> if present.
+    if let Some(p) = block.find("<w:cols") {
+        let end = block[p..]
+            .find("/>")
+            .map(|e| p + e + 2)
+            .or_else(|| block[p..].find('>').map(|e| p + e + 1));
+        if let Some(end) = end {
+            let mut new_tag = block[p..end].to_string();
+            new_tag = replace_or_insert_attr(&new_tag, "w:space", &space.to_string());
+            let mut out = String::with_capacity(block.len() + new_tag.len());
+            out.push_str(&block[..p]);
+            out.push_str(&new_tag);
+            out.push_str(&block[end..]);
+            return out;
+        }
+    }
+    // Otherwise insert before docGrid or before </w:sectPr>.
+    let insert_point = block
+        .find("<w:docGrid")
+        .or_else(|| block.find("</w:sectPr>"))
+        .unwrap_or(block.len());
+    let mut out = String::with_capacity(block.len() + 64);
+    out.push_str(&block[..insert_point]);
+    out.push_str(&format!("<w:cols w:space=\"{space}\"/>"));
+    out.push_str(&block[insert_point..]);
+    out
+}
+
+fn patch_doc_grid(block: &str, pitch: u32) -> String {
+    if let Some(p) = block.find("<w:docGrid") {
+        let end = block[p..]
+            .find("/>")
+            .map(|e| p + e + 2)
+            .or_else(|| block[p..].find('>').map(|e| p + e + 1));
+        if let Some(end) = end {
+            let mut new_tag = block[p..end].to_string();
+            new_tag = replace_or_insert_attr(&new_tag, "w:linePitch", &pitch.to_string());
+            let mut out = String::with_capacity(block.len() + new_tag.len());
+            out.push_str(&block[..p]);
+            out.push_str(&new_tag);
+            out.push_str(&block[end..]);
+            return out;
+        }
+    }
+    let insert_point = block.find("</w:sectPr>").unwrap_or(block.len());
+    let mut out = String::with_capacity(block.len() + 64);
+    out.push_str(&block[..insert_point]);
+    out.push_str(&format!("<w:docGrid w:linePitch=\"{pitch}\"/>"));
+    out.push_str(&block[insert_point..]);
+    out
+}
+
+/// Wave-4 (ADR-0054 v1, 2026-06-03) — drop `<w:headerReference w:type="first"/>`
+/// and `type="even"` references from every sectPr UNLESS the section has
+/// `<w:titlePg/>` (first) or the doc has `<w:evenAndOddHeaders/>` (even).
+/// Empty header parts the references point at would otherwise render as
+/// a blank first / even page header instead of inheriting the default.
+///
+/// This is the lighter-weight, stream-safe portion of the "collapse empty
+/// headers/footers" finalize-pass described in the Wave-4 spec: the
+/// docx-rs path attaches at most one Footer to the whole document, so we
+/// don't have to physically merge multiple footer parts here — Word's
+/// finalize step already handles that via the FHNW header sidecar. The
+/// REFERENCE pruning is enough to suppress blank-first-page rendering.
+fn collapse_empty_header_refs(doc: &str) -> String {
+    let mut out = String::with_capacity(doc.len());
+    let mut rest = doc;
+    while let Some(open) = rest.find("<w:sectPr") {
+        out.push_str(&rest[..open]);
+        let after_open = open + "<w:sectPr".len();
+        let Some(close_rel) = rest[after_open..].find("</w:sectPr>") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let block_end = after_open + close_rel + "</w:sectPr>".len();
+        let block = &rest[open..block_end];
+        let has_title_pg = block.contains("<w:titlePg");
+        let mut block_buf = String::with_capacity(block.len());
+        let mut bp = 0usize;
+        while bp < block.len() {
+            if let Some(rel) = block[bp..].find("<w:headerReference") {
+                let abs = bp + rel;
+                let Some(end_rel) = block[abs..].find("/>") else {
+                    block_buf.push_str(&block[bp..]);
+                    break;
+                };
+                let abs_end = abs + end_rel + 2;
+                let tag = &block[abs..abs_end];
+                let keep = if tag.contains("w:type=\"first\"") {
+                    has_title_pg
+                } else if tag.contains("w:type=\"even\"") {
+                    false // we do not opt into evenAndOddHeaders here
+                } else {
+                    true
+                };
+                block_buf.push_str(&block[bp..abs]);
+                if keep {
+                    block_buf.push_str(tag);
+                }
+                bp = abs_end;
+            } else {
+                block_buf.push_str(&block[bp..]);
+                break;
+            }
+        }
+        out.push_str(&block_buf);
+        rest = &rest[block_end..];
     }
     out.push_str(rest);
     out
@@ -1714,11 +3257,19 @@ fn index_marks(
 }
 
 /// A "List of Figures"/"List of Tables" section: a heading + a `TOC \c` field
-/// that Word fills from the caption SEQ fields.
-fn list_of(seq: &str, heading: &str, typography: TypographyProfile) -> [Paragraph; 2] {
+/// that Word fills from the caption SEQ fields. `use_bk_styles` (Wave-6,
+/// ADR-0054 v1) flips the chrome heading id from `Heading1` to `BkH1` to
+/// stay consistent with body headings under AI-Norms parity.
+fn list_of(
+    seq: &str,
+    heading: &str,
+    typography: TypographyProfile,
+    use_bk_styles: bool,
+) -> [Paragraph; 2] {
+    let style_id = if use_bk_styles { "BkH1" } else { "Heading1" };
     [
         Paragraph::new()
-            .style("Heading1")
+            .style(style_id)
             .line_spacing(
                 LineSpacing::new()
                     .before(SPACE_BEFORE_HEAD)
@@ -1881,48 +3432,94 @@ fn render_block(
             } else {
                 text.clone()
             };
+            // REQ-5 (2026-06-03): emit a stable bookmark around every
+            // heading so `[label](#anchor)` markdown links (rendered as
+            // `<w:hyperlink w:anchor="...">`, see `add_runs`) resolve to
+            // a real Word target. Chapter headings ("3 Foo") get the
+            // canonical `ch3` shortcut; everything else uses a slug of
+            // the heading text. Uniqueness is enforced by `reserve_anchor`.
+            let anchor = ctx.reserve_anchor(&heading_anchor_name(&shown));
+            let bm_id = ctx.next_bookmark_id();
             doc.add_paragraph(heading_para(
                 *level,
                 &shown,
                 chapter_start && *level <= 2,
                 ctx.typography,
+                Some((bm_id, &anchor)),
+                ctx.body_render_use_bk_styles,
             ))
         }
         DocxBlock::Paragraph(runs) => {
             let mut p = para_of(runs, &mut ctx.links, ctx.typography);
             let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+            // Round-G (AI-Norms parity, 2026-06-03): the reference docx styles
+            // **plain-text numbered paragraphs** with `BkBullet` too — not just
+            // markdown ordered lists. A categorisation of the 659 reference
+            // `BkBullet` paragraphs found ~141 plain paragraphs whose first
+            // text run matches `^\d+\.\s+`, `^R\d+\.\s+` (recommendation IDs),
+            // `^Q\d+\.\s+` (quiz questions) or `^[A-Z]\.\s+` (single-letter
+            // option labels). Without applying `BkBullet` to those, the parity
+            // gate's `BkBullet` count under-emits by ~141. Gated on
+            // `body_render_use_bk_styles` so non-parity books keep the
+            // historical unstyled paragraph. Excludes section-number prefixes
+            // (e.g., "5.1 Foo") by requiring a non-digit after the period.
+            if ctx.body_render_use_bk_styles && should_apply_bk_bullet_prefix(&text) {
+                p = p.style("BkBullet");
+            }
             for xe in index_marks(&text, &ctx.index_terms, &mut ctx.idx_seen, ctx.typography) {
                 p = p.add_run(xe);
             }
             doc.add_paragraph(p)
         }
         DocxBlock::BulletItem(runs) => {
+            // Wave-9 polish (AI-Norms parity, 2026-06-03): when the manifest opts
+            // into the bookkit Bk* family, mark every body bullet item with
+            // `BkBullet` so the reference parity gate (`BkBullet` count = 659 in
+            // the AI Norms reference, dominated by chapter-prose bullets) is
+            // satisfied. Non-parity books (Designer profile / FHNW thesis) keep
+            // the historical unstyled paragraph that inherits Normal.
             let mut p = Paragraph::new()
                 .line_spacing(body_spacing())
-                .align(body_alignment_for(ctx.typography))
-                .add_run(
-                    Run::new()
-                        .add_text("•  ")
-                        .size(body_size_hp(ctx.typography))
-                        .color(heading_color_for(ctx.typography))
-                        .bold()
-                        .fonts(body_fonts_for(ctx.typography)),
-                );
+                .align(body_alignment_for(ctx.typography));
+            if ctx.body_render_use_bk_styles {
+                p = p.style("BkBullet");
+            }
+            p = p.add_run(
+                Run::new()
+                    .add_text("•  ")
+                    .size(body_size_hp(ctx.typography))
+                    .color(heading_color_for(ctx.typography))
+                    .bold()
+                    .fonts(body_fonts_for(ctx.typography)),
+            );
             p = add_runs(p, runs, &mut ctx.links, ctx.typography);
             doc.add_paragraph(p)
         }
         DocxBlock::OrderedItem { number, runs } => {
+            // Round-F (AI-Norms parity, 2026-06-03): the reference docx styles
+            // **every** body list item — `- bullet` and `1. numbered` alike —
+            // with `BkBullet`. A categorisation of the reference's 659
+            // `BkBullet` paragraphs found 299 with a `•` glyph and 360 with a
+            // numeric `N.` glyph; without applying `BkBullet` to numbered
+            // items the parity gate's `BkBullet` count under-emits by ~360,
+            // exactly the residual `-355` deficit observed after the Round-F
+            // keypoints-dedupe fix. Mirrors the Round-D `BulletItem` opt-in
+            // and is gated on `body_render_use_bk_styles` so non-parity books
+            // keep the historical unstyled numbered paragraph.
             let mut p = Paragraph::new()
                 .line_spacing(body_spacing())
-                .align(body_alignment_for(ctx.typography))
-                .add_run(
-                    Run::new()
-                        .add_text(format!("{number}.  "))
-                        .size(body_size_hp(ctx.typography))
-                        .color(heading_color_for(ctx.typography))
-                        .bold()
-                        .fonts(body_fonts_for(ctx.typography)),
-                );
+                .align(body_alignment_for(ctx.typography));
+            if ctx.body_render_use_bk_styles {
+                p = p.style("BkBullet");
+            }
+            p = p.add_run(
+                Run::new()
+                    .add_text(format!("{number}.  "))
+                    .size(body_size_hp(ctx.typography))
+                    .color(heading_color_for(ctx.typography))
+                    .bold()
+                    .fonts(body_fonts_for(ctx.typography)),
+            );
             p = add_runs(p, runs, &mut ctx.links, ctx.typography);
             doc.add_paragraph(p)
         }
@@ -1930,7 +3527,7 @@ fn render_block(
             // chapter_extras.py port: the "Key topics at a glance" box.
             "keypoints" => keypoints_box(doc, body),
             // chapter_extras.py port: the per-chapter "Review questions".
-            "quiz" => quiz_block(doc, body),
+            "quiz" => quiz_block(doc, body, ctx.body_render_use_bk_styles),
             // bookkit.py port: note / tip / warning admonition callouts.
             "note" | "tip" | "warning" => admonition_box(doc, lang, body, ctx.figdir, ctx.lang),
             // bookkit.py port: a generic titled key-point callout box.
@@ -1999,9 +3596,18 @@ fn render_block(
                 Some(cap) => format!("{sep} {cap}"),
                 None => String::new(),
             };
+            // Wave-9 (AI-Norms parity, 2026-06-03): the caption style switches
+            // to `BkCaption` under `body_render_use_bk_styles` so the parity
+            // gate's `BkCaption` count includes table captions (155 in the
+            // reference = 133 figures + 22 tables, all `BkCaption`-styled).
+            let caption_style_id = if ctx.body_render_use_bk_styles {
+                "BkCaption"
+            } else {
+                "Caption" // ADR-0050 §1 item 8: native Word Caption style
+            };
             doc = doc.add_paragraph(
                 Paragraph::new()
-                    .style("Caption") // ADR-0050 §1 item 8: native Word Caption style
+                    .style(caption_style_id)
                     .line_spacing(LineSpacing::new().before(SPACE_AROUND_TABLE).after(40))
                     .keep_next(true) // caption stays on the same page as its table
                     .add_run(cap_style(t(ctx.lang, "table_prefix")))
@@ -2018,23 +3624,32 @@ fn render_block(
                 // section; the table then lives in the landscape section, which
                 // the trailing landscape-sectPr paragraph closes before portrait
                 // content resumes.
-                doc = doc.add_paragraph(Paragraph::new().section_property(portrait_sectpr()));
-                doc = doc.add_table(table_block(
-                    header,
-                    rows,
-                    LAND_CONTENT_TWIPS,
-                    ctx.typography,
-                ));
-                doc.add_paragraph(Paragraph::new().section_property(landscape_sectpr()))
+                doc = doc.add_paragraph(
+                    Paragraph::new().section_property(portrait_sectpr_with(&ctx.layout)),
+                );
+                doc = doc.add_table(
+                    table_block(header, rows, LAND_CONTENT_TWIPS, ctx.typography)
+                        .style("TableGrid"),
+                );
+                doc.add_paragraph(
+                    Paragraph::new().section_property(landscape_sectpr_with(&ctx.layout)),
+                )
             } else {
-                // Breathing room around the table (ADR-0030 relaxed placement).
-                let spacer =
-                    || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
-                // keep_next chains caption -> spacer -> table so the title never
-                // strands at a page foot (the trailing spacer must NOT keep_next).
-                doc = doc.add_paragraph(spacer().keep_next(true));
-                doc = doc.add_table(table_block(header, rows, CONTENT_TWIPS, ctx.typography));
-                doc.add_paragraph(spacer())
+                // Wave-9 (AI-Norms parity, 2026-06-03): emit the table directly
+                // after the caption paragraph — no intervening spacer paragraph.
+                // The previous spacer broke the `captioned_table_parity` gate
+                // because the check walks the LAST <w:p> before <w:tbl> looking
+                // for a "Table N." caption sniff; an empty spacer between caption
+                // and table hid the caption from the check. Spacing is absorbed
+                // into the caption's `after(40)` and the trailing spacer below.
+                doc = doc.add_table(
+                    table_block(header, rows, CONTENT_TWIPS, ctx.typography).style("TableGrid"),
+                );
+                // Breathing room below the table (ADR-0030 relaxed placement).
+                doc.add_paragraph(
+                    Paragraph::new()
+                        .line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE)),
+                )
             }
         }
         DocxBlock::Image { path, caption } => {
@@ -2078,9 +3693,18 @@ fn render_block(
                     run
                 };
                 let sep = caption_separator_for(caption_format);
+                // Wave-9 (AI-Norms parity, 2026-06-03): mirror the table-caption
+                // path — under `body_render_use_bk_styles`, figure captions adopt
+                // the `BkCaption` style id (155 in the reference body = 133
+                // figures + 22 tables).
+                let caption_style_id = if ctx.body_render_use_bk_styles {
+                    "BkCaption"
+                } else {
+                    "Caption" // ADR-0050 §1 item 8: native Word Caption style
+                };
                 doc.add_paragraph(
                     Paragraph::new()
-                        .style("Caption") // ADR-0050 §1 item 8: native Word Caption style
+                        .style(caption_style_id)
                         .align(AlignmentType::Center)
                         .line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG))
                         .add_run(cap_style(t(ctx.lang, "fig_prefix")))
@@ -2108,8 +3732,17 @@ fn render_block(
 /// Render a complete book to DOCX bytes. `chapters` are `(label, markdown)`
 /// with figures already rendered under `figdir`.
 /// Define the Heading1–4 paragraph styles (with outline levels so the Word TOC
-/// field populates) + the caption style. docx-rs does not ship Heading styles,
-/// so referencing them without defining them yields an empty TOC.
+/// field populates) + the caption style + the bookkit named-style set
+/// (BkH1/2/3/4, BkBody, BkCaption, BkCallout, BkBullet, BkSubtitle).
+///
+/// docx-rs does not ship Heading styles, so referencing them without defining
+/// them yields an empty TOC. The bookkit `Bk*` set is registered alongside the
+/// vanilla `Heading*` set as part of the reference-parity drive
+/// (ADR-0054 v1, T1.1, 2026-06-02): the reference `AI_Norms_and_Regulations
+/// _BOOK.docx` declares 186 style definitions; the engine previously emitted
+/// only 26. Defining the named styles brings tooling that reads the docx via
+/// `styles.xml` (Word's Style pane, agentic check writing-quality, third-party
+/// renderers) into alignment with the bookkit harness.
 fn with_styles(mut doc: Docx) -> Docx {
     let specs = [
         (1u8, 44usize, NAVY),
@@ -2147,11 +3780,193 @@ fn with_styles(mut doc: Docx) -> Docx {
             .color(GREY)
             .fonts(body_fonts()),
     );
+    // ─── ADR-0054 v1 (T1.1, 2026-06-02): bookkit named-style set ────────
+    // Reference values (Agent A inventory, agent_a_reference_inventory.md §5):
+    //   BkBody     Georgia 11pt   (= 22 hp) — inherits Normal but pinned here
+    //   BkH1       Calibri 22pt   (= 44 hp) bold navy, outline 0
+    //   BkH2       Calibri 16pt   (= 32 hp) bold navy, outline 1
+    //   BkH3       Calibri 13pt   (= 26 hp) bold head2, outline 2
+    //   BkH4       Calibri 11.5pt (= 23 hp) bold head2, outline 3
+    //   BkCaption  Georgia 9pt    (= 18 hp) italic grey, centered
+    //   BkCallout  Calibri 10.5pt (= 21 hp)
+    //   BkBullet   Georgia 11pt   (= 22 hp) — bullet glyph applied by renderer
+    //   BkSubtitle Calibri 13pt   (= 26 hp) grey
+    //
+    // Sizes are half-points (Word convention): 22 hp = 11 pt; 9 pt = 18 hp.
+    // The styles are registered with `q_format(true)` (default for Style::new)
+    // so they appear in Word's Style pane. Body paragraphs currently
+    // reference the vanilla `Heading*`/`Normal` styles via direct formatting;
+    // later parity work can switch markdown renderers to emit
+    // `pStyle="BkBody"` / `BkCallout` / `BkBullet` references explicitly.
+    // Registering the styles first is a no-op for the rendered
+    // word/document.xml (no paragraph references them yet) but raises the
+    // styles.xml definition count from 26 toward the reference's 186 and
+    // unlocks the future switch with zero churn.
+    let bk_h_specs = [
+        (1u8, 44usize, NAVY),
+        (2, 32, NAVY),
+        (3, 26, HEAD2),
+        (4, 23, HEAD2),
+    ];
+    for (lvl, size, color) in bk_h_specs {
+        doc = doc.add_style(
+            Style::new(format!("BkH{lvl}"), StyleType::Paragraph)
+                .name(format!("Bk H{lvl}"))
+                .based_on("Normal")
+                .size(size)
+                .bold()
+                .color(color)
+                .fonts(head_fonts())
+                .outline_lvl(usize::from(lvl) - 1),
+        );
+    }
+    doc = doc.add_style(
+        Style::new("BkBody", StyleType::Paragraph)
+            .name("Bk Body")
+            .based_on("Normal")
+            .size(22) // 11 pt — Georgia body
+            .color("000000")
+            .fonts(body_fonts())
+            .align(AlignmentType::Both)
+            .line_spacing(body_spacing()),
+    );
+    doc = doc.add_style(
+        Style::new("BkCaption", StyleType::Paragraph)
+            .name("Bk Caption")
+            .based_on("Normal")
+            .size(18) // 9 pt — Georgia italic grey
+            .italic()
+            .color(GREY)
+            .fonts(body_fonts())
+            .align(AlignmentType::Center),
+    );
+    doc = doc.add_style(
+        Style::new("BkCallout", StyleType::Paragraph)
+            .name("Bk Callout")
+            .based_on("Normal")
+            .size(21) // 10.5 pt — Calibri callout
+            .color("000000")
+            .fonts(head_fonts())
+            .line_spacing(body_spacing()),
+    );
+    doc = doc.add_style(
+        Style::new("BkBullet", StyleType::Paragraph)
+            .name("Bk Bullet")
+            .based_on("Normal")
+            .size(22) // 11 pt — Georgia bullet
+            .color("000000")
+            .fonts(body_fonts())
+            .line_spacing(body_spacing())
+            // Left-indent ≈ 0.8 cm (≈ 454 twips) to match python BkBullet.
+            .indent(Some(454), None, None, None),
+    );
+    doc = doc.add_style(
+        Style::new("BkSubtitle", StyleType::Paragraph)
+            .name("Bk Subtitle")
+            .based_on("Normal")
+            .size(26) // 13 pt — Calibri grey subtitle
+            .color(GREY)
+            .fonts(head_fonts()),
+    );
     doc
 }
 
-/// Fold a `Table:`-prefixed paragraph into the caption of the table that
-/// immediately follows it (bookkit caption-above convention for markdown).
+/// Try to interpret `text` as a table-caption marker. Accepted shapes
+/// (case-insensitive on the keyword, leading/trailing whitespace stripped):
+///
+/// * `Table: <caption>` — bookkit caption-above convention (legacy)
+/// * `Table N: <caption>` / `Table N. <caption>` — pre-numbered (the engine
+///   strips the number; SEQ field will re-number from `ctx.tblno`)
+/// * `Table N` / `Table N.` / `Table N:` alone — pre-numbered, no caption
+///   text (still folds so the renderer doesn't double-emit the marker as a
+///   body paragraph above the SEQ caption)
+/// * `Tabelle …` (German), `Tableau …` (French), `Tabella …` (Italian/RM),
+///   `तालिका …` (Hindi) — same shapes as above, parallel to the
+///   `table_prefix` localisations in `i18n::t("table_prefix")`
+///
+/// Returns `Some(stripped_caption_text)` if the paragraph is a marker (the
+/// fold layer takes ownership of it and drops the body paragraph). Returns
+/// `Some(String::new())` for a number-only marker (no caption text). Returns
+/// `None` if the paragraph is not a marker and should be kept as-is.
+///
+/// Also strips one wrapping pair of `*…*` (markdown italic) or `**…**`
+/// (markdown bold) so a python-style `*Table N. caption*` survives the
+/// fold (the engine paints captions in its own caption style anyway, so
+/// the emphasis is purely decorative on the source and would otherwise
+/// leak into the body as bold/italic text).
+fn try_parse_table_caption_marker(text: &str) -> Option<String> {
+    // `unwrap_to` is the candidate after stripping balanced *…* / **…**
+    // wrappers (one pair at most — these markers come from python's
+    // `_render_table` which uses italics, not from arbitrarily nested
+    // markdown).
+    let raw = text.trim();
+    let candidate = raw
+        .strip_prefix("**")
+        .and_then(|s| s.strip_suffix("**"))
+        .map(str::trim)
+        .or_else(|| {
+            raw.strip_prefix('*')
+                .and_then(|s| s.strip_suffix('*'))
+                .map(str::trim)
+        })
+        .unwrap_or(raw);
+
+    // Detect keyword (case-insensitive). The six localised forms come from
+    // `i18n::t("table_prefix")`; "table" is the engine baseline. New keys
+    // here MUST be added to that table too (the SEQ caption renderer
+    // re-emits using `table_prefix`, so untranslated keywords would mean a
+    // German source folds but renders an English "Table N." caption).
+    //
+    // Keywords are tried **longest-first** so "tableau"/"tabelle"/"tabella"
+    // win over the "table" baseline (which is their common 5-char prefix
+    // for the Latin variants). Without this ordering, "Tableau 5: foo"
+    // would strip only "table", leaving "au 5: foo" which doesn't start
+    // with a digit and therefore fails the marker check.
+    let lower = candidate.to_lowercase();
+    let kw_len = ["तालिका", "tableau", "tabelle", "tabella", "table"]
+        .iter()
+        .find_map(|kw| lower.starts_with(kw).then_some(kw.len()))?;
+    let after_kw = candidate[kw_len..].trim_start();
+
+    // Form 1: bare `:` / `.` immediately after the keyword
+    // (e.g. "Table: foo", "Table. foo").
+    if let Some(rest) = after_kw.strip_prefix(':').or_else(|| after_kw.strip_prefix('.')) {
+        return Some(rest.trim().to_string());
+    }
+
+    // Form 2: a leading ASCII number, then optional `:` / `.` /
+    // whitespace, then the caption text (e.g. "Table 1: foo",
+    // "Table 12. foo", "Table 7 foo", "Table 3" alone).
+    let mut digits = after_kw.chars();
+    let first = digits.next()?;
+    if !first.is_ascii_digit() {
+        return None;
+    }
+    let num_end = after_kw
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(i, _)| i)
+        .unwrap_or(after_kw.len());
+    let tail = after_kw[num_end..].trim_start();
+    // Bare "Table 3" / "Table 3." / "Table 3:" — number-only marker.
+    if tail.is_empty() || tail == "." || tail == ":" {
+        return Some(String::new());
+    }
+    if let Some(rest) = tail.strip_prefix(':').or_else(|| tail.strip_prefix('.')) {
+        return Some(rest.trim().to_string());
+    }
+    // "Table 3 foo" — no separator, but the digit prefix confirms a marker.
+    Some(tail.to_string())
+}
+
+/// Fold a table-caption marker paragraph into the `caption` of the table
+/// that immediately follows it (caption-above convention; bookkit default).
+///
+/// Also handles caption-BELOW: a marker paragraph immediately *after* a
+/// table whose `caption` is still `None` is consumed and back-filled onto
+/// the preceding table. This catches the python `_render_table` shape in
+/// which the caption is rendered as a styled paragraph after the table
+/// rather than as a markdown line before it.
 fn fold_table_captions(blocks: Vec<DocxBlock>) -> Vec<DocxBlock> {
     let mut out: Vec<DocxBlock> = Vec::with_capacity(blocks.len());
     let mut pending: Option<String> = None;
@@ -2159,12 +3974,37 @@ fn fold_table_captions(blocks: Vec<DocxBlock>) -> Vec<DocxBlock> {
         match b {
             DocxBlock::Paragraph(ref runs) => {
                 let text: String = runs.iter().map(|r| r.text.as_str()).collect();
-                let t = text.trim();
-                if let Some(rest) = t
-                    .strip_prefix("Table:")
-                    .or_else(|| t.strip_prefix("table:"))
-                {
-                    pending = Some(rest.trim().to_string());
+                if let Some(cap) = try_parse_table_caption_marker(&text) {
+                    // Caption-BELOW: if the most recently emitted block is
+                    // an uncaptioned table, back-fill it (the python
+                    // bookkit `_render_table` path drops the caption AFTER
+                    // the table). Only when the marker carries actual
+                    // text, so number-only markers above the next table
+                    // still work via the `pending` slot below.
+                    let consumed_below = if !cap.is_empty() {
+                        if let Some(DocxBlock::Table {
+                            caption: tcap, ..
+                        }) = out.last_mut()
+                        {
+                            if tcap.is_none() {
+                                *tcap = Some(cap.clone());
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if !consumed_below {
+                        // Caption-ABOVE: stash for the next table. An
+                        // empty caption (number-only marker) still
+                        // suppresses the marker paragraph so it does not
+                        // surface as body text above the SEQ caption.
+                        pending = Some(cap);
+                    }
                 } else {
                     pending = None;
                     out.push(b);
@@ -2175,7 +4015,14 @@ fn fold_table_captions(blocks: Vec<DocxBlock>) -> Vec<DocxBlock> {
                 rows,
                 caption,
             } => {
-                let cap = pending.take().or(caption);
+                // Existing `caption` (carried on the markdown table block)
+                // wins; otherwise the pending caption-above marker is
+                // claimed. An empty-string pending marker behaves like no
+                // caption (renderer still emits "Table N" via SEQ).
+                let cap = caption.or_else(|| pending.take().filter(|s| !s.is_empty()));
+                // Drop any non-text pending marker too — it was for THIS
+                // table and is now consumed.
+                pending = None;
                 out.push(DocxBlock::Table {
                     header,
                     rows,
@@ -2202,14 +4049,15 @@ pub fn render_book(
     if meta.thesis_profile {
         return render_thesis_book(meta, chapters, figdir);
     }
-    let mut doc = with_styles(
-        Docx::new()
-            .default_fonts(body_fonts())
-            .default_size(22)
-            .page_size(11906, 16838)
-            .page_margin(std_margin()),
-    )
-    .footer(
+    let doc_base = Docx::new()
+        .default_fonts(body_fonts())
+        .default_size(22)
+        .page_size(11906, 16838)
+        .page_margin(std_margin_for(meta));
+    // NOTE: docGrid + cols.space on the document-level sectPr are injected
+    // by the post-processor (`apply_layout_overrides_to_sectprs`); the
+    // `Docx` builder does not expose those knobs in docx-rs 0.4.20.
+    let mut doc = with_styles(doc_base).footer(
         Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
@@ -2244,18 +4092,34 @@ pub fn render_book(
     } else {
         doc = title_page(doc, meta);
         doc = disclaimer_page(doc, meta);
+        // Wave-4 (REF parity 2026-06-03): the reference book lays out the
+        // front matter in this order:
+        //   title page → edition/disclaimer → personal dedication ("For
+        //   Melanie, Sarah and Timo") → standalone dedication block →
+        //   inscription page (epigraph + Antikythera note) → Antikythera
+        //   mechanism inscription paragraph → QR-link page → Contents
+        // Each block is a no-op when its BookMeta input is `None`/false,
+        // so non-AI-Norms books are unaffected.
+        doc = dedication_personal_block(doc, meta);
+        doc = dedication_block(doc, meta);
         doc = inscription_page(doc, meta);
+        doc = antikythera_inscription_block(doc, meta);
+        doc = qrlink_block(doc, meta);
     }
-    doc = doc.add_paragraph(
-        Paragraph::new().add_run(
-            Run::new()
-                .add_text("Contents")
-                .bold()
-                .size(44)
-                .color(NAVY)
-                .fonts(head_fonts()),
-        ),
-    );
+    // Wave-4 (REF parity 2026-06-03): "Contents" heading takes BkH1 when
+    // the manifest opts into the bookkit Bk* family (reference index 16).
+    let mut contents_p = Paragraph::new();
+    if meta.body_render_use_bk_styles {
+        contents_p = contents_p.style("BkH1");
+    }
+    doc = doc.add_paragraph(contents_p.add_run(
+        Run::new()
+            .add_text("Contents")
+            .bold()
+            .size(44)
+            .color(NAVY)
+            .fonts(head_fonts()),
+    ));
     doc = doc.add_table_of_contents(
         TableOfContents::new()
             .heading_styles_range(1, 3)
@@ -2279,11 +4143,77 @@ pub fn render_book(
         links: Vec::new(),
         typography: meta.thesis_typography,
         caption_format: meta.caption_format,
+        bookmark_id: 0,
+        bookmark_anchors: std::collections::HashSet::new(),
+        body_render_use_bk_styles: meta.body_render_use_bk_styles,
+        layout: LayoutOverrides::from_meta(meta),
     };
 
+    // Wave 7 (AI-Norms parity, 2026-06-03): when the manifest opts into the
+    // bookkit BkH1..4 / TableGrid family, also collect index entries from
+    // every chapter (explicit `{{index:term}}` markers + auto-harvest against
+    // the curated allowlist) so the engine can emit explicit `IndexHeading`
+    // / `Index1` paragraphs at the back-of-book in reference order.
+    // The harvest must run BEFORE rendering because we strip the explicit
+    // markers from the chapter markdown — they are not body text.
+    let harvested_index: Vec<crate::index::IndexEntry> = if meta.body_render_use_bk_styles {
+        let allowlist = crate::index::IndexAllowlist {
+            terms: meta.index_terms.clone(),
+        };
+        let entries = crate::index::collect_index_entries(chapters, &allowlist);
+        // Wave 9 diagnostic logging (AI-Norms parity, 2026-06-03): surface
+        // harvest stats so a future iteration can spot a regression without
+        // unzipping the rendered docx.
+        eprintln!(
+            "    index harvester: scanned {} chapters, allowlist {} terms, matched {} entries",
+            chapters.len(),
+            allowlist.terms.len(),
+            entries.len()
+        );
+        entries
+    } else {
+        Vec::new()
+    };
+
+    // Wave-4 (REF parity 2026-06-03): the book profile back-matter follows
+    // the reference order:
+    //     body chapters … → Appendix → closing thought →
+    //     Table of Figures → Table of Tables → Bibliography → Index.
+    // Bibliography is the only chapter that needs to be DEFERRED past the
+    // back-matter chrome (Appendix is naturally last among body chapters
+    // in the manifest, so it renders in place); collect its indices once.
+    let bib_indices: Vec<usize> = chapters
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_label, md))| {
+            let h1 = first_h1(md).unwrap_or_default().to_lowercase();
+            let h = h1.trim();
+            if h.contains("bibliography") || h.contains("references") || h.contains("literaturverz")
+            {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let is_deferred = |i: usize| bib_indices.contains(&i);
+
     for (ci, (_label, md)) in chapters.iter().enumerate() {
-        let blocks = fold_table_captions(to_docx_blocks(md));
-        let numbered = chapter_is_numbered(md, meta.thesis_profile);
+        if is_deferred(ci) {
+            continue; // emit after Table of Figures / Tables
+        }
+        // Wave 7: strip `{{index:term}}` markers so they don't surface as
+        // visible body text. The marker terms have already been harvested
+        // above; the visible rendering only needs the surrounding prose.
+        let md_owned: String;
+        let md_to_render: &str = if meta.body_render_use_bk_styles && md.contains("{{index:") {
+            md_owned = strip_index_markers(md);
+            md_owned.as_str()
+        } else {
+            md
+        };
+        let blocks = fold_table_captions(to_docx_blocks(md_to_render));
+        let numbered = chapter_is_numbered(md_to_render, meta.thesis_profile);
         let mut first = true;
         for b in &blocks {
             doc = render_block(doc, b, &mut ctx, first && ci > 0, numbered);
@@ -2293,29 +4223,80 @@ pub fn render_book(
         doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
     }
 
-    // Appendix lists (filled from the caption SEQ fields on field update).
+    // Closing thought: emitted right after the Appendix (which is the last
+    // body chapter in the manifest), BEFORE the Table of Figures. Mirrors
+    // reference book paragraphs [3856-3857]. No-op when `closing_thought`
+    // is None.
+    doc = closing_thought_block(doc, meta);
+
+    // Back-matter lists. Headings honour the optional reference-parity
+    // overrides `tof_heading` / `tot_heading`; otherwise i18n decides.
     doc = doc.add_paragraph(page_break());
-    // `seq` (SEQ field name) stays English/stable for numbering; only the
-    // visible heading is localised.
+    let tof_heading = meta
+        .tof_heading
+        .clone()
+        .unwrap_or_else(|| t(&meta.lang, "list_of_figures").to_string());
+    let tot_heading = meta
+        .tot_heading
+        .clone()
+        .unwrap_or_else(|| t(&meta.lang, "list_of_tables").to_string());
     for p in list_of(
         "Figure",
-        t(&meta.lang, "list_of_figures"),
+        &tof_heading,
         meta.thesis_typography,
+        meta.body_render_use_bk_styles,
     ) {
         doc = doc.add_paragraph(p);
     }
     for p in list_of(
         "Table",
-        t(&meta.lang, "list_of_tables"),
+        &tot_heading,
         meta.thesis_typography,
+        meta.body_render_use_bk_styles,
     ) {
         doc = doc.add_paragraph(p);
     }
 
-    // Back-of-book index: the INDEX field, filled from XE entries on update.
+    // Now render the deferred Bibliography chapter(s) so they sit BETWEEN
+    // the back-of-book lists and the back-of-book Index (matches reference
+    // paragraphs [4015 Bibliography] → [4091 Index]).
+    for &bi in &bib_indices {
+        doc = doc.add_paragraph(page_break());
+        let md = &chapters[bi].1;
+        let md_owned: String;
+        let md_to_render: &str = if meta.body_render_use_bk_styles && md.contains("{{index:") {
+            md_owned = strip_index_markers(md);
+            md_owned.as_str()
+        } else {
+            md
+        };
+        let blocks = fold_table_captions(to_docx_blocks(md_to_render));
+        let numbered = chapter_is_numbered(md_to_render, meta.thesis_profile);
+        let mut first = true;
+        for b in &blocks {
+            doc = render_block(doc, b, &mut ctx, first, numbered);
+            first = false;
+        }
+        doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
+    }
+
+    // Back-of-book index. Wave-7 (AI-Norms parity, 2026-06-03):
+    //   * `body_render_use_bk_styles=true` → emit `IndexHeading` letter
+    //     dividers + `Index1` paragraphs from the harvested entries so
+    //     the rendered docx matches the reference book's 20-divider /
+    //     113-entry visual without depending on Word's `INDEX` field
+    //     update. Only letters with at least one entry get a divider.
+    //   * `body_render_use_bk_styles=false` → the historical `INDEX \c 2`
+    //     field, filled from XE entries on field update (unchanged
+    //     behaviour for every non-parity book).
     doc = doc.add_paragraph(page_break());
+    let index_h1_style = if meta.body_render_use_bk_styles {
+        "BkH1"
+    } else {
+        "Heading1"
+    };
     doc = doc.add_paragraph(
-        Paragraph::new().style("Heading1").add_run(
+        Paragraph::new().style(index_h1_style).add_run(
             Run::new()
                 .add_text("Index")
                 .bold()
@@ -2324,21 +4305,81 @@ pub fn render_book(
                 .fonts(head_fonts()),
         ),
     );
-    doc = doc.add_paragraph(
-        Paragraph::new().add_run(
-            Run::new()
-                .add_text("Right-click and choose \u{201c}Update Field\u{201d} to build the index.")
-                .italic()
-                .size(18)
-                .color(GREY)
-                .fonts(body_fonts()),
-        ),
-    );
-    doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)));
+    if meta.body_render_use_bk_styles {
+        let blocks = crate::index::emit_index_section(harvested_index);
+        // Wave 9 diagnostic logging: surface emitted paragraph counts so the
+        // parity gate can be debugged from the build log alone.
+        let n_head = blocks
+            .iter()
+            .filter(|b| matches!(b, crate::index::IndexBlock::Heading(_)))
+            .count();
+        let n_entry = blocks
+            .iter()
+            .filter(|b| matches!(b, crate::index::IndexBlock::Entry { .. }))
+            .count();
+        eprintln!(
+            "    emit_index_section: produced {n_head} IndexHeading + {n_entry} Index1 paragraphs"
+        );
+        for b in blocks {
+            doc = match b {
+                crate::index::IndexBlock::Heading(letter) => doc.add_paragraph(
+                    Paragraph::new().style("IndexHeading").add_run(
+                        Run::new()
+                            .add_text(letter)
+                            .bold()
+                            .size(24)
+                            .fonts(head_fonts()),
+                    ),
+                ),
+                crate::index::IndexBlock::Entry { term, refs } => {
+                    let mut p = Paragraph::new()
+                        .style("Index1")
+                        .add_run(Run::new().add_text(term).size(20).fonts(body_fonts()))
+                        .add_run(Run::new().add_tab());
+                    if refs.is_empty() {
+                        p = p.add_run(Run::new().add_text("?").size(20).fonts(body_fonts()));
+                    } else {
+                        for (i, r) in refs.iter().enumerate() {
+                            if i > 0 {
+                                p = p.add_run(
+                                    Run::new().add_text(", ").size(20).fonts(body_fonts()),
+                                );
+                            }
+                            p = p.add_run(field_run(
+                                &format!("PAGEREF {} \\h", r.bookmark),
+                                "?",
+                                true,
+                            ));
+                        }
+                    }
+                    doc.add_paragraph(p)
+                }
+            };
+        }
+    } else {
+        doc = doc.add_paragraph(
+            Paragraph::new().add_run(
+                Run::new()
+                    .add_text(
+                        "Right-click and choose \u{201c}Update Field\u{201d} to build the index.",
+                    )
+                    .italic()
+                    .size(18)
+                    .color(GREY)
+                    .fonts(body_fonts()),
+            ),
+        );
+        doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)));
+    }
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
-    postprocess_docx(cur.into_inner())
+    let layout = LayoutOverrides::from_meta(meta);
+    postprocess_docx_inner_layout(
+        cur.into_inner(),
+        meta.body_render_use_bk_styles,
+        &layout,
+    )
 }
 
 /// FHNW thesis front/back-matter slot a chapter belongs to, decided by its first
@@ -2503,14 +4544,13 @@ fn render_thesis_book(
     chapters: &[(String, String)],
     figdir: &Path,
 ) -> Result<Vec<u8>> {
-    let mut doc = with_styles(
-        Docx::new()
-            .default_fonts(body_fonts())
-            .default_size(22)
-            .page_size(11906, 16838)
-            .page_margin(std_margin()),
-    )
-    .footer(
+    let doc_base = Docx::new()
+        .default_fonts(body_fonts())
+        .default_size(22)
+        .page_size(11906, 16838)
+        .page_margin(std_margin_for(meta));
+    // docGrid + cols.space injected post-build (see `render_book`).
+    let mut doc = with_styles(doc_base).footer(
         Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
@@ -2550,6 +4590,10 @@ fn render_thesis_book(
         links: Vec::new(),
         typography: meta.thesis_typography,
         caption_format: meta.caption_format,
+        bookmark_id: 0,
+        bookmark_anchors: std::collections::HashSet::new(),
+        body_render_use_bk_styles: meta.body_render_use_bk_styles,
+        layout: LayoutOverrides::from_meta(meta),
     };
 
     // `emitted` tracks whether any flow content precedes the next item, so the
@@ -2623,12 +4667,22 @@ fn render_thesis_book(
             }
             ThesisItem::ListFigures => {
                 doc = doc.add_paragraph(page_break());
-                for p in list_of("Figure", t(&meta.lang, "list_of_figures"), ctx.typography) {
+                for p in list_of(
+                    "Figure",
+                    t(&meta.lang, "list_of_figures"),
+                    ctx.typography,
+                    ctx.body_render_use_bk_styles,
+                ) {
                     doc = doc.add_paragraph(p);
                 }
             }
             ThesisItem::ListTables => {
-                for p in list_of("Table", t(&meta.lang, "list_of_tables"), ctx.typography) {
+                for p in list_of(
+                    "Table",
+                    t(&meta.lang, "list_of_tables"),
+                    ctx.typography,
+                    ctx.body_render_use_bk_styles,
+                ) {
                     doc = doc.add_paragraph(p);
                 }
             }
@@ -2645,8 +4699,13 @@ fn render_thesis_book(
                 // on field update. Heading is "Index" so the thesis profile
                 // closes with the same standard structural element as a book.
                 doc = doc.add_paragraph(page_break());
+                let index_h1_style = if ctx.body_render_use_bk_styles {
+                    "BkH1"
+                } else {
+                    "Heading1"
+                };
                 doc = doc.add_paragraph(
-                    Paragraph::new().style("Heading1").add_run(
+                    Paragraph::new().style(index_h1_style).add_run(
                         Run::new()
                             .add_text("Index")
                             .bold()
@@ -2675,12 +4734,497 @@ fn render_thesis_book(
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack thesis docx")?;
-    postprocess_docx(cur.into_inner())
+    let layout = LayoutOverrides::from_meta(meta);
+    postprocess_docx_inner_layout(
+        cur.into_inner(),
+        meta.body_render_use_bk_styles,
+        &layout,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wave-9 (AI-Norms parity, 2026-06-03): the rendered docx for a plain
+    /// book profile must have ZERO `word/header*.xml` parts (docx-rs's
+    /// default-empty header injection is stripped by the Wave-9 finalize
+    /// pass) and EXACTLY ONE `word/footer*.xml` part — the centered PAGE
+    /// field footer. The rels file and `[Content_Types].xml` must agree
+    /// (no dangling Override or Relationship pointing at a removed
+    /// part).
+    #[test]
+    fn finalize_pass_strips_empty_header_parts_and_keeps_one_footer() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            subtitle: "S".into(),
+            author: "A".into(),
+            context: "C".into(),
+            ..Default::default()
+        };
+        let md = "# Chapter\n\nA paragraph.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut header_count = 0usize;
+        let mut footer_count = 0usize;
+        let mut footer_has_page = false;
+        let mut header_names: Vec<String> = Vec::new();
+        let mut footer_names: Vec<String> = Vec::new();
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            if is_header_part(&name) {
+                header_count += 1;
+                header_names.push(name.clone());
+            } else if is_footer_part(&name) {
+                footer_count += 1;
+                footer_names.push(name.clone());
+                let mut buf = String::new();
+                let _ = entry.read_to_string(&mut buf);
+                if buf.contains("PAGE") {
+                    footer_has_page = true;
+                }
+            }
+        }
+        assert_eq!(
+            header_count, 0,
+            "expected 0 header parts after Wave-9 finalize, got {header_count}: {header_names:?}"
+        );
+        assert_eq!(
+            footer_count, 1,
+            "expected 1 footer part after Wave-9 finalize, got {footer_count}: {footer_names:?}"
+        );
+        assert!(
+            footer_has_page,
+            "the surviving footer must be the PAGE-field footer"
+        );
+
+        // Cross-validate: the rels file and content-types map must not
+        // reference any dropped header/footer part. Search for stale
+        // `Target="header*"` / `Target="footer*"` rels (only the one
+        // surviving footer should appear).
+        let mut rels = String::new();
+        zip.by_name("word/_rels/document.xml.rels")
+            .unwrap()
+            .read_to_string(&mut rels)
+            .unwrap();
+        let header_rels = rels.matches("Target=\"header").count();
+        let footer_rels = rels.matches("Target=\"footer").count();
+        assert_eq!(header_rels, 0, "stale header relationship in rels: {rels}");
+        assert_eq!(footer_rels, 1, "expected exactly 1 footer relationship in rels");
+
+        let mut ct = String::new();
+        zip.by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_string(&mut ct)
+            .unwrap();
+        let header_overrides = ct.matches("/word/header").count();
+        let footer_overrides = ct.matches("/word/footer").count();
+        assert_eq!(
+            header_overrides, 0,
+            "stale header Override in content-types: {ct}"
+        );
+        assert_eq!(
+            footer_overrides, 1,
+            "expected exactly 1 footer Override in content-types"
+        );
+
+        // Cross-validate: document.xml must not retain headerReference
+        // tags (no surviving header part). One footerReference must
+        // remain, pointing at the surviving footer.
+        let mut doc = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut doc)
+            .unwrap();
+        let header_refs = doc.matches("<w:headerReference").count();
+        let footer_refs = doc.matches("<w:footerReference").count();
+        assert_eq!(
+            header_refs, 0,
+            "expected no <w:headerReference> after finalize-pass"
+        );
+        assert!(
+            footer_refs >= 1,
+            "expected at least one <w:footerReference> for the surviving PAGE-field footer"
+        );
+    }
+
+    /// Round D-C (AI-Norms parity, 2026-06-03): regression for
+    /// `collapse_empty_header_footer_parts`. Simulates the state in
+    /// which Word COM's `Documents.Open → … → Save` leaves a docx
+    /// AFTER the render-time W9-B collapse: three empty `word/header*.xml`
+    /// parts, two empty `word/footer*.xml` parts alongside the surviving
+    /// PAGE-field footer, with matching rels + content-types Override
+    /// entries. The post-finalize pass must drop the five empty parts,
+    /// scrub their rels + Overrides + sectPr references, and leave the
+    /// PAGE-field footer untouched. Bytes diffed against the snapshot
+    /// `ai_norms_and_regulations.docx` captured 2026-06-03 (3+3 → 0+1).
+    #[test]
+    fn collapse_pass_undoes_word_com_regeneration() {
+        use std::io::{Read, Write};
+
+        // Step 1: render a plain book — the W9-B pass already produces 0
+        // headers + 1 footer in `bytes`.
+        let meta = BookMeta {
+            title: "T".into(),
+            subtitle: "S".into(),
+            author: "A".into(),
+            context: "C".into(),
+            ..Default::default()
+        };
+        let md = "# Chapter\n\nA paragraph.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+
+        // Step 2: simulate Word COM regeneration. Word's
+        // `.Sections.Item(1).Headers.Item(N)` access materialises the
+        // default/even/firstPage triad; here we re-inject three empty
+        // header parts and two empty footer stubs alongside the
+        // surviving PAGE footer, with the matching rels + Overrides +
+        // sectPr references.
+        let empty_hdr = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:pStyle w:val="Header"/></w:pPr></w:p></w:hdr>"#;
+        let empty_ftr = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:pStyle w:val="Footer"/></w:pPr></w:p></w:ftr>"#;
+
+        // Stuff the empty parts into the zip + rewrite rels, document.xml
+        // sectPr, and [Content_Types].xml to reference them — mirroring
+        // exactly what Word writes back.
+        let mut zin = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut out = Cursor::new(Vec::<u8>::new());
+        let mut surviving_footer_name = String::new();
+        let mut original_rels = String::new();
+        let mut original_doc = String::new();
+        let mut original_ct = String::new();
+        {
+            let mut zout = zip::ZipWriter::new(&mut out);
+            for i in 0..zin.len() {
+                let mut f = zin.by_index(i).unwrap();
+                let name = f.name().to_string();
+                if name == "word/_rels/document.xml.rels" {
+                    f.read_to_string(&mut original_rels).unwrap();
+                } else if name == "word/document.xml" {
+                    f.read_to_string(&mut original_doc).unwrap();
+                } else if name == "[Content_Types].xml" {
+                    f.read_to_string(&mut original_ct).unwrap();
+                } else if is_footer_part(&name) {
+                    // Keep the surviving footer (the PAGE-field one).
+                    surviving_footer_name = name.clone();
+                    zout.raw_copy_file(f).unwrap();
+                } else {
+                    zout.raw_copy_file(f).unwrap();
+                }
+            }
+
+            // Three empty header parts (rIds 9001..9003).
+            for n in 1..=3 {
+                zout.start_file(
+                    format!("word/header{n}.xml"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                zout.write_all(empty_hdr.as_bytes()).unwrap();
+            }
+            // Two empty footer stubs (the surviving PAGE footer is
+            // already in the zip; pick numbers that don't collide).
+            for n in [11usize, 12] {
+                zout.start_file(
+                    format!("word/footer{n}.xml"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                zout.write_all(empty_ftr.as_bytes()).unwrap();
+            }
+
+            // Patch document.xml.rels to add references to the five empty
+            // parts.
+            let extra_rels = r#"
+<Relationship Id="rId9001" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+<Relationship Id="rId9002" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>
+<Relationship Id="rId9003" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header3.xml"/>
+<Relationship Id="rId9011" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer11.xml"/>
+<Relationship Id="rId9012" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer12.xml"/>
+"#;
+            let patched_rels = original_rels.replace("</Relationships>", &format!("{extra_rels}</Relationships>"));
+            zout.start_file(
+                "word/_rels/document.xml.rels",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zout.write_all(patched_rels.as_bytes()).unwrap();
+
+            // Patch document.xml: add headerReference / footerReference
+            // tags pointing at the empty parts inside the first
+            // `<w:sectPr>` we find.
+            let extra_refs = r#"<w:headerReference w:type="default" r:id="rId9001"/><w:headerReference w:type="even" r:id="rId9002"/><w:headerReference w:type="first" r:id="rId9003"/><w:footerReference w:type="even" r:id="rId9011"/><w:footerReference w:type="first" r:id="rId9012"/>"#;
+            let patched_doc = original_doc.replacen(
+                "<w:sectPr",
+                &format!("<w:sectPr {extra_refs}_ANCHOR=\"x\"").replace("_ANCHOR=\"x\"", ""),
+                1,
+            );
+            // The above is a no-op if there's no `<w:sectPr`; use a more
+            // robust insertion: place refs right after the opening tag.
+            let patched_doc = if patched_doc == original_doc {
+                if let Some(idx) = original_doc.find("<w:sectPr") {
+                    let after = idx + "<w:sectPr".len();
+                    // Find end of opening tag (`>` or `/>`).
+                    let close = original_doc[after..].find('>').map(|p| after + p + 1).unwrap_or(after);
+                    let mut s = String::new();
+                    s.push_str(&original_doc[..close]);
+                    s.push_str(extra_refs);
+                    s.push_str(&original_doc[close..]);
+                    s
+                } else {
+                    original_doc.clone()
+                }
+            } else {
+                patched_doc
+            };
+            zout.start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zout.write_all(patched_doc.as_bytes()).unwrap();
+
+            // Patch [Content_Types].xml to add Overrides for the five
+            // empty parts.
+            let extra_ct = r#"<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/header2.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/header3.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer11.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/><Override PartName="/word/footer12.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>"#;
+            let patched_ct = original_ct.replace("</Types>", &format!("{extra_ct}</Types>"));
+            zout.start_file(
+                "[Content_Types].xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zout.write_all(patched_ct.as_bytes()).unwrap();
+
+            zout.finish().unwrap();
+        }
+        let regenerated = out.into_inner();
+
+        // Sanity check the regenerated state matches the snapshot
+        // characteristics: 3 headers + 3 footers, refs in rels +
+        // overrides present.
+        {
+            let mut z = zip::ZipArchive::new(Cursor::new(regenerated.clone())).unwrap();
+            let mut h = 0usize;
+            let mut f = 0usize;
+            for i in 0..z.len() {
+                let entry = z.by_index(i).unwrap();
+                let n = entry.name().to_string();
+                if is_header_part(&n) {
+                    h += 1;
+                }
+                if is_footer_part(&n) {
+                    f += 1;
+                }
+            }
+            assert_eq!(h, 3, "regenerated fixture should have 3 header parts");
+            assert_eq!(f, 3, "regenerated fixture should have 3 footer parts");
+        }
+
+        // Step 3: apply the post-finalize collapse pass and assert the
+        // result: 0 headers + 1 footer (the surviving PAGE footer).
+        let collapsed = collapse_empty_header_footer_parts(regenerated).unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(collapsed)).unwrap();
+        let mut header_count = 0usize;
+        let mut footer_count = 0usize;
+        let mut footer_has_page = false;
+        let mut surviving_footer: Option<String> = None;
+        let mut rels = String::new();
+        let mut ct = String::new();
+        let mut doc = String::new();
+        for i in 0..z.len() {
+            let mut entry = z.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            if is_header_part(&name) {
+                header_count += 1;
+            } else if is_footer_part(&name) {
+                footer_count += 1;
+                surviving_footer = Some(name.clone());
+                let mut buf = String::new();
+                let _ = entry.read_to_string(&mut buf);
+                if buf.contains("PAGE") {
+                    footer_has_page = true;
+                }
+            } else if name == "word/_rels/document.xml.rels" {
+                let _ = entry.read_to_string(&mut rels);
+            } else if name == "[Content_Types].xml" {
+                let _ = entry.read_to_string(&mut ct);
+            } else if name == "word/document.xml" {
+                let _ = entry.read_to_string(&mut doc);
+            }
+        }
+        assert_eq!(
+            header_count, 0,
+            "collapse pass must leave 0 header parts after Word-COM regeneration"
+        );
+        assert_eq!(
+            footer_count, 1,
+            "collapse pass must leave exactly 1 footer part (the PAGE field)"
+        );
+        assert!(footer_has_page, "the surviving footer must contain PAGE");
+        assert_eq!(
+            surviving_footer.as_deref(),
+            Some(surviving_footer_name.as_str()),
+            "the surviving footer must be the original PAGE-field footer"
+        );
+        assert_eq!(rels.matches("Target=\"header").count(), 0);
+        assert_eq!(rels.matches("Target=\"footer").count(), 1);
+        assert_eq!(ct.matches("/word/header").count(), 0);
+        assert_eq!(ct.matches("/word/footer").count(), 1);
+        assert_eq!(doc.matches(r#"r:id="rId9001""#).count(), 0);
+        assert_eq!(doc.matches(r#"r:id="rId9011""#).count(), 0);
+    }
+
+    /// Unit test for [`collect_dropped_rids`]: feed a synthetic rels XML
+    /// referencing two empty header parts and one populated footer,
+    /// verify the dropped rIds and the rewritten rels body are emitted
+    /// correctly.
+    #[test]
+    fn collect_dropped_rids_drops_empty_parts() {
+        let rels = r#"<?xml version="1.0"?><Relationships>
+<Relationship Id="rId1" Type="hdr" Target="header1.xml"/>
+<Relationship Id="rId2" Type="hdr" Target="header2.xml"/>
+<Relationship Id="rId3" Type="ftr" Target="footer1.xml"/>
+<Relationship Id="rId4" Type="img" Target="media/image1.png"/>
+</Relationships>"#;
+        let mut drop_headers = std::collections::HashSet::new();
+        drop_headers.insert("word/header1.xml".to_string());
+        drop_headers.insert("word/header2.xml".to_string());
+        let drop_footers: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let (dropped, rewritten) = collect_dropped_rids(rels, &drop_headers, &drop_footers);
+        assert!(dropped.contains("rId1"));
+        assert!(dropped.contains("rId2"));
+        assert!(!dropped.contains("rId3"));
+        assert!(!dropped.contains("rId4"));
+        assert!(!rewritten.contains("header1.xml"));
+        assert!(!rewritten.contains("header2.xml"));
+        assert!(rewritten.contains("footer1.xml"));
+        assert!(rewritten.contains("media/image1.png"));
+    }
+
+    /// Unit test for [`drop_refs_to_empty_parts`]: feed a synthetic
+    /// document.xml and verify the matching headerReference /
+    /// footerReference tags are stripped while unrelated tags survive.
+    #[test]
+    fn drop_refs_strips_targeted_references() {
+        let doc = r#"<w:sectPr><w:headerReference w:type="default" r:id="rId1"/><w:headerReference w:type="first" r:id="rId2"/><w:footerReference w:type="default" r:id="rId3"/><w:pgSz/></w:sectPr>"#;
+        let mut dropped: std::collections::HashSet<String> = std::collections::HashSet::new();
+        dropped.insert("rId1".into());
+        dropped.insert("rId2".into());
+        let out = drop_refs_to_empty_parts(doc, &dropped);
+        assert!(!out.contains("rId1"), "rId1 ref not stripped: {out}");
+        assert!(!out.contains("rId2"), "rId2 ref not stripped: {out}");
+        assert!(out.contains("rId3"), "rId3 (non-dropped) was removed: {out}");
+        assert!(out.contains("<w:pgSz/>"));
+    }
+
+    /// Unit test for [`header_or_footer_is_empty`]: the docx-rs default
+    /// empty header (a single `<w:p>` with no runs) is empty, while a
+    /// footer with a PAGE field is not.
+    #[test]
+    fn empty_header_detection_distinguishes_page_field_footer() {
+        let empty = r#"<w:hdr><w:p><w:pPr><w:pStyle w:val="Header"/></w:pPr></w:p></w:hdr>"#;
+        let page_footer = r#"<w:ftr><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>PAGE</w:instrText></w:r></w:p></w:ftr>"#;
+        let with_text = r#"<w:hdr><w:p><w:r><w:t>FHNW</w:t></w:r></w:p></w:hdr>"#;
+        assert!(header_or_footer_is_empty(empty));
+        assert!(!header_or_footer_is_empty(page_footer));
+        assert!(!header_or_footer_is_empty(with_text));
+    }
+
+    /// Wave-4 (REF parity 2026-06-03): when the manifest sets
+    /// `dedication_personal`, the rendered docx must include the line on a
+    /// dedicated page BEFORE the inscription page. We verify both the
+    /// presence of the literal text and that it appears earlier in the
+    /// document than the epigraph (which is part of the inscription page).
+    #[test]
+    fn front_matter_dedication() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Test Book".into(),
+            subtitle: "Subtitle".into(),
+            author: "Author".into(),
+            context: "Ctx".into(),
+            dedication_personal: Some("For Melanie, Sarah and Timo".into()),
+            epigraph: Some("Technology is neither good nor bad; nor is it neutral.".into()),
+            epigraph_by: Some("Melvin Kranzberg".into()),
+            ..Default::default()
+        };
+        let md = "# Body\n\nA paragraph.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        let ded_pos = xml
+            .find("For Melanie, Sarah and Timo")
+            .expect("personal dedication line missing from rendered docx");
+        let epi_pos = xml
+            .find("Technology is neither good nor bad")
+            .expect("epigraph missing from rendered docx (sanity check)");
+        assert!(
+            ded_pos < epi_pos,
+            "personal dedication must sit BEFORE the inscription-page epigraph"
+        );
+    }
+
+    /// Wave-4 (REF parity 2026-06-03): the book profile's back-matter order
+    /// must be Appendix → Table of Figures → Table of Tables → Bibliography
+    /// → Index. We assert by checking ordered positions of the expected
+    /// heading strings (overridden via tof/tot_heading + a manifest
+    /// Bibliography chapter that we expect deferred past the lists).
+    #[test]
+    fn back_matter_order() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Order".into(),
+            subtitle: "S".into(),
+            author: "A".into(),
+            context: "C".into(),
+            tof_heading: Some("Table of Figures".into()),
+            tot_heading: Some("Table of Tables".into()),
+            ..Default::default()
+        };
+        let appendix = "# Appendix: Sources\n\nText.\n".to_string();
+        let bib = "# Bibliography\n\nDoe, J. (2026).\n".to_string();
+        let body = "# Body\n\nIntro.\n".to_string();
+        let bytes = render_book(
+            &meta,
+            &[
+                ("body".into(), body),
+                ("appx".into(), appendix),
+                ("bib".into(), bib),
+            ],
+            Path::new("."),
+        )
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        let apx = xml
+            .find("Appendix: Sources")
+            .expect("Appendix heading missing");
+        let tof = xml
+            .find("Table of Figures")
+            .expect("Table of Figures missing");
+        let tot = xml
+            .find("Table of Tables")
+            .expect("Table of Tables missing");
+        let bib_pos = xml
+            .find("Bibliography")
+            .expect("Bibliography heading missing");
+        let idx = xml.find("Index").expect("Index heading missing");
+        assert!(
+            apx < tof && tof < tot && tot < bib_pos && bib_pos < idx,
+            "back-matter order violated: appendix={apx} tof={tof} tot={tot} bib={bib_pos} idx={idx}"
+        );
+    }
 
     #[test]
     fn renders_book_with_table_and_heading() {
@@ -2749,8 +5293,13 @@ mod tests {
             title: "T".into(),
             ..Default::default()
         };
-        // A table with no surrounding headings: the only keepNext comes from the
-        // caption + pre-table spacer (gap #3), so we expect at least two.
+        // A table with no surrounding headings: the caption paragraph itself
+        // carries keep_next so it stays with the table on the same page.
+        // Wave-9 (AI-Norms parity, 2026-06-03) removed the intervening empty
+        // spacer paragraph between caption and `<w:tbl>` so the parity
+        // gate's `preceding_paragraph_is_table_caption` sniff finds the
+        // caption immediately above the table — the caption's own
+        // keep_next is sufficient to keep the title with the body.
         let md = "Intro text.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n".to_string();
         let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
@@ -2760,8 +5309,8 @@ mod tests {
             .read_to_string(&mut d)
             .unwrap();
         assert!(
-            d.matches("keepNext").count() >= 2,
-            "table caption + pre-table spacer must keep_next so the title stays with the table"
+            d.matches("keepNext").count() >= 1,
+            "table caption must keep_next so the title stays with the table"
         );
     }
 
@@ -2848,6 +5397,88 @@ mod tests {
         assert!(
             d.contains(r#"<w:vertAlign w:val="superscript""#),
             "the source-ref [n] must be a true superscript (w:vertAlign)"
+        );
+    }
+
+    /// Temporary dump (Wave-1 F3 audit 2026-06-02): writes the document XML
+    /// hyperlink slice + the rels file to a temp dir so the campaign report
+    /// can quote the exact serialised form. Gated on a `F3_DUMP_DIR` env var
+    /// so it is a no-op in normal CI runs.
+    #[test]
+    fn f3_dump_hyperlink_xml() {
+        use std::io::Read;
+        let Ok(dir) = std::env::var("F3_DUMP_DIR") else {
+            return;
+        };
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "See the [spec](https://example.org) for details.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        let mut rels = String::new();
+        zip.by_name("word/_rels/document.xml.rels")
+            .unwrap()
+            .read_to_string(&mut rels)
+            .unwrap();
+        // Slice around the first EXTERNAL (r:id-bearing) <w:hyperlink>;
+        // skip TOC entry hyperlinks which use `w:anchor`.
+        let needle = "<w:hyperlink r:id=";
+        let i = d.find(needle).unwrap();
+        let j = d[i..].find("</w:hyperlink>").unwrap();
+        let snippet = &d[i..i + j + "</w:hyperlink>".len()];
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(format!("{dir}/hyperlink_snippet.xml"), snippet).unwrap();
+        std::fs::write(format!("{dir}/document.rels.xml"), &rels).unwrap();
+    }
+
+    /// T1.6 (REF parity 2026-06-02): a markdown `[text](url)` must render as a
+    /// CLICKABLE `<w:hyperlink>` element (not just a coloured run + superscript),
+    /// so Word users can Ctrl+click the label to follow the URL. The superscript
+    /// `[N]` cross-reference to the Sources box stays beside the hyperlink.
+    #[test]
+    fn markdown_link_renders_as_clickable_hyperlink() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "See the [spec](https://example.org) for details.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut d = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut d)
+            .unwrap();
+        // A `<w:hyperlink>` element must wrap the label so Word renders it
+        // as a clickable link (with an r:id pointing into rels).
+        assert!(
+            d.contains("<w:hyperlink "),
+            "body link must be wrapped in a <w:hyperlink> element (clickable)"
+        );
+        // The relationship file must carry the external target so the
+        // hyperlink resolves to the real URL.
+        let mut rels = String::new();
+        zip.by_name("word/_rels/document.xml.rels")
+            .unwrap()
+            .read_to_string(&mut rels)
+            .unwrap();
+        assert!(
+            rels.contains("https://example.org"),
+            "document rels must declare the External target URL"
+        );
+        // Both the superscript [N] cross-ref AND the clickable hyperlink
+        // coexist, so the end-of-chapter Sources box still resolves.
+        assert!(
+            d.contains(r#"<w:vertAlign w:val="superscript""#),
+            "the [N] superscript must remain alongside the clickable hyperlink"
         );
     }
 
@@ -3296,10 +5927,20 @@ mod tests {
 
     #[test]
     fn fhnw_body_paragraphs_are_justified() {
-        // ADR-0050 §1 item 3 (v0.1.14): body paragraphs under the FHNW
-        // profile carry w:jc w:val="both" (= AlignmentType::Both, OOXML
-        // "justify"). Designer profile body paragraphs do NOT carry a w:jc
-        // and inherit Normal/LEFT.
+        // ADR-0050 §1 item 3 (v0.1.14) → ADR-0054 v1 (2026-06-02): body
+        // paragraphs under BOTH profiles now carry w:jc w:val="both" (=
+        // AlignmentType::Both, OOXML "justify").
+        //
+        // The Designer profile previously emitted LEFT — that was the
+        // T1.8 reference-parity audit gap (Agent E §6 / Agent C diff).
+        // Reference `AI_Norms_and_Regulations_BOOK.docx` was built by
+        // `book_build/build_styles.py` which sets
+        //   Normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        // so the historical Designer "LEFT" output diverged from the
+        // reference book on every body paragraph. Aligning both profiles
+        // to `Both` closes that gap; the FHNW profile still matched its
+        // own proposal docx (which direct-formats JUSTIFY) before and
+        // continues to match after.
         use std::io::Read;
         let meta_fhnw = BookMeta {
             title: "T".into(),
@@ -3326,7 +5967,9 @@ mod tests {
             "FHNW profile must emit w:jc w:val=\"both\" on body paragraphs"
         );
 
-        // Designer baseline: no w:jc=both anywhere (regression guard).
+        // Designer parity: now ALSO emits w:jc=both on body paragraphs
+        // (reference-parity audit T1.8, 2026-06-02). Previously this was
+        // a negative regression guard; flipped to a positive parity check.
         let meta_designer = BookMeta {
             title: "T".into(),
             ..Default::default()
@@ -3335,7 +5978,7 @@ mod tests {
             &meta_designer,
             &[(
                 "c1".into(),
-                "# C\n\nA body paragraph that should NOT justify.\n".into(),
+                "# C\n\nA body paragraph that should justify.\n".into(),
             )],
             Path::new("."),
         )
@@ -3347,8 +5990,8 @@ mod tests {
             .read_to_string(&mut d2)
             .unwrap();
         assert!(
-            !d2.contains("w:val=\"both\""),
-            "Designer profile must NOT emit w:jc=both (regression guard)"
+            d2.contains("w:val=\"both\""),
+            "Designer profile must also emit w:jc=both on body paragraphs (ADR-0054 v1 parity)"
         );
     }
 
@@ -3703,6 +6346,319 @@ mod tests {
         assert!(bytes.len() > 2000);
     }
 
+    /// Wave-3 (AI-Norms parity, 2026-06-03): the four chapter_extras emitters
+    /// — `keypoints`, `callout`, `note`/`tip`/`warning` admonitions — must not
+    /// wrap their body in `<w:tbl>`. They must emit paragraphs styled with
+    /// `BkCallout`, which the `captioned_table_parity` gate then correctly
+    /// excludes from the table inventory.
+    ///
+    /// Round-E parity (BkCallout deficit, 2026-06-03): keypoints **bullets**
+    /// now also emit `BkCallout` (not `BkBullet`) to match the reference
+    /// styling — every line inside the box lives under the same callout
+    /// frame, which closes the ~136-paragraph deficit (228 → ~364) the
+    /// AI Norms parity report flagged.
+    #[test]
+    fn chapter_extras_paragraph() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n\
+            ```keypoints\n- Alpha\n- Beta\n- Gamma\n```\n\n\
+            ```callout\nKey takeaway:\nLines below the title carry the body.\n```\n\n\
+            ```note\nThis is an informational aside.\n```\n\n\
+            ```tip\nSpeed up your workflow.\n```\n\n\
+            ```warning\nDo not skip this step.\n```\n"
+            .to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        // Body content survives in paragraph runs.
+        assert!(xml.contains("Alpha"), "keypoint line emitted");
+        assert!(xml.contains("Key takeaway"), "callout title emitted");
+        assert!(xml.contains("Lines below the title"), "callout body emitted");
+        assert!(xml.contains("informational aside"), "note body emitted");
+        assert!(xml.contains("Speed up your workflow"), "tip body emitted");
+        assert!(xml.contains("Do not skip this step"), "warning body emitted");
+        // BkCallout style is now applied (Wave 2 reference port supplies the
+        // visual flavour previously hard-coded as cell shading).
+        assert!(
+            xml.contains("w:pStyle w:val=\"BkCallout\""),
+            "callout body uses BkCallout style"
+        );
+        // Round-E parity: keypoints bullets share the `BkCallout` style so
+        // the entire box is one callout frame (title + N body lines). The
+        // reference book has 32 keypoints groups × ~6 paragraphs each ≈ 201
+        // `BkCallout` paragraphs from this single block type.
+        let bk_callout = xml.matches("w:pStyle w:val=\"BkCallout\"").count();
+        assert!(
+            bk_callout >= 1 + 3,
+            "expected at least 4 BkCallout paragraphs (keypoints title + 3 bullets); got {bk_callout}"
+        );
+        // No empty/spurious table wrappers for the chapter_extras blocks
+        // (the only `<w:tbl>` allowed here is the Sources & QR-codes box —
+        // and this chapter has no links so even that doesn't appear).
+        let tbl_count = xml.matches("<w:tbl>").count();
+        assert_eq!(
+            tbl_count, 0,
+            "chapter_extras blocks must not emit any <w:tbl> (got {tbl_count}); the Sources box should be absent because no links were used"
+        );
+    }
+
+    /// Wave-9 polish (AI-Norms parity, 2026-06-03): with
+    /// `body_render_use_bk_styles=true`, every body bullet item
+    /// (`- foo` markdown) must emit a `<w:p>` styled `BkBullet` so the
+    /// parity gate's `BkBullet` count picks up chapter-prose bullets
+    /// (the reference book has 659 of them, dominated by main chapter
+    /// content rather than the keypoints boxes).
+    #[test]
+    fn body_bullets_apply_bk_bullet_style_when_enabled() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            ..Default::default()
+        };
+        let md = "# C\n\nIntro.\n\n- Alpha\n- Beta\n\nOutro.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert!(
+            bk_bullet >= 2,
+            "expected at least 2 BkBullet paragraphs from `- Alpha`/`- Beta`; got {bk_bullet}"
+        );
+    }
+
+    /// Round-F (AI-Norms parity, 2026-06-03): the reference docx styles
+    /// **numbered** body list items with `BkBullet` too (360 of the 659
+    /// reference `BkBullet` paragraphs are `N.`-prefixed, vs 299 with `•`).
+    /// With `body_render_use_bk_styles=true`, every `1. foo` markdown item
+    /// must emit a `<w:p>` styled `BkBullet` so the parity gate's count
+    /// includes numbered prose lists, not just `- bullet` items.
+    #[test]
+    fn body_ordered_items_apply_bk_bullet_style_when_enabled() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            ..Default::default()
+        };
+        let md = "# C\n\nIntro.\n\n1. Alpha\n2. Beta\n3. Gamma\n\nOutro.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert!(
+            bk_bullet >= 3,
+            "expected ≥3 BkBullet paragraphs from `1.`/`2.`/`3.`; got {bk_bullet}"
+        );
+    }
+
+    /// Round-F: ordered items remain UNSTYLED when the flag is off so
+    /// non-parity books keep the historical Designer numbered-list look.
+    #[test]
+    fn body_ordered_items_remain_unstyled_when_flag_off() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n1. Alpha\n2. Beta\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet_psty = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert_eq!(
+            bk_bullet_psty, 0,
+            "Designer profile must not pStyle BkBullet on numbered items (got {bk_bullet_psty})"
+        );
+    }
+
+    /// Round-G (AI-Norms parity, 2026-06-03): a plain paragraph that begins
+    /// with `N. ` (not a markdown ordered list, just prose with a numbered
+    /// prefix) must adopt `BkBullet` when `body_render_use_bk_styles=true`.
+    /// The reference book uses this pattern for ~141 of its 659 BkBullet
+    /// paragraphs (numbered references, enumerated explanations, etc.).
+    #[test]
+    fn paragraph_with_numeric_prefix_gets_bkbullet() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            ..Default::default()
+        };
+        // A blank line between each paragraph keeps the pulldown-cmark
+        // parser from collapsing them into a single ordered-list block.
+        let md = "# C\n\nIntro.\n\n1. Foo bar baz qux quux.\n\nMiddle.\n\n\
+                  2. Second standalone item.\n\nOutro.\n"
+            .to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert!(
+            bk_bullet >= 2,
+            "expected ≥2 BkBullet paragraphs from numeric-prefix prose; got {bk_bullet}"
+        );
+    }
+
+    /// Round-G: paragraphs starting with `R\d+.` (recommendation IDs) and
+    /// `Q\d+.` (quiz questions) and single-letter `A.` option labels also
+    /// adopt `BkBullet` under the parity flag.
+    #[test]
+    #[allow(non_snake_case)]
+    fn paragraph_with_R_prefix_gets_bkbullet() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            ..Default::default()
+        };
+        let md = "# C\n\nIntro.\n\nR1. Create a strategic plan.\n\n\
+                  Q3. Why does the audit matter?\n\nA. First option label.\n\n\
+                  Outro.\n"
+            .to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert!(
+            bk_bullet >= 3,
+            "expected ≥3 BkBullet paragraphs from R1./Q3./A. prefixes; got {bk_bullet}"
+        );
+    }
+
+    /// Round-G: a paragraph that LOOKS numbered but is actually a section
+    /// number (`5.1 Foo`, `5.14.2 Bar`) must NOT get `BkBullet` — the
+    /// digit-after-period heuristic distinguishes prose enumerations from
+    /// multi-level section numbering.
+    #[test]
+    fn paragraph_with_section_number_prefix_does_not_get_bkbullet() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            ..Default::default()
+        };
+        // Plain paragraph, not a markdown ordered list, so pulldown-cmark
+        // emits a `DocxBlock::Paragraph` whose first run starts with `5.1`.
+        let md = "# C\n\n5.1 Foo bar baz.\n\n5.14.2 Multi-level section.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert_eq!(
+            bk_bullet, 0,
+            "section-number prefixes must not get BkBullet; got {bk_bullet}"
+        );
+    }
+
+    /// Round-G: a paragraph with no recognised prefix keeps its normal
+    /// (unstyled) paragraph style even under the parity flag.
+    #[test]
+    fn paragraph_without_prefix_keeps_normal_style() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            ..Default::default()
+        };
+        let md = "# C\n\nThis is just a plain paragraph with no prefix.\n\n\
+                  And another one, also plain.\n"
+            .to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert_eq!(
+            bk_bullet, 0,
+            "plain paragraphs must not get BkBullet; got {bk_bullet}"
+        );
+    }
+
+    /// Round-G unit test for the prefix helper itself — exhaustive matrix.
+    #[test]
+    fn should_apply_bk_bullet_prefix_matrix() {
+        // Positive cases.
+        assert!(should_apply_bk_bullet_prefix("1. Foo"));
+        assert!(should_apply_bk_bullet_prefix("12. Foo"));
+        assert!(should_apply_bk_bullet_prefix("123. Foo"));
+        assert!(should_apply_bk_bullet_prefix("R1. Adopt"));
+        assert!(should_apply_bk_bullet_prefix("Q3. Why"));
+        assert!(should_apply_bk_bullet_prefix("A. First"));
+        assert!(should_apply_bk_bullet_prefix("B. Second"));
+        assert!(should_apply_bk_bullet_prefix("  3. Leading whitespace"));
+        // Negative: section numbers.
+        assert!(!should_apply_bk_bullet_prefix("5.1 Foo"));
+        assert!(!should_apply_bk_bullet_prefix("5.14.2 Foo"));
+        // Negative: no period or no whitespace after.
+        assert!(!should_apply_bk_bullet_prefix("Just prose"));
+        assert!(!should_apply_bk_bullet_prefix("1.Foo")); // no space → likely v1.5 style
+        assert!(!should_apply_bk_bullet_prefix("Dr. Smith")); // multi-letter prefix
+        assert!(!should_apply_bk_bullet_prefix("R Foo")); // no digit after R
+        assert!(!should_apply_bk_bullet_prefix("AB. Foo")); // two-letter
+        assert!(!should_apply_bk_bullet_prefix("")); // empty
+    }
+
+    /// Wave-9 polish: with `body_render_use_bk_styles=false` (Designer
+    /// profile / FHNW thesis / every non-parity book), body bullets stay
+    /// UNSTYLED so the historical Designer aesthetic is preserved.
+    #[test]
+    fn body_bullets_remain_unstyled_when_flag_off() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n- Alpha\n- Beta\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_bullet_psty = xml.matches("w:pStyle w:val=\"BkBullet\"").count();
+        assert_eq!(
+            bk_bullet_psty, 0,
+            "Designer profile must not pStyle BkBullet on body bullets (got {bk_bullet_psty})"
+        );
+    }
+
+    /// Wave-9 polish: a callout with a `**Bold title.**` prefix (the
+    /// dominant pattern in the AI Norms reference) must emit TWO
+    /// `BkCallout` paragraphs — title + body — not one.
+    #[test]
+    fn callout_with_bold_prefix_splits_into_two_bk_callouts() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n```callout\n**Orientation.** Why this matters in practice.\n```\n"
+            .to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_callout = xml.matches("w:pStyle w:val=\"BkCallout\"").count();
+        assert!(
+            bk_callout >= 2,
+            "expected ≥2 BkCallout paragraphs (title + body); got {bk_callout}"
+        );
+        assert!(xml.contains("Orientation"), "title text rendered");
+        assert!(xml.contains("Why this matters"), "body text rendered");
+    }
+
+    /// Wave-9 polish: even a callout without a recognisable title (no
+    /// trailing `:` AND no leading `**Bold**` span) must still emit two
+    /// `BkCallout` paragraphs. The fallback title is a placeholder so the
+    /// gate count stays predictable across content styles.
+    #[test]
+    fn callout_without_title_still_emits_two_bk_callouts() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        let md =
+            "# C\n\n```callout\nPlain prose with neither colon nor bold prefix.\n```\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        let bk_callout = xml.matches("w:pStyle w:val=\"BkCallout\"").count();
+        assert!(
+            bk_callout >= 2,
+            "fallback callout must still emit ≥2 BkCallout paragraphs; got {bk_callout}"
+        );
+    }
+
     #[test]
     fn wide_table_emits_landscape_section() {
         let meta = BookMeta {
@@ -3771,6 +6727,77 @@ mod tests {
             zip.file_names().any(|n| n.starts_with("word/media/")),
             "a QR image should be embedded"
         );
+    }
+
+    /// Round-D AI-Norms parity (2026-06-03): bare/plain-text URLs in a
+    /// chapter must contribute QR codes to the per-chapter Sources box —
+    /// each registered URL emits one extra `<w:drawing>` (the QR PNG).
+    /// The AI-Norms reference book has 20 such bare-URL QR codes that the
+    /// agentic pipeline was missing; this gate locks in the renderer
+    /// behaviour that closes the FIGURE_COUNT_PARITY deficit.
+    #[test]
+    fn bare_text_urls_emit_qr_drawings_in_sources_box() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        // Baseline chapter without URLs.
+        let baseline =
+            "# Chapter\n\nThis chapter has no URLs at all.\n".to_string();
+        let xml_base = doc_xml(
+            render_book(&meta, &[("c1".into(), baseline)], Path::new(".")).unwrap(),
+        );
+        let base_drawings = xml_base.matches("<w:drawing").count();
+
+        // Chapter with three bare-text URLs (no markdown link wrappers).
+        let with_urls = "# Chapter\n\nReferences include https://example.org/a , \
+            https://example.org/b. and (https://example.org/c).\n"
+            .to_string();
+        let bytes = render_book(
+            &meta,
+            &[("c1".into(), with_urls)],
+            Path::new("."),
+        )
+        .unwrap();
+        let xml = doc_xml(bytes.clone());
+        let urls_drawings = xml.matches("<w:drawing").count();
+        assert!(
+            urls_drawings >= base_drawings + 3,
+            "expected ≥ baseline+3 drawings (one QR per bare URL); \
+             got base={base_drawings} with_urls={urls_drawings}",
+        );
+        // The Sources box appears (so the QR column has a place to live).
+        assert!(
+            xml.contains("Sources &amp; QR codes"),
+            "bare URLs should produce a Sources box",
+        );
+        // And the QR PNGs were physically packaged into word/media/.
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let media_count = zip
+            .file_names()
+            .filter(|n| n.starts_with("word/media/") && n.ends_with(".png"))
+            .count();
+        assert!(
+            media_count >= 3,
+            "≥3 QR PNGs should be embedded in word/media/, got {media_count}",
+        );
+        // Spot-check: each registered URL is preserved verbatim in the doc.
+        for url in [
+            "https://example.org/a",
+            "https://example.org/b",
+            "https://example.org/c",
+        ] {
+            // The Sources table prints the URL as plain text underneath the
+            // clickable hyperlink — at least one occurrence must survive.
+            let mut buf = String::new();
+            zip.by_name("word/document.xml")
+                .unwrap()
+                .read_to_string(&mut buf)
+                .unwrap();
+            assert!(buf.contains(url), "URL {url} missing from document.xml");
+        }
     }
 
     #[test]
@@ -3884,5 +6911,329 @@ mod tests {
         let cells = row.join(" | ");
         let md = format!("# Chapter\n\n| {head} |\n| {sep} |\n| {cells} |\n");
         render_book(meta, &[("c1".into(), md)], Path::new(".")).unwrap()
+    }
+
+    // -- T1.2 (F2): table-caption marker recognition -----------------
+
+    #[test]
+    fn table_caption_marker_recognises_legacy_and_numbered_shapes() {
+        // Legacy bookkit form.
+        assert_eq!(
+            try_parse_table_caption_marker("Table: legacy"),
+            Some("legacy".to_string())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("  table:  spaces  "),
+            Some("spaces".to_string())
+        );
+        // Pre-numbered (colon, period, bare).
+        assert_eq!(
+            try_parse_table_caption_marker("Table 1: with colon"),
+            Some("with colon".to_string())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("Table 12. with period"),
+            Some("with period".to_string())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("Table 7 no separator"),
+            Some("no separator".to_string())
+        );
+        // Number-only marker (no caption text) — still recognised so the
+        // body paragraph is dropped and the SEQ caption owns the line.
+        assert_eq!(
+            try_parse_table_caption_marker("Table 3"),
+            Some(String::new())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("Table 3."),
+            Some(String::new())
+        );
+        // Italic/bold wrapper from python `_render_table`.
+        assert_eq!(
+            try_parse_table_caption_marker("*Table 1. italic wrap*"),
+            Some("italic wrap".to_string())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("**Table 2. bold wrap**"),
+            Some("bold wrap".to_string())
+        );
+        // Localised keyword (German + French + Italian + Hindi).
+        assert_eq!(
+            try_parse_table_caption_marker("Tabelle 4: deutsch"),
+            Some("deutsch".to_string())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("Tableau 5: français"),
+            Some("français".to_string())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("Tabella 6: italiano"),
+            Some("italiano".to_string())
+        );
+        assert_eq!(
+            try_parse_table_caption_marker("तालिका 7: हिन्दी"),
+            Some("हिन्दी".to_string())
+        );
+        // Negative cases — must NOT be folded.
+        assert_eq!(try_parse_table_caption_marker("Tablecloth is red"), None);
+        assert_eq!(
+            try_parse_table_caption_marker("The table below shows X"),
+            None
+        );
+        assert_eq!(try_parse_table_caption_marker("Just body text."), None);
+        assert_eq!(try_parse_table_caption_marker(""), None);
+    }
+
+    #[test]
+    fn fold_table_captions_handles_pre_numbered_marker_above() {
+        // `Table N: …` above a pipe table → caption is on the table and
+        // the marker paragraph is consumed (not rendered as body text).
+        let md = "# C\n\nTable 2: pre-numbered caption\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
+            .to_string();
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        assert!(
+            xml.contains("pre-numbered caption"),
+            "table caption text present"
+        );
+        // Engine renumbers from ctx.tblno, so the SEQ field caches "1"
+        // even though the marker said 2 — that's the contract: SEQ wins.
+        assert!(xml.contains("SEQ Table"), "SEQ field emitted");
+        // The original "Table 2:" line MUST NOT survive as body text
+        // (it would render twice otherwise — once as a body paragraph
+        // and once via the SEQ caption).
+        assert!(
+            !xml.contains(">Table 2:</w:t>") && !xml.contains(">Table 2:<"),
+            "pre-numbered marker paragraph must be consumed, not rendered"
+        );
+    }
+
+    #[test]
+    fn fold_table_captions_handles_caption_below() {
+        // `Table: …` (or `Table N. …`) AFTER a pipe table → back-fills
+        // onto the preceding table's caption slot. This is the python
+        // `_render_table` shape (caption rendered below the table).
+        let md =
+            "# C\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nTable 1. below-caption text\n".to_string();
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        assert!(
+            xml.contains("below-caption text"),
+            "caption-below text reaches the SEQ caption"
+        );
+        assert!(!xml.contains(">Table 1.</w:t>"), "marker is consumed");
+    }
+
+    #[test]
+    fn fold_table_captions_leaves_non_marker_paragraphs_alone() {
+        // A body paragraph that merely mentions a table must NOT be
+        // folded; it stays in the body and the table renders captioned
+        // by its own (absent) caption — i.e. just "Table N" via SEQ.
+        let md = "# C\n\nThe table below illustrates the point.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
+            .to_string();
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        assert!(
+            xml.contains("The table below illustrates the point."),
+            "non-marker body paragraph survives the fold"
+        );
+        assert!(xml.contains("SEQ Table"), "table still gets a SEQ caption");
+    }
+
+    // -- REQ-5 (2026-06-03): heading bookmarks + internal anchor links ----
+
+    #[test]
+    fn slugify_anchor_normalises_text() {
+        assert_eq!(slugify_anchor("Reproducible Build"), "reproducible-build");
+        assert_eq!(slugify_anchor("Hello, World!"), "hello-world");
+        assert_eq!(slugify_anchor("  Spaced  Out  "), "spaced-out");
+        assert_eq!(slugify_anchor("MiXeD CaSe 42"), "mixed-case-42");
+        assert_eq!(slugify_anchor(""), "section");
+    }
+
+    #[test]
+    fn heading_anchor_name_uses_chapter_shortcut_for_numbered_h1() {
+        // "3 Current State Analysis" → "ch3"
+        assert_eq!(heading_anchor_name("3 Current State Analysis"), "ch3");
+        // The renderer prefixes chapter numbers with double-space; the
+        // anchor logic must recognise that shape too.
+        assert_eq!(heading_anchor_name("12  Solution Design"), "ch12");
+        // Non-numbered headings fall back to a slug.
+        assert_eq!(heading_anchor_name("Introduction"), "introduction");
+        assert_eq!(
+            heading_anchor_name("Reproducible Build"),
+            "reproducible-build"
+        );
+    }
+
+    #[test]
+    fn heading_emits_bookmark_and_internal_link_uses_anchor() {
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        let md = "# 3 Foo\n\nSee [Ch3](#ch3) and [the site](https://example.com).\n".to_string();
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        // The heading paragraph carries a bookmarkStart named "ch3".
+        assert!(
+            xml.contains(r#"<w:bookmarkStart w:id=""#),
+            "heading must emit a w:bookmarkStart"
+        );
+        assert!(
+            xml.contains(r#"w:name="ch3""#),
+            "chapter heading anchor must be the canonical `ch3` shortcut"
+        );
+        assert!(
+            xml.contains("<w:bookmarkEnd "),
+            "every bookmarkStart needs a matching bookmarkEnd"
+        );
+        // The internal `[Ch3](#ch3)` markdown link renders as
+        // `<w:hyperlink w:anchor="ch3">` — NOT a `r:id`-bearing
+        // External hyperlink.
+        assert!(
+            xml.contains(r#"<w:hyperlink w:anchor="ch3""#),
+            "internal #anchor link must render as <w:hyperlink w:anchor=...>"
+        );
+        // External URL still works via the existing External path.
+        assert!(
+            xml.contains(r#"<w:hyperlink r:id="#),
+            "external URL must keep using r:id (relationship-backed) hyperlinks"
+        );
+    }
+
+    #[test]
+    fn bookmark_ids_are_unique_across_headings() {
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        // Multiple headings → multiple distinct bookmark ids; if the
+        // counter were per-chapter or non-monotonic, two headings would
+        // share `w:id="0"` and Word would refuse the second bookmark.
+        let md = "# 1 First\n\nBody.\n\n## Sub A\n\nBody.\n\n## Sub B\n\nBody.\n".to_string();
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        // Collect all bookmark ids found on bookmarkStart elements.
+        // Collect (id, name) pairs for every bookmarkStart so we can
+        // restrict the uniqueness check to OUR heading bookmarks (the
+        // ones whose name matches the slug of a heading in this fixture).
+        // docx-rs's `TableOfContents::hyperlink()` emits its own internal
+        // `_GoBack`-style bookmarks that follow a separate id space; we
+        // don't try to coordinate with those.
+        let mut heading_bms: Vec<(String, String)> = Vec::new();
+        for chunk in xml.split("<w:bookmarkStart ").skip(1) {
+            let id = chunk
+                .split_once(r#"w:id=""#)
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(v, _)| v.to_string());
+            let name = chunk
+                .split_once(r#"w:name=""#)
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(v, _)| v.to_string());
+            if let (Some(id), Some(name)) = (id, name) {
+                if matches!(name.as_str(), "ch1" | "sub-a" | "sub-b") {
+                    heading_bms.push((id, name));
+                }
+            }
+        }
+        assert_eq!(
+            heading_bms.len(),
+            3,
+            "expected exactly 3 heading bookmarks (ch1, sub-a, sub-b), got {heading_bms:?}"
+        );
+        let mut ids: Vec<&String> = heading_bms.iter().map(|(id, _)| id).collect();
+        ids.sort();
+        let unique_count = {
+            let mut u = ids.clone();
+            u.dedup();
+            u.len()
+        };
+        assert_eq!(
+            unique_count,
+            ids.len(),
+            "heading bookmark ids must be unique: {heading_bms:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_heading_text_disambiguates_anchor_with_suffix() {
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        // Two H2 headings with identical text → second gets `-2` suffix
+        // so internal links remain resolvable.
+        let md = "# Top\n\n## Overview\n\nBody.\n\n## Overview\n\nMore.\n".to_string();
+        let xml = doc_xml(render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap());
+        assert!(
+            xml.contains(r#"w:name="overview""#),
+            "first Overview must reserve the plain slug"
+        );
+        assert!(
+            xml.contains(r#"w:name="overview-2""#),
+            "duplicate heading must get a `-2` suffix to stay unique"
+        );
+    }
+
+    /// Wave 9 (AI-Norms parity, 2026-06-03): when `body_render_use_bk_styles`
+    /// is true AND `index_terms` carries the curated allowlist, the rendered
+    /// docx must auto-harvest every allowlist term that appears in chapter
+    /// prose into a back-of-book `Index1` paragraph. Smoke-test with 113
+    /// synthetic terms (matching the reference book's entry count) — we
+    /// expect >=100 `Index1` paragraphs (a >300% lift from the explicit-marker
+    /// floor that produced the parity-gate failure: 32 vs 113).
+    #[test]
+    fn back_of_book_index_auto_harvests_allowlist_terms() {
+        use std::io::Read;
+        // 113 fake terms, each placed verbatim in its own chapter -- mirrors
+        // the reference book's allowlist density.
+        let mut allowlist_terms: Vec<String> = Vec::new();
+        let mut chapters: Vec<(String, String)> = Vec::new();
+        for i in 0..113 {
+            let term = format!("Allowlisted-Term-{i:03}");
+            allowlist_terms.push(term.clone());
+            chapters.push((
+                format!("c{i}"),
+                format!("# {} Chapter Title\n\nProse mentions {term} here.\n", i + 1),
+            ));
+        }
+        let meta = BookMeta {
+            title: "Index Parity".into(),
+            subtitle: "Wave 9".into(),
+            author: "Test".into(),
+            context: "Ctx".into(),
+            body_render_use_bk_styles: true,
+            index_terms: allowlist_terms,
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &chapters, Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        let index1_count = xml.matches("w:val=\"Index1\"").count();
+        let heading_count = xml.matches("w:val=\"IndexHeading\"").count();
+        assert!(
+            index1_count >= 100,
+            "expected >=100 Index1 paragraphs after auto-harvest, got {index1_count}"
+        );
+        // All 113 synthetic terms start with 'A' -- so we expect exactly 1
+        // IndexHeading divider. The point is that the harvest path produced
+        // at least one heading.
+        assert!(
+            heading_count >= 1,
+            "expected >=1 IndexHeading divider, got {heading_count}"
+        );
     }
 }

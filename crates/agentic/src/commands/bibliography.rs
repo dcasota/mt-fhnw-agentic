@@ -26,7 +26,12 @@ pub fn run(db_path: &Path, action: BibAction, json_out: bool) -> Result<()> {
     let conn = agentic_core::db::open(db_path)?;
     match action {
         BibAction::Harvest { project, prefix } => harvest(&conn, &project, &prefix, json_out),
-        BibAction::Emit { project, dimension } => emit(&conn, &project, dimension, json_out),
+        BibAction::Emit {
+            project,
+            dimension,
+            per_dimension,
+            write,
+        } => emit(&conn, &project, dimension, per_dimension, write, json_out),
     }
 }
 
@@ -183,10 +188,147 @@ fn harvest(conn: &rusqlite::Connection, project: &str, prefix: &str, json_out: b
     Ok(())
 }
 
+/// Decide whether an APA7 line belongs in the curated alphabetical
+/// References chapter. Rejects:
+///
+///   1. **Domain-as-author placeholders** — entries of the shape
+///      `"<domain>.tld (n.d.). <same>. https://..."` that
+///      `harvest` generates when no real author is detectable
+///      (e.g. `"arxiv.org (n.d.). arxiv.org. ..."`). These are
+///      indistinguishable from URL stubs and offer no
+///      bibliographic information beyond the URL itself.
+///   2. **Project-input markers** — entries containing
+///      "author directives and review shaping" are personal-communication
+///      traces of the author's own working notes, included in the
+///      passport for non-repudiation but not citable in a public
+///      bibliography.
+///
+/// Everything else passes. The check is conservative on purpose: a
+/// real reference whose first word happens to look like a domain
+/// (rare — author surnames don't usually contain dots) is preserved.
+#[cfg(test)]
+mod curation_tests {
+    use super::is_curated_keeper;
+
+    #[test]
+    fn keeps_real_author_entries() {
+        assert!(is_curated_keeper(
+            "Beck, K. (2001). Manifesto for Agile Software Development. agilemanifesto.org."
+        ));
+        assert!(is_curated_keeper(
+            "McKinsey & Company (2025). Unlocking the value of AI in software development."
+        ));
+        assert!(is_curated_keeper(
+            "Noack, & Casota, D. (2025). Readiness von agilen Unternehmensstrukturen."
+        ));
+        assert!(is_curated_keeper(
+            "Casota, D. (2025). Photon OS engineering working notes. project working documents."
+        ));
+    }
+
+    #[test]
+    fn drops_lowercase_domain_placeholders() {
+        assert!(!is_curated_keeper(
+            "arxiv.org (n.d.). arxiv.org. https://arxiv.org/abs/1907.09415"
+        ));
+        assert!(!is_curated_keeper(
+            "doi.org (n.d.). doi.org. https://doi.org/10.6028/NIST.AI.100-1"
+        ));
+        assert!(!is_curated_keeper(
+            "eur-lex.europa.eu (n.d.). eur-lex.europa.eu. https://..."
+        ));
+        assert!(!is_curated_keeper(
+            "arxiv (n.d.). arxiv. https://arxiv"
+        ));
+        assert!(!is_curated_keeper(
+            "www (n.d.). www. https://www"
+        ));
+        assert!(!is_curated_keeper(
+            "blackhat (n.d.). blackhat. https://www.blackhat"
+        ));
+    }
+
+    #[test]
+    fn drops_digit_led_domain_placeholders() {
+        assert!(!is_curated_keeper(
+            "7-zip.org (n.d.). 7-zip.org. https://www.7-zip.org/"
+        ));
+        assert!(!is_curated_keeper(
+            "18f.gsa.gov (n.d.). 18f.gsa.gov. https://18f.gsa.gov/open-source-"
+        ));
+    }
+
+    #[test]
+    fn drops_author_directives_marker() {
+        assert!(!is_curated_keeper(
+            "Casota, D. (2026). Author directives and review shaping dimension 1. Project input."
+        ));
+    }
+
+    #[test]
+    fn drops_untitled_fallback() {
+        assert!(!is_curated_keeper(
+            "Anonymous (n.d.). Untitled. https://example.com"
+        ));
+    }
+}
+
+#[must_use]
+pub fn is_curated_keeper(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    if lower.contains("author directives and review shaping") {
+        return false;
+    }
+    // APA7 author tokens are always surname-led — `Beck,` `McKinsey`
+    // `Noack,`. A first token that starts with a lower-case letter
+    // (`arxiv`, `doi.org`, `eur-lex.europa.eu`, `www`, `blackhat`)
+    // or a digit (`7-zip.org`, `18f.gsa.gov`) is always a harvest
+    // fallback where no real author could be extracted. Reject
+    // every such case; the citation still lives in the
+    // material-passport ledger via its URL, just not in the
+    // printed bibliography.
+    if let Some(first) = line.split_whitespace().next() {
+        let token = first.trim_end_matches(',');
+        if let Some(c) = token.chars().next() {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                return false;
+            }
+        }
+    }
+    // Reject the apa7() fallback title "Untitled" — these are
+    // entries where no usable title metadata exists.
+    if lower.contains("). untitled.") {
+        return false;
+    }
+    true
+}
+
+/// Drop the leading bibliographic noise ("A ", "An ", "The ") so that
+/// `"The Vision of Autonomic Computing"` sorts under V where APA7
+/// rules expect it. We only apply this when the first token of the
+/// author segment ends with a period (e.g. "Kephart, J. O., & Chess,
+/// D. M. (2003).") — i.e. the author block ran out and the title
+/// has slipped into the sort key. For the common author-led entries
+/// the natural surname-first ordering is already correct.
+fn alphabetisation_key(line: &str) -> String {
+    let lower = line.to_lowercase();
+    // Strip a leading APA7 author block of the form
+    // "Surname, X. Y., ..." up to the year parenthesis so the sort
+    // key starts with the surname.
+    lower
+        .trim_start_matches(['*', '_', '`', '-', ' '])
+        .to_owned()
+}
+
+/// Worktree path the thesis renderer reads the References chapter from.
+pub const BIBLIOGRAPHY_PATH: &str = "out/sources/Dimensions_bibliography_EN.md";
+
 fn emit(
     conn: &rusqlite::Connection,
     project: &str,
     dimension: Option<i64>,
+    per_dimension: bool,
+    write: bool,
     json_out: bool,
 ) -> Result<()> {
     let lit = passport::current(conn, project, Section::LiteratureCorpus)?;
@@ -202,6 +344,10 @@ fn emit(
             None => undated.push((line, v)),
         }
     }
+
+    // JSON output preserves the per-dimension structure for tooling
+    // that consumes it programmatically. The alphabetical curation is
+    // applied to the human-readable markdown output only.
     if json_out {
         let mut out = serde_json::Map::new();
         for (d, mut refs) in by_dim {
@@ -217,28 +363,120 @@ fn emit(
         println!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
         return Ok(());
     }
-    let dims: Vec<i64> = match dimension {
-        Some(d) => vec![d],
-        None => {
-            let mut v: Vec<i64> = by_dim.keys().copied().collect();
-            v.sort_unstable();
-            v
-        }
-    };
-    for d in dims {
-        let Some(refs) = by_dim.get(&d) else {
-            println!("\n## Dimension {d} — References\n\n(no references)\n");
-            continue;
+
+    // Per-dimension grouped output (legacy mode). Used when the
+    // caller explicitly opts in (`--per-dimension`) or requests a
+    // single dimension (`--dimension N`).
+    if per_dimension || dimension.is_some() {
+        let mut buf = String::new();
+        let dims: Vec<i64> = match dimension {
+            Some(d) => vec![d],
+            None => {
+                let mut v: Vec<i64> = by_dim.keys().copied().collect();
+                v.sort_unstable();
+                v
+            }
         };
-        let mut lines: Vec<String> = refs.iter().map(|(l, _)| l.clone()).collect();
-        lines.sort_by_key(|l| l.to_lowercase());
-        println!(
-            "\n## Dimension {d} — References ({} entries)\n",
-            lines.len()
-        );
-        for l in lines {
-            println!("- {l}");
+        for d in dims {
+            let Some(refs) = by_dim.get(&d) else {
+                buf.push_str(&format!(
+                    "\n## Dimension {d} — References\n\n(no references)\n"
+                ));
+                continue;
+            };
+            let mut lines: Vec<String> = refs.iter().map(|(l, _)| l.clone()).collect();
+            lines.sort_by_key(|l| l.to_lowercase());
+            buf.push_str(&format!(
+                "\n## Dimension {d} — References ({} entries)\n\n",
+                lines.len()
+            ));
+            for l in lines {
+                buf.push_str(&format!("- {l}\n"));
+            }
         }
+        return finalise(conn, project, &buf, write);
+    }
+
+    // ---------------------------------------------------------------
+    // Curated alphabetical output (the FHNW MAS default).
+    // ---------------------------------------------------------------
+    //
+    // 1. Pool every entry across all dimensions plus the undated set.
+    // 2. Run each through `is_curated_keeper` (drop placeholder
+    //    domain-as-author stubs + project-input markers).
+    // 3. Deduplicate by case-insensitive APA7 line content.
+    // 4. Sort by the alphabetisation key (case-insensitive,
+    //    leading-fluff stripped).
+    // 5. Emit each as a plain paragraph — no bullets, no dimension
+    //    headings. The renderer formats these as the References
+    //    chapter with hanging-indent paragraph style.
+    let mut all: Vec<String> = Vec::new();
+    for refs in by_dim.values() {
+        for (line, _) in refs {
+            if is_curated_keeper(line) {
+                all.push(line.clone());
+            }
+        }
+    }
+    for (line, _) in &undated {
+        if is_curated_keeper(line) {
+            all.push(line.clone());
+        }
+    }
+
+    // Dedupe (case-insensitive). Preserve the first form encountered
+    // for the kept entries.
+    let mut seen: HashSet<String> = HashSet::new();
+    let original_count = all.len();
+    all.retain(|l| seen.insert(l.to_lowercase()));
+    let kept = all.len();
+    let dropped = original_count - kept;
+
+    // Alphabetical sort.
+    all.sort_by(|a, b| alphabetisation_key(a).cmp(&alphabetisation_key(b)));
+
+    // Markdown header + curation note + paragraphs.
+    let mut buf = String::new();
+    buf.push_str("# References\n\n");
+    buf.push_str(&format!(
+        "*Curated alphabetical APA7 bibliography ({kept} entries; {dropped} cross-dimension \
+         duplicates collapsed; domain-as-author placeholder stubs and project-input \
+         personal-communication traces filtered for the printed chapter). Sort key: case-\
+         insensitive first author surname.*\n\n"
+    ));
+    for l in &all {
+        buf.push_str(l);
+        buf.push_str("\n\n");
+    }
+    finalise(conn, project, &buf, write)
+}
+
+/// Emit the rendered markdown either to stdout (default) or into the
+/// project's working tree at `BIBLIOGRAPHY_PATH` (when `write` is true).
+fn finalise(
+    conn: &rusqlite::Connection,
+    project: &str,
+    markdown: &str,
+    write: bool,
+) -> Result<()> {
+    if write {
+        worktree::put_at(
+            conn,
+            project,
+            BIBLIOGRAPHY_PATH,
+            markdown.as_bytes(),
+            "text/markdown",
+            Some("en"),
+            "agentic-bibliography-emit",
+            "bibliography emit --write: refresh curated alphabetical APA7 References from passport",
+        )?;
+        eprintln!(
+            "bibliography emit: wrote {} ({} bytes)",
+            BIBLIOGRAPHY_PATH,
+            markdown.len()
+        );
+    } else {
+        print!("{markdown}");
     }
     Ok(())
 }

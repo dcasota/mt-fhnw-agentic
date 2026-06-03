@@ -28,6 +28,7 @@ urlencoding       = "2.1"
 chrono            = { workspace = true }
 sha2              = { workspace = true }
 hex               = { workspace = true }
+zip               = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4"

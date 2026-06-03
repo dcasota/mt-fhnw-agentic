@@ -10,8 +10,10 @@
 pub mod book;
 pub mod collect;
 pub mod docx;
+pub mod index;
 pub mod markdown;
 pub mod pdf;
+pub mod styles_xml;
 
 use anyhow::Result;
 use rusqlite::Connection;

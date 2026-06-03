@@ -1,0 +1,15 @@
+{
+  "id": "wave1-callout",
+  "type": "callout-diagram",
+  "title": "Google SAIF risk-map",
+  "caption": "Annotation pins to model and data-plane components.",
+  "data": {
+    "components": [
+      {"x": 0.30, "y": 0.42, "label": "Model",            "color": "#1F497D"},
+      {"x": 0.71, "y": 0.20, "label": "Prompt Injection", "color": "#C2382A"},
+      {"x": 0.22, "y": 0.72, "label": "Training Data",    "color": "#009E73"},
+      {"x": 0.78, "y": 0.65, "label": "Output Filter",    "color": "#0072B2"},
+      {"x": 0.50, "y": 0.55, "label": "Policy Engine",    "color": "#E69F00"}
+    ]
+  }
+}

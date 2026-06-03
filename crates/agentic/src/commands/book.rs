@@ -51,6 +51,16 @@ struct BookSpec {
     companion: bool,
     #[serde(default)]
     index_terms: Vec<String>,
+    /// Optional path (in the project worktree) to a TOML allowlist of
+    /// auto-harvest index terms (Wave 9, AI-Norms parity, 2026-06-03).
+    /// When set, the file is read from the project DB and parsed via
+    /// [`agentic_export::index::IndexAllowlist::parse_toml`]; every term
+    /// is appended to `index_terms` before the engine harvests the
+    /// chapter prose. Lets the 113-entry `specs/books/ai_norms/
+    /// index_allowlist.toml` file drive the index without inlining a
+    /// 113-string array into the manifest JSON. `None` → no change.
+    #[serde(default)]
+    index_allowlist_path: Option<String>,
     /// Optional per-book chrome language (en|de|fr|it|rm|hi). Overrides the
     /// global `--lang`; absent → fall back to `--lang` then "en".
     #[serde(default)]
@@ -82,6 +92,61 @@ struct BookSpec {
     /// Cybersecurity"]`.
     #[serde(default)]
     header_lines: Vec<String>,
+    /// T1.7 — Optional STANDALONE dedication page text (REF parity
+    /// 2026-06-02). Distinct from `dedication`, which sits on the
+    /// inscription page next to the epigraph: when this field is set, the
+    /// engine emits a dedicated page BEFORE the inscription page with the
+    /// text centred, italic, large. Leave unset (the historical default) to
+    /// keep the single-inscription layout. Multi-line strings are honoured;
+    /// each line becomes its own centred paragraph.
+    #[serde(default)]
+    dedication_page: Option<String>,
+    /// T1.7 — Optional Antikythera NOTE for the inscription page footer
+    /// (REF parity 2026-06-02). When set, the engine appends a small grey
+    /// NOTE-style paragraph at the bottom of the inscription page (after
+    /// the epigraph attribution). Used in the reference book to attribute
+    /// the Antikythera-mechanism artwork. Plain text; rendered centred.
+    #[serde(default)]
+    antikythera_note: Option<String>,
+    /// T1.7 — Optional standalone QR-linked URL block (REF parity
+    /// 2026-06-02). Distinct from the per-chapter Sources & QR-codes box
+    /// (which lists every link in a chapter): when this field is set, the
+    /// engine emits a single centred QR + URL block as a standalone page
+    /// right after the disclaimer/inscription chrome. Used to advertise
+    /// the book's companion URL.
+    #[serde(default)]
+    qrlink: Option<String>,
+    /// Wave-2 AI-Norms parity (ADR-0054 v1, 2026-06-03). When `true` the engine
+    /// emits the bookkit `BkH1..4` heading family + `TableGrid` table style
+    /// on body content, and replaces `word/styles.xml` in the finalize-pass
+    /// with the verbatim reference styles document (186 style definitions).
+    /// Defaults to `false` so non-parity books are unaffected.
+    #[serde(default)]
+    body_render_use_bk_styles: bool,
+    // ---- Wave-4 AI-Norms parity (ADR-0054 v1, 2026-06-03) layout / chrome
+    //      overrides (all optional). The engine treats `None`/`false`/empty
+    //      as "no override", so books that don't declare these stay
+    //      identical to the historical Designer output.
+    #[serde(default)]
+    header_distance_twips: Option<u32>,
+    #[serde(default)]
+    footer_distance_twips: Option<u32>,
+    #[serde(default)]
+    cols_space_twips: Option<u32>,
+    #[serde(default)]
+    doc_grid_line_pitch: Option<u32>,
+    #[serde(default)]
+    dedication_personal: Option<String>,
+    #[serde(default)]
+    closing_thought: Option<String>,
+    #[serde(default)]
+    byline_institution_full: Option<String>,
+    #[serde(default)]
+    tof_heading: Option<String>,
+    #[serde(default)]
+    tot_heading: Option<String>,
+    #[serde(default)]
+    inscription_page_enabled: bool,
     chapters: Vec<String>,
 }
 
@@ -89,6 +154,289 @@ fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+/// Wave-9 polish (AI-Norms parity, 2026-06-03): drop the `## Figures` section
+/// the Wave-5 ai_norms-figures-wave5 dispatch wrote into every
+/// `out/sources/ai_norms/<chapter>.extras.md`. The sidecar holds 1–N
+/// `image-embed` figspecs that point at the same raster the main chapter
+/// markdown references via `![caption](name.png)`; without stripping the
+/// section we end up rendering each figure twice — once from the chapter
+/// `![]()` reference, once from the sidecar figspec — and the figure-count
+/// parity gate is over by exactly the sidecar size.
+///
+/// The marker `<!-- ai_norms-figures-wave5 -->` is the insertion sentinel
+/// the Wave-5 dispatcher wrote. The section to strip ends either at
+/// end-of-file OR at the `<!-- wave3-table-figspec begin -->` sentinel
+/// (Round-D, 2026-06-03) — the wave-3 dispatch authored table figspecs
+/// AFTER the wave-5 marker in 9 of 10 chapters, so a naive cut-to-EOF
+/// strips the very tables we need to preserve. We therefore slice
+/// `[wave5 .. wave3-begin)` when the wave3 marker is present, splice the
+/// preserved tail back on, and fall back to cut-to-EOF when there is no
+/// wave3 block. Returns the input unchanged when the wave5 marker is
+/// absent (every non-extras chapter, every non-AI-Norms book).
+#[must_use]
+pub fn strip_wave5_figures_section(md: &str) -> String {
+    const WAVE5_MARKER: &str = "<!-- ai_norms-figures-wave5 -->";
+    const WAVE3_BEGIN: &str = "<!-- wave3-table-figspec begin -->";
+    let Some(wave5_at) = md.find(WAVE5_MARKER) else {
+        return md.to_string();
+    };
+    let head = md[..wave5_at].trim_end();
+    // If a wave3 table-figspec block sits after the wave5 marker, preserve
+    // it (and everything after it). Without this carve-out we drop 20-of-22
+    // figspec tables and the CAPTIONED_TABLE_PARITY gate fails.
+    if let Some(rel) = md[wave5_at..].find(WAVE3_BEGIN) {
+        let wave3_at = wave5_at + rel;
+        let tail = &md[wave3_at..];
+        if head.is_empty() {
+            return tail.to_string();
+        }
+        return format!("{head}\n\n{tail}");
+    }
+    head.to_string()
+}
+
+/// Round-F (AI-Norms parity, 2026-06-03): drop ```keypoints``` and ```quiz```
+/// fenced blocks from a chapter body. Used when the same chapter also has
+/// an extras sidecar (`out/sources/ai_norms/<slug>.extras.md`) that owns
+/// the authoritative `chapter_extras` chrome. Without this, every covered
+/// chapter renders **two** keypoints boxes + two quiz blocks (32 chapters →
+/// 64 "Key topics at a glance" titles vs the reference book's 32; 64
+/// "Review questions" headings vs the reference's 32).
+///
+/// The strip is line-oriented and only removes a leading-of-line fence
+/// (``` plus either `keypoints` or `quiz`); inline back-tick markup inside
+/// prose is unaffected. A best-effort blank-line cleanup keeps the output
+/// readable. Returns the input unchanged when neither fence appears.
+#[must_use]
+pub fn strip_keypoints_and_quiz_fences(md: &str) -> String {
+    if !md.contains("```keypoints") && !md.contains("```quiz") {
+        return md.to_string();
+    }
+    let mut out: Vec<&str> = Vec::with_capacity(md.lines().count());
+    let mut skip_until_close = false;
+    for line in md.lines() {
+        let trimmed = line.trim_start();
+        if skip_until_close {
+            // Closing fence is the first ``` we encounter at line start.
+            if trimmed.starts_with("```") {
+                skip_until_close = false;
+            }
+            continue;
+        }
+        if trimmed.starts_with("```keypoints") || trimmed.starts_with("```quiz") {
+            skip_until_close = true;
+            continue;
+        }
+        out.push(line);
+    }
+    // Collapse 3+ consecutive blank lines (introduced by the strip) down to 2.
+    let mut collapsed: Vec<&str> = Vec::with_capacity(out.len());
+    let mut blank_run = 0usize;
+    for line in &out {
+        if line.trim().is_empty() {
+            blank_run += 1;
+            if blank_run <= 2 {
+                collapsed.push(line);
+            }
+        } else {
+            blank_run = 0;
+            collapsed.push(line);
+        }
+    }
+    collapsed.join("\n")
+}
+
+/// Round-F (AI-Norms parity, 2026-06-03): extract the chapter slug from a
+/// main-chapter md path so it can be matched against an extras-sidecar
+/// path. Returns `None` for non-matching paths.
+///
+/// Inputs honoured:
+///   - `out/sources/norms/10_usa_EN.md`        → `Some("usa")`
+///   - `out/sources/norms/30_humanoid_usecase_EN.md` → `Some("humanoid_usecase")`
+///   - `out/sources/norms/05_introduction_EN.md` → `Some("introduction")`
+///   - `out/sources/ai_norms/usa.extras.md`     → `None` (sidecar, not main)
+///   - anything else                            → `None`
+fn norms_chapter_slug(path: &str) -> Option<String> {
+    let stem = path.strip_prefix("out/sources/norms/")?;
+    // strip ".md" suffix
+    let stem = stem.strip_suffix(".md")?;
+    // strip trailing language suffix "_EN", "_DE", … (3-letter+underscore)
+    let stem = stem
+        .strip_suffix("_EN")
+        .or_else(|| stem.strip_suffix("_DE"))
+        .or_else(|| stem.strip_suffix("_FR"))
+        .or_else(|| stem.strip_suffix("_IT"))
+        .or_else(|| stem.strip_suffix("_RM"))
+        .or_else(|| stem.strip_suffix("_HI"))
+        .unwrap_or(stem);
+    // strip leading "NN_" two-digit ordinal
+    let stem = if stem.len() >= 3
+        && stem.as_bytes()[0].is_ascii_digit()
+        && stem.as_bytes()[1].is_ascii_digit()
+        && stem.as_bytes()[2] == b'_'
+    {
+        &stem[3..]
+    } else {
+        stem
+    };
+    if stem.is_empty() {
+        None
+    } else {
+        Some(stem.to_string())
+    }
+}
+
+#[cfg(test)]
+mod strip_tests {
+    use super::{norms_chapter_slug, strip_keypoints_and_quiz_fences, strip_wave5_figures_section};
+
+    #[test]
+    fn strips_wave5_figures_section() {
+        let input = "before\n\n<!-- ai_norms-figures-wave5 -->\n## Figures\n\n```figspec\n{}\n```\n";
+        let out = strip_wave5_figures_section(input);
+        assert_eq!(out, "before");
+    }
+
+    #[test]
+    fn passes_through_when_marker_absent() {
+        let input = "# Title\n\nBody.\n";
+        assert_eq!(strip_wave5_figures_section(input), input);
+    }
+
+    #[test]
+    fn preserves_keypoints_block_before_marker() {
+        let input = "<!-- src -->\n\n```keypoints\n- one\n- two\n```\n\n<!-- ai_norms-figures-wave5 -->\n## Figures\n\n```figspec\n{}\n```\n";
+        let out = strip_wave5_figures_section(input);
+        assert!(out.contains("```keypoints"));
+        assert!(!out.contains("## Figures"));
+        assert!(!out.contains("figspec"));
+    }
+
+    /// Round-D regression: wave-3 table figspecs that sit AFTER the wave-5
+    /// marker must survive the strip. Without this carve-out the strip
+    /// dropped 20-of-22 AI-Norms tables and failed the captioned-table
+    /// parity gate.
+    #[test]
+    fn preserves_wave3_table_figspec_block_after_wave5_marker() {
+        let input = concat!(
+            "<!-- src -->\n\n",
+            "```keypoints\n- one\n```\n\n",
+            "<!-- ai_norms-figures-wave5 -->\n",
+            "## Figures\n\n",
+            "```figspec\n{\"type\":\"image-embed\"}\n```\n\n",
+            "<!-- wave3-table-figspec begin -->\n\n",
+            "```figspec\n{\"type\":\"table\",\"id\":\"t1\"}\n```\n\n",
+            "<!-- wave3-table-figspec end -->\n",
+        );
+        let out = strip_wave5_figures_section(input);
+        assert!(out.contains("```keypoints"), "keypoints lost: {out}");
+        assert!(
+            !out.contains("\"image-embed\""),
+            "image-embed not stripped: {out}"
+        );
+        assert!(
+            out.contains("wave3-table-figspec begin"),
+            "wave3 begin marker missing: {out}"
+        );
+        assert!(
+            out.contains("\"type\":\"table\""),
+            "table figspec dropped: {out}"
+        );
+        assert!(
+            out.contains("wave3-table-figspec end"),
+            "wave3 end marker missing: {out}"
+        );
+    }
+
+    /// The wave-3 block can also stand alone (no wave-5 marker) — the
+    /// `appendix_tables.extras.md`, `eid.extras.md`, `humanoid_taxonomy.extras.md`
+    /// sidecars are like this. Strip is a no-op in that case.
+    #[test]
+    fn passes_through_when_only_wave3_block_present() {
+        let input = "<!-- wave3-table-figspec begin -->\n\n```figspec\n{\"type\":\"table\"}\n```\n\n<!-- wave3-table-figspec end -->\n";
+        assert_eq!(strip_wave5_figures_section(input), input);
+    }
+
+    /// Round-F: strip the ```keypoints``` fence from a main-chapter md when
+    /// the sidecar also owns the canonical keypoints box.
+    #[test]
+    fn strip_keypoints_fence_removes_block() {
+        let input = "Intro.\n\n```keypoints\n- one\n- two\n```\n\nMore prose.\n";
+        let out = strip_keypoints_and_quiz_fences(input);
+        assert!(!out.contains("```keypoints"), "keypoints fence not stripped: {out}");
+        assert!(!out.contains("- one"), "keypoints body not stripped: {out}");
+        assert!(out.contains("Intro."), "intro lost: {out}");
+        assert!(out.contains("More prose."), "trailing prose lost: {out}");
+    }
+
+    /// Round-F: strip the ```quiz``` fence (Q:/A: block).
+    #[test]
+    fn strip_quiz_fence_removes_block() {
+        let input = "Body.\n\n```quiz\nQ: Why?\nA: Because.\n```\n\nEnd.\n";
+        let out = strip_keypoints_and_quiz_fences(input);
+        assert!(!out.contains("```quiz"), "quiz fence not stripped: {out}");
+        assert!(!out.contains("Q: Why?"), "quiz body not stripped: {out}");
+        assert!(out.contains("Body."), "body lost: {out}");
+        assert!(out.contains("End."), "trailing lost: {out}");
+    }
+
+    /// Round-F: strip both fences when both are present.
+    #[test]
+    fn strip_both_fences_in_one_pass() {
+        let input = concat!(
+            "# Heading\n\n",
+            "```keypoints\n- alpha\n- beta\n```\n\n",
+            "Prose.\n\n",
+            "```quiz\nQ: x\nA: y\n```\n",
+        );
+        let out = strip_keypoints_and_quiz_fences(input);
+        assert!(!out.contains("```keypoints"));
+        assert!(!out.contains("```quiz"));
+        assert!(out.contains("# Heading"));
+        assert!(out.contains("Prose."));
+    }
+
+    /// Round-F: leave non-keypoints/non-quiz fenced code blocks intact.
+    #[test]
+    fn strip_preserves_other_code_blocks() {
+        let input = "```rust\nfn main() {}\n```\n";
+        let out = strip_keypoints_and_quiz_fences(input);
+        assert_eq!(out, input);
+    }
+
+    /// Round-F: no-op when neither fence is present.
+    #[test]
+    fn strip_is_noop_without_fences() {
+        let input = "# Heading\n\nBody.\n";
+        let out = strip_keypoints_and_quiz_fences(input);
+        assert_eq!(out, input);
+    }
+
+    /// Round-F: slug extraction handles the standard
+    /// `out/sources/norms/NN_<slug>_EN.md` layout.
+    #[test]
+    fn slug_extracts_from_numbered_en_md() {
+        assert_eq!(norms_chapter_slug("out/sources/norms/10_usa_EN.md").as_deref(), Some("usa"));
+        assert_eq!(
+            norms_chapter_slug("out/sources/norms/30_humanoid_usecase_EN.md").as_deref(),
+            Some("humanoid_usecase")
+        );
+        assert_eq!(
+            norms_chapter_slug("out/sources/norms/05_introduction_EN.md").as_deref(),
+            Some("introduction")
+        );
+    }
+
+    /// Round-F: slug extraction returns None for non-norms paths so the
+    /// dedupe never fires on an unrelated chapter.
+    #[test]
+    fn slug_returns_none_for_non_norms_paths() {
+        assert!(norms_chapter_slug("out/sources/ai_norms/usa.extras.md").is_none());
+        assert!(norms_chapter_slug("out/sources/projects/PT-C01-1.md").is_none());
+        assert!(norms_chapter_slug("README.md").is_none());
+    }
 }
 
 pub fn run(db_path: &Path, action: BookAction, lang: &str, json_out: bool) -> Result<()> {
@@ -139,6 +487,16 @@ fn finalize(path: &Path, pdf: bool, json_out: bool) -> Result<()> {
         anyhow::bail!("no .docx found at {}", path.display());
     }
     let results = finalize_docs(&docs, pdf)?;
+    // Round D-C (AI-Norms parity, 2026-06-03): see comment in `build`
+    // where this same pass runs after the automatic finalize.
+    for d in &docs {
+        if let Err(e) = post_finalize_collapse(d) {
+            eprintln!(
+                "WARNING: post-finalize header/footer collapse failed for {}: {e}",
+                d.display()
+            );
+        }
+    }
     if json_out {
         let arr: Vec<_> = results
             .iter()
@@ -398,6 +756,28 @@ try {{
         }
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Clean up the FHNW header sidecar files (`*.docx.fhnw_header.json` +
+    // `*.fhnw_logo.png`). They're written by `build_one` (see line ~668)
+    // as input for THIS finalize step; once Word has injected the
+    // header + footer they have no further value and only pollute the
+    // snapshot directory. We delete them per-docx after the run
+    // completes successfully (we don't reach this code if the whole
+    // PowerShell pipeline failed).
+    for doc in docs {
+        let sidecar = doc.with_extension("docx.fhnw_header.json");
+        let _ = std::fs::remove_file(&sidecar);
+        // Logo file is named `<key>.fhnw_logo.png` (sibling of the
+        // docx, not a `.docx.fhnw_logo.png` suffix). Derive the key
+        // by stripping `.docx`.
+        if let Some(stem) = doc.file_stem().and_then(|s| s.to_str()) {
+            if let Some(parent) = doc.parent() {
+                let logo = parent.join(format!("{stem}.fhnw_logo.png"));
+                let _ = std::fs::remove_file(&logo);
+            }
+        }
+    }
+
     Ok(stdout
         .lines()
         .filter_map(|l| {
@@ -413,6 +793,24 @@ fn finalize_docs(_docs: &[PathBuf], _pdf: bool) -> Result<Vec<(String, String)>>
         "Word finalize requires Microsoft Word on Windows; elsewhere the rendered \
          .docx carries updateFields so Word refreshes on open"
     )
+}
+
+/// Round D-C (AI-Norms parity, 2026-06-03): read the docx at `path`, run
+/// the empty-header/footer-part collapse pass (see
+/// [`agentic_export::book::collapse_empty_header_footer_parts`]), and
+/// write the result back. Used by `build` after `finalize_docs` returns
+/// to undo Word COM's regeneration of the default/even/firstPage
+/// header & footer triad.
+///
+/// Idempotent: re-running on an already-collapsed docx is a no-op.
+fn post_finalize_collapse(path: &Path) -> Result<()> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("read {} for collapse pass", path.display()))?;
+    let collapsed = agentic_export::book::collapse_empty_header_footer_parts(bytes)
+        .with_context(|| format!("collapse pass for {}", path.display()))?;
+    std::fs::write(path, &collapsed)
+        .with_context(|| format!("write collapsed {}", path.display()))?;
+    Ok(())
 }
 
 fn build(
@@ -504,6 +902,22 @@ fn build(
                         eprintln!("[finalize-debug] {p}\t{r}");
                     }
                 }
+                // Round D-C (AI-Norms parity, 2026-06-03): Word COM
+                // `Documents.Open → … → Save` regenerates the
+                // default/even/firstPage header & footer triad even when
+                // only one part is non-empty — the W9-B render-time
+                // collapse pass is silently undone. Re-apply the
+                // empty-part collapse to each finalized docx on disk so
+                // the parity-gate HEADER_PART_COUNT / FOOTER_PART_COUNT
+                // assertions hold against the saved bytes.
+                for path in &built_docs {
+                    if let Err(e) = post_finalize_collapse(path) {
+                        eprintln!(
+                            "WARNING: post-finalize header/footer collapse failed for {}: {e}",
+                            path.display()
+                        );
+                    }
+                }
                 let failed: Vec<_> = res.iter().filter(|(_, r)| r.starts_with("ERROR")).collect();
                 if !json_out {
                     println!(
@@ -574,6 +988,22 @@ fn build_one(
     let mut chapters: Vec<(String, String)> = Vec::new();
     let mut figs = 0usize;
     let mut held: Vec<String> = Vec::new();
+    // Round-F (AI-Norms parity, 2026-06-03): build the set of slugs that have
+    // an extras sidecar registered as a chapter. When the same slug is also
+    // present as a main `out/sources/norms/<NN>_<slug>_EN.md` chapter, the
+    // keypoints + quiz fences in the MAIN md are duplicates of the sidecar's
+    // canonical `chapter_extras` blocks (Wave-1/F5 ingested the sidecars as
+    // the authoritative source). Without dedupe, each covered chapter emits
+    // the keypoints box and quiz block twice, doubling
+    // `BkCallout`/`BkBullet`/"Key topics at a glance"/"Review questions"
+    // counts in the parity gate.
+    let sidecar_slugs: std::collections::HashSet<String> = spec
+        .chapters
+        .iter()
+        .filter_map(|p| p.strip_prefix("out/sources/ai_norms/"))
+        .filter_map(|tail| tail.strip_suffix(".extras.md"))
+        .map(|s| s.to_string())
+        .collect();
     for ch in &spec.chapters {
         // ADR-0049 ph3 — skip chapters held out by a model_review "exclude" verdict.
         if excluded.contains(ch) {
@@ -585,7 +1015,23 @@ fn build_one(
             eprintln!("    ! missing chapter {ch}");
             continue;
         };
-        let md = String::from_utf8_lossy(&blob.content).to_string();
+        let raw = String::from_utf8_lossy(&blob.content).to_string();
+        // Wave-9 polish (AI-Norms parity, 2026-06-03): the per-chapter
+        // `*.extras.md` sidecars carry both the keypoints/quiz blocks AND
+        // (since Wave 5) a `## Figures` section with `image-embed` figspecs
+        // pointing at the same raster the main chapter md already references
+        // via `![](name.png)`. Without stripping that section we render every
+        // sidecar figure a second time, doubling the figure count (530+ vs
+        // the reference book's 133). Drop the marker-fenced section so the
+        // sidecar contributes only its chapter_extras chrome.
+        let mut md = strip_wave5_figures_section(&raw);
+        // Round-F (AI-Norms parity, 2026-06-03): dedupe keypoints + quiz when
+        // a sidecar for the same slug is also in the chapter list.
+        if let Some(slug) = norms_chapter_slug(ch) {
+            if sidecar_slugs.contains(&slug) {
+                md = strip_keypoints_and_quiz_fences(&md);
+            }
+        }
         let subdir = sanitize(ch.rsplit('/').next().unwrap_or(ch));
         // Surface (don't swallow) a figure-resolution failure: a dropped figspec
         // must not vanish silently from a deliverable (non-repudiation).
@@ -619,6 +1065,36 @@ fn build_one(
     } else {
         None
     };
+    // Wave 9 (AI-Norms parity, 2026-06-03): when the manifest references a
+    // TOML allowlist (e.g. `specs/books/ai_norms/index_allowlist.toml`), read
+    // it from the project DB and merge its terms into `index_terms` BEFORE
+    // the engine harvests chapter prose. Without this load, only the inline
+    // `index_terms` array is forwarded to the engine — which is why the
+    // ai_norms book rendered a 32-entry index (explicit `{{index:…}}`
+    // markers only) instead of the 113-entry reference target.
+    let mut effective_index_terms = spec.index_terms.clone();
+    if let Some(path) = spec.index_allowlist_path.as_deref() {
+        match agentic_core::worktree::read_at(conn, project, path) {
+            Ok(blob) => {
+                let src = String::from_utf8_lossy(&blob.content).to_string();
+                match agentic_export::index::IndexAllowlist::parse_toml(&src) {
+                    Ok(al) => {
+                        eprintln!(
+                            "    + index allowlist {path}: {} terms merged",
+                            al.terms.len()
+                        );
+                        effective_index_terms.extend(al.terms);
+                    }
+                    Err(e) => eprintln!(
+                        "warn: index_allowlist_path {path} parse error ({e}) — index falls back to inline `index_terms`"
+                    ),
+                }
+            }
+            Err(e) => eprintln!(
+                "warn: index_allowlist_path {path} not loadable ({e}) — index falls back to inline `index_terms`"
+            ),
+        }
+    }
     let meta = BookMeta {
         title: spec.title.clone(),
         subtitle: spec.subtitle.clone(),
@@ -638,7 +1114,7 @@ fn build_one(
         imprint: spec.imprint.clone(),
         thesis_profile: spec.thesis_profile,
         companion: spec.companion,
-        index_terms: spec.index_terms.clone(),
+        index_terms: effective_index_terms,
         // Chrome language: per-book `lang` wins; else the global `--lang`; else
         // "en". The i18n layer normalises/falls back, but resolve a non-empty
         // default here so an empty global value still renders English.
@@ -654,6 +1130,26 @@ fn build_one(
         caption_format,
         header_logo,
         header_lines: spec.header_lines.clone(),
+        // T1.7 (REF parity 2026-06-02): forward the three new chrome-block
+        // manifest fields straight to the engine. `None` is the historical
+        // default, so books that don't declare these stay unaffected.
+        dedication_page: spec.dedication_page.clone(),
+        antikythera_note: spec.antikythera_note.clone(),
+        qrlink: spec.qrlink.clone(),
+        body_render_use_bk_styles: spec.body_render_use_bk_styles,
+        // Wave-4 AI-Norms parity (ADR-0054 v1, 2026-06-03): forward the
+        // layout / chrome override fields to the engine. Each is a no-op
+        // when unset, so books that don't declare them stay unaffected.
+        header_distance_twips: spec.header_distance_twips,
+        footer_distance_twips: spec.footer_distance_twips,
+        cols_space_twips: spec.cols_space_twips,
+        doc_grid_line_pitch: spec.doc_grid_line_pitch,
+        dedication_personal: spec.dedication_personal.clone(),
+        closing_thought: spec.closing_thought.clone(),
+        byline_institution_full: spec.byline_institution_full.clone(),
+        tof_heading: spec.tof_heading.clone(),
+        tot_heading: spec.tot_heading.clone(),
+        inscription_page_enabled: spec.inscription_page_enabled,
     };
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));

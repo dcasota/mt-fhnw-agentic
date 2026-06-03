@@ -1,0 +1,22 @@
+{
+  "id": "wave1-sankey",
+  "type": "sankey",
+  "title": "AI data-centre stack — value flow",
+  "caption": "Weighted ribbons across three columns (raw -> refined -> output).",
+  "data": {
+    "nodes": [
+      {"id": "raw",      "label": "Raw compute",      "column": 0, "color": "#1F497D"},
+      {"id": "models",   "label": "Foundation models", "column": 1, "color": "#0072B2"},
+      {"id": "tooling",  "label": "Tooling",          "column": 1, "color": "#009E73"},
+      {"id": "products", "label": "Products",         "column": 2, "color": "#E69F00"},
+      {"id": "services", "label": "Services",         "column": 2, "color": "#CC79A7"}
+    ],
+    "flows": [
+      {"source": "raw",     "target": "models",   "weight": 5},
+      {"source": "raw",     "target": "tooling",  "weight": 2},
+      {"source": "models",  "target": "products", "weight": 3},
+      {"source": "models",  "target": "services", "weight": 2},
+      {"source": "tooling", "target": "services", "weight": 2}
+    ]
+  }
+}

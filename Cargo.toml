@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Daniel Casota <dcasota@gmail.com>"]
@@ -85,6 +85,7 @@ typst-kit   = { version = "0.13", features = ["embed-fonts"] }
 
 # Figures (figspec -> PNG; pure-Rust, no system deps)
 plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series", "histogram", "ttf"] }
+image    = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Embeddings + clustering
 ort             = { version = "2.0.0-rc.4", default-features = false, features = ["download-binaries"] }

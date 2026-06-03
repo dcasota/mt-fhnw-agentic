@@ -1,0 +1,16 @@
+{
+  "id": "wave1-table",
+  "type": "table",
+  "title": "Control mapping — sample",
+  "caption": "Inline-table figure (figspec table replaces Word table in figure slots).",
+  "data": {
+    "header": ["Control", "Source", "Status", "Owner"],
+    "rows": [
+      ["AC-1",  "NIST 800-53", "Implemented", "Security"],
+      ["AC-2",  "NIST 800-53", "Partial",     "IT-Ops"],
+      ["AT-1",  "ISO 27001",   "Implemented", "HR"],
+      ["A.5.1", "ISO 42001",   "Implemented", "AI Office"],
+      ["MEAS-2","NIST AI RMF", "Planned",     "AI Office"]
+    ]
+  }
+}

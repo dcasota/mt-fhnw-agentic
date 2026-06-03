@@ -300,6 +300,10 @@ fn gate_exists_in_catalog(sub: &str) -> bool {
         "rr-matrix",
         "calibration",
         "adr-enforcement", // self-reference per ADR-0052 §4.4
+        "term-rename",     // deprecated-token surveillance gate
+        "toc-coverage",    // ADR-0056 §3.2 — book-manifest ⇄ TOC coverage
+        "artefact-cap",    // ADR-0055 — future gate (registration only)
+        "parity",          // ADR-0057 §3 — visual / structural parity gate
     ];
     KNOWN_GATES.contains(&sub)
 }

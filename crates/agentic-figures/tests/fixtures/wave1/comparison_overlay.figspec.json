@@ -1,0 +1,12 @@
+{
+  "id": "wave1-overlay",
+  "type": "comparison-overlay",
+  "title": "ISO/IEC 42001 vs NIST AI RMF",
+  "caption": "Venn overlay of governance/management items.",
+  "data": {
+    "mode": "venn",
+    "left":  {"label": "ISO/IEC 42001", "items": ["AIMS scope",     "Leadership", "Risk treatment", "Internal audit"]},
+    "right": {"label": "NIST AI RMF",   "items": ["GOVERN",         "MAP",        "MEASURE",        "MANAGE"]},
+    "intersection": ["Risk management", "Leadership accountability"]
+  }
+}

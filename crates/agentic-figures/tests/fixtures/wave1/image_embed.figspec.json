@@ -1,0 +1,9 @@
+{
+  "id": "wave1-image-embed",
+  "type": "image-embed",
+  "title": "Pre-existing raster (pass-through)",
+  "caption": "Sourced asset embedded verbatim — Wave-1 priority renderer.",
+  "data": {
+    "source_path": "tests/fixtures/wave1/sample.png"
+  }
+}

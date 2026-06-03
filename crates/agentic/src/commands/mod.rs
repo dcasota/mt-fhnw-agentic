@@ -1,5 +1,6 @@
 //! Subcommand dispatchers. Each `mod` here owns one top-level verb.
 
+mod acronyms;
 mod audit;
 mod authorize;
 mod bibliography;
@@ -13,6 +14,7 @@ mod embed;
 mod export;
 mod external_session;
 pub(crate) mod facts;
+mod figures;
 #[path = "gen.rs"]
 mod generate;
 mod import;
@@ -56,6 +58,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Audit { action } => audit::run(&args.db, action, args.json),
         Command::Inbox { action } => inbox::run(&args.db, action, args.json),
         Command::ExternalSession { action } => external_session::run(&args.db, action),
+        Command::Acronyms { action } => acronyms::run(&args.db, action, args.json),
         Command::Normalize { project, prefix } => {
             normalize::run(&args.db, &project, &prefix, args.json)
         }
@@ -69,6 +72,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Orchestrate { action } => orchestrate::run(&args.db, action, args.json),
         Command::Merge { action } => merge::run(&args.db, action, args.json),
         Command::Cascade { action } => cascade::run(&args.db, action, args.json),
+        Command::Figures { action } => figures::run(action, args.json),
         Command::Check { action } => check::run(&args.db, action, &args.lang, args.json).await,
         Command::Bibliography { action } => bibliography::run(&args.db, action, args.json),
         Command::Facts { action } => facts::run(&args.db, action, args.json),
