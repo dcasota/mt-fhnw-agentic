@@ -1057,8 +1057,16 @@ mod tests {
         use std::collections::HashSet;
         let s = suite();
         let cps: HashSet<&str> = s.iter().map(|(_, cp)| *cp).collect();
-        // Default matrix = the full catalog (universal 23 + C additions 3).
-        assert_eq!(s.len(), agentic_core::profiles::GATE_CATALOG.len());
+        // Default matrix = the full catalog minus catalog-only registrations
+        // (currently just `artefact-cap` — ADR-0055; no CLI subcommand yet).
+        // Universal 28 + C additions 3 = 31 invocable gates; catalog 32.
+        // See profiles.rs `default_matrix_suite_is_full_catalog` for the
+        // authoritative invariant.
+        let catalog_only = ["artefact-cap"];
+        assert_eq!(
+            s.len(),
+            agentic_core::profiles::GATE_CATALOG.len() - catalog_only.len()
+        );
         assert_eq!(cps.len(), s.len(), "checkpoint names must be distinct");
         // contamination runs offline; tree/docs carry --root.
         let plan = build_plan(&opts(true, false, true), &dims(), false, &suite());

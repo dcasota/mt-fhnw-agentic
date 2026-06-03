@@ -280,7 +280,9 @@ mod tests {
             "out/sources/Dimension_01_agile_leadership_EN.md"
         ));
         assert!(!is_excluded("specs/adr/0001-foo.md"));
-        assert!(!is_excluded("PROGRESS.md"));
+        // README.md is live writing — must be scanned (CHANGELOG.md is the
+        // frozen sibling; PROGRESS.md is excluded per `is_excluded_skips_frozen_paths`).
+        assert!(!is_excluded("README.md"));
     }
 
     #[test]

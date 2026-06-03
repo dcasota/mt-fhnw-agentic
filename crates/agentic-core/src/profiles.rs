@@ -79,7 +79,15 @@ impl RuleMatrix {
     }
 
     /// The default matrix — equivalent to the previously hard-coded suite:
-    /// 23 universal gates + the bookkit-C-only page-boundary/rr-matrix/calibration.
+    /// 28 universal gates + the bookkit-C-only page-boundary/rr-matrix/calibration.
+    ///
+    /// NOTE: `artefact-cap` (ADR-0055) is intentionally NOT in `universal` —
+    /// it's registered in `GATE_CATALOG` so ADR-0052 frontmatter enforcement
+    /// can reference it, but has no CLI subcommand yet. Including it here
+    /// would break the cascade with a clap parse error at
+    /// `agentic check artefact-cap`. Once the subcommand lands, add it to
+    /// `universal` AND drop the `- catalog_only.len()` correction in the
+    /// `default_matrix_suite_is_full_catalog` test.
     #[must_use]
     pub fn default_matrix() -> Self {
         let universal = [
@@ -107,7 +115,10 @@ impl RuleMatrix {
             "figure-quality",
             "disclosure",
             "freshness",
-            "adr-enforcement", // ADR-0052 §4.3 — universal
+            "adr-enforcement", // ADR-0052 §4.3
+            "term-rename",     // v0.1.18 — deprecated-token surveillance
+            "toc-coverage",    // v0.1.18 — ADR-0056 §3.2
+            "parity",          // v0.1.18 — ADR-0057 §3
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -161,8 +172,27 @@ mod tests {
     #[test]
     fn default_matrix_suite_is_full_catalog() {
         let m = RuleMatrix::default_matrix();
-        // universal(23) + C additions(3) = the whole 26-gate catalog.
-        assert_eq!(m.gate_suite().len(), GATE_CATALOG.len());
+        // universal(28) + C additions(3) = 31 invocable gates.
+        // GATE_CATALOG holds 32 entries because `artefact-cap` is registered
+        // for ADR-frontmatter cross-checking (ADR-0055) but has no CLI
+        // subcommand yet — so it must be excluded from default_matrix to keep
+        // the cascade runnable. Once `agentic check artefact-cap` lands, drop
+        // the `- 1` and add `"artefact-cap"` to default_matrix.universal.
+        let catalog_only = ["artefact-cap"];
+        assert_eq!(
+            m.gate_suite().len(),
+            GATE_CATALOG.len() - catalog_only.len()
+        );
+        for sub in catalog_only {
+            assert!(
+                GATE_CATALOG.iter().any(|(s, _)| *s == sub),
+                "{sub} must remain in GATE_CATALOG (it's referenced by ADR enforcement)"
+            );
+            assert!(
+                m.gate_suite().iter().all(|(s, _)| *s != sub),
+                "{sub} must NOT appear in default_matrix gate_suite (no CLI subcommand yet)"
+            );
+        }
         assert!(!m.is_universal("page-boundary"));
         assert!(m.is_universal("freshness"));
     }
