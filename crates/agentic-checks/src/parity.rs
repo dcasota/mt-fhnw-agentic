@@ -19,6 +19,11 @@
 //!    counts header/footer parts, asserts that a PAGE field is wired in
 //!    the footer, and checks back-matter section ordering
 //!    (Appendix → ToF → ToT → Bibliography → Index).
+//! 5. **visual-detail sub-checks** (Round V zone G2, 2026-06-03) — see
+//!    [`crate::parity_icons`]: per-EMU-bucket drawing classification,
+//!    per-BkCallout pBdr+shd flavour, every `<pic:cNvPr/>` carries a
+//!    non-empty `name=`, ≥40 horizontal-rule paragraphs, theme1.xml
+//!    major/minorFont latin face, Hyperlink character-style colour.
 //!
 //! Each sub-check emits a [`ParityFinding`] with `severity`, `expected`,
 //! `actual`, `delta`, and an `evidence` string (file path + count /
@@ -123,6 +128,13 @@ pub fn run_parity(reference: &Path, current: &Path) -> Result<ParityReport> {
     ));
     findings.extend(check_style_usage(reference, current, &ref_doc, &cur_doc));
     findings.extend(check_layout(reference, current, &ref_doc, &cur_doc));
+    // Round V zone G2 (visual-detail sub-checks, 2026-06-03): the count-based
+    // sub-checks above all PASS when the docx has the right number of
+    // drawings / tables / styles but the *appearance* drifts. The 68
+    // visual differences inventoried by Round V live in the icons /
+    // callouts / theme / hyperlink layer — extend the gate with sub-checks
+    // that surface those specific gaps.
+    findings.extend(crate::parity_icons::run(reference, current));
 
     let pass = findings
         .iter()
