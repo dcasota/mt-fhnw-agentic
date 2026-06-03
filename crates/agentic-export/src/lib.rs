@@ -12,6 +12,7 @@ pub mod collect;
 pub mod docx;
 pub mod index;
 pub mod markdown;
+pub mod numbering_xml;
 pub mod pdf;
 pub mod styles_xml;
 

@@ -845,6 +845,38 @@ fn subtitle_color_for(p: TypographyProfile) -> &'static str {
     }
 }
 
+/// Bullet / numbered-item glyph colour (Round V zone D switch, 2026-06-03).
+/// Designer flips from NAVY (`heading_color_for`) to ACCENT (`0B5C9E`) so
+/// the `•`/`N.` lead-in matches the reference book's accent-coloured
+/// bullets rather than the heading navy. FHNW stays pure black (no accent
+/// in the proposal palette).
+fn bullet_glyph_color_for(p: TypographyProfile) -> &'static str {
+    match p {
+        TypographyProfile::Designer => ACCENT,
+        TypographyProfile::FhnwProposalParity => FHNW_BLACK,
+    }
+}
+
+/// Whether the body should emit a `<w:jc w:val="both"/>` paragraph-level
+/// justification override (Round V zone D scope-trim, 2026-06-03).
+///
+/// Designer profile keeps `Both` (the historical reference parity for
+/// non-AI-Norms books). AI-Norms parity (`use_bk_styles=true`) lets the
+/// `BkBullet` / `Normal` style govern: the reference fixture declares
+/// `w:jc w:val="left"` on `BkBullet`, so an inline `Both` override would
+/// flip the reference back to justified. Returning `None` signals "do not
+/// emit any inline `align(…)`" so the style wins.
+fn body_alignment_override(
+    typography: TypographyProfile,
+    use_bk_styles: bool,
+) -> Option<AlignmentType> {
+    if use_bk_styles {
+        None
+    } else {
+        Some(body_alignment_for(typography))
+    }
+}
+
 /// Heading size (half-points) for level N (1..=4) under the active profile.
 /// Designer keeps the existing 44/32/26/23 ladder (= 22/16/13/11.5 pt);
 /// FHNW uses 28/28/28/28 (= 14/14/14/14 pt — flat as in the proposal).
@@ -1537,11 +1569,26 @@ fn heading_para(
     } else {
         format!("Heading{}", level.min(4))
     };
-    let mut p = Paragraph::new().style(&style_id).line_spacing(
-        LineSpacing::new()
-            .before(SPACE_BEFORE_HEAD)
-            .after(SPACE_AFTER_HEAD),
-    );
+    // Round V zone D (2026-06-03): when `use_bk_styles=true` the reference
+    // `BkH{1..4}` styles already declare their own `<w:spacing
+    // w:before/after w:line>` + `<w:keepNext/>` + `<w:jc w:val="left">`.
+    // Emitting an inline `line_spacing(SPACE_BEFORE_HEAD .. SPACE_AFTER_HEAD)`
+    // would override every one of those values and re-flow the document
+    // away from the reference. Skip the inline override under the parity
+    // flag; non-parity books continue to direct-format spacing as before.
+    let mut p = Paragraph::new().style(&style_id);
+    if !use_bk_styles {
+        p = p.line_spacing(
+            LineSpacing::new()
+                .before(SPACE_BEFORE_HEAD)
+                .after(SPACE_AFTER_HEAD),
+        );
+    } else {
+        // BkH styles already declare `keepNext` — re-asserting at the
+        // paragraph level is idempotent and explicit (helps reviewers see
+        // the intent without re-reading styles.xml).
+        p = p.keep_next(true);
+    }
     if page_break_before {
         p = p.add_run(Run::new().add_break(BreakType::Page));
     }
@@ -1694,19 +1741,27 @@ fn body_alignment_for(_t: TypographyProfile) -> AlignmentType {
     AlignmentType::Both
 }
 
-fn para_of(
+/// Body paragraph builder.
+///
+/// Under `use_bk_styles=true` the inline `line_spacing(body_spacing())` +
+/// `align(Both)` overrides are dropped so the `Normal` (or downstream
+/// `BkBullet`) style governs spacing and justification (Round V zone D,
+/// 2026-06-03). Non-parity callers pass `false` and keep the historical
+/// body defaults (line-height 1.32 + justify-both).
+fn para_of_styled(
     runs: &[DocxRun],
     links: &mut Vec<(String, String)>,
     typography: TypographyProfile,
+    use_bk_styles: bool,
 ) -> Paragraph {
-    add_runs(
-        Paragraph::new()
-            .line_spacing(body_spacing())
-            .align(body_alignment_for(typography)),
-        runs,
-        links,
-        typography,
-    )
+    let mut p = Paragraph::new();
+    if !use_bk_styles {
+        p = p.line_spacing(body_spacing());
+    }
+    if let Some(a) = body_alignment_override(typography, use_bk_styles) {
+        p = p.align(a);
+    }
+    add_runs(p, runs, links, typography)
 }
 
 /// Parse PNG width/height from the IHDR chunk (bytes 16..24, big-endian).
@@ -1862,10 +1917,17 @@ fn table_block(
 fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
     doc = doc.add_paragraph(spacer());
+    // Round V zone D (2026-06-03): the keypoints heading is glued to its
+    // first bullet via `keep_next(true)`, and every bullet carries
+    // `keep_lines(true)` so the box never splits across a page boundary.
+    // Matches reference BkCallout count = 364 with paragraphs that hold
+    // their group together.
     doc = doc.add_paragraph(
         Paragraph::new()
             .style("BkCallout")
             .line_spacing(LineSpacing::new().after(40))
+            .keep_next(true)
+            .keep_lines(true)
             .add_run(
                 Run::new()
                     .add_text("Key topics at a glance")
@@ -1884,6 +1946,7 @@ fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
             Paragraph::new()
                 .style("BkCallout")
                 .line_spacing(LineSpacing::new().after(40))
+                .keep_lines(true)
                 .add_run(
                     Run::new()
                         .add_text("\u{25B8}  ")
@@ -2089,7 +2152,10 @@ fn quiz_block(mut doc: Docx, body: &str, body_render_use_bk_styles: bool) -> Doc
                         .fonts(body_fonts()),
                 );
             if body_render_use_bk_styles {
-                q_para = q_para.style("BkBullet");
+                // Round V zone D: a quiz question is always immediately
+                // followed by its answer paragraph; `keep_next(true)`
+                // prevents Word from breaking the page between them.
+                q_para = q_para.style("BkBullet").keep_next(true).keep_lines(true);
             }
             doc = doc.add_paragraph(q_para);
             // Round-K (AI-Norms parity, 2026-06-03): Round-J applied BkBullet
@@ -2098,14 +2164,24 @@ fn quiz_block(mut doc: Docx, body: &str, body_render_use_bk_styles: bool) -> Doc
             // (most likely the question, given the dotted "N. " prefix
             // pattern). Keep the answer paragraph unstyled to land inside
             // the ±10 % style-usage band.
-            let a_para = Paragraph::new().line_spacing(body_spacing()).add_run(
-                Run::new()
-                    .add_text(a.trim())
-                    .italic()
-                    .size(21)
-                    .color(GREY)
-                    .fonts(body_fonts()),
-            );
+            // Round V zone D (2026-06-03): answer paragraph carries
+            // `keep_lines(true)` so a multi-line answer doesn't split
+            // across pages; the glyph stays GREY (italic) — colour is
+            // already correct, we only tag the keep flags. Spacing
+            // override is kept here because the answer is intentionally
+            // un-styled (Round K decision above) so `body_spacing()` is
+            // the only source of line-height.
+            let a_para = Paragraph::new()
+                .line_spacing(body_spacing())
+                .keep_lines(true)
+                .add_run(
+                    Run::new()
+                        .add_text(a.trim())
+                        .italic()
+                        .size(21)
+                        .color(GREY)
+                        .fonts(body_fonts()),
+                );
             doc = doc.add_paragraph(a_para);
         }
     }
@@ -2414,6 +2490,20 @@ fn postprocess_docx_inner_layout(
                     .context("start styles.xml part")?;
                 zout.write_all(xml.as_bytes())
                     .context("write reference styles.xml")?;
+            } else if name == "word/numbering.xml" && inject_reference_styles {
+                // Round V zone D (2026-06-03): when the AI-Norms parity
+                // flag is on, swap the docx-rs-emitted numbering.xml for
+                // the verbatim reference set (9 abstractNum + 9 numId)
+                // with the ACCENT glyph colour flavour injected — so any
+                // direct-formatted bullet inherits the reference look
+                // without per-paragraph colour runs.
+                let xml = crate::numbering_xml::emit_numbering_xml(
+                    crate::numbering_xml::NumberingFlavour::Accent,
+                );
+                zout.start_file(&name, zip::write::SimpleFileOptions::default())
+                    .context("start numbering.xml part")?;
+                zout.write_all(xml.as_bytes())
+                    .context("write reference numbering.xml")?;
             } else {
                 zout.raw_copy_file(f).context("copy zip entry")?;
             }
@@ -3455,7 +3545,12 @@ fn render_block(
             ))
         }
         DocxBlock::Paragraph(runs) => {
-            let mut p = para_of(runs, &mut ctx.links, ctx.typography);
+            let mut p = para_of_styled(
+                runs,
+                &mut ctx.links,
+                ctx.typography,
+                ctx.body_render_use_bk_styles,
+            );
             let text: String = runs.iter().map(|r| r.text.as_str()).collect();
             // Round-G (AI-Norms parity, 2026-06-03): the reference docx styles
             // **plain-text numbered paragraphs** with `BkBullet` too — not just
@@ -3483,17 +3578,30 @@ fn render_block(
             // the AI Norms reference, dominated by chapter-prose bullets) is
             // satisfied. Non-parity books (Designer profile / FHNW thesis) keep
             // the historical unstyled paragraph that inherits Normal.
-            let mut p = Paragraph::new()
-                .line_spacing(body_spacing())
-                .align(body_alignment_for(ctx.typography));
+            // Round V zone D (2026-06-03): when `BkBullet` is applied, the
+            // style itself declares `w:spacing w:after="80"` + `w:jc w:val="left"`
+            // — emitting inline `line_spacing(160)` + `align(Both)` would
+            // override the style and break reference parity. Skip the inline
+            // overrides under `use_bk_styles=true`; otherwise keep the
+            // historical body spacing + alignment for non-parity books.
+            let mut p = Paragraph::new();
+            if !ctx.body_render_use_bk_styles {
+                p = p.line_spacing(body_spacing());
+            }
+            if let Some(a) = body_alignment_override(
+                ctx.typography,
+                ctx.body_render_use_bk_styles,
+            ) {
+                p = p.align(a);
+            }
             if ctx.body_render_use_bk_styles {
-                p = p.style("BkBullet");
+                p = p.style("BkBullet").keep_lines(true);
             }
             p = p.add_run(
                 Run::new()
                     .add_text("•  ")
                     .size(body_size_hp(ctx.typography))
-                    .color(heading_color_for(ctx.typography))
+                    .color(bullet_glyph_color_for(ctx.typography))
                     .bold()
                     .fonts(body_fonts_for(ctx.typography)),
             );
@@ -3511,17 +3619,36 @@ fn render_block(
             // keypoints-dedupe fix. Mirrors the Round-D `BulletItem` opt-in
             // and is gated on `body_render_use_bk_styles` so non-parity books
             // keep the historical unstyled numbered paragraph.
-            let mut p = Paragraph::new()
-                .line_spacing(body_spacing())
-                .align(body_alignment_for(ctx.typography));
-            if ctx.body_render_use_bk_styles {
-                p = p.style("BkBullet");
+            // Round V zone D (2026-06-03): same scope-trim as `BulletItem`
+            // above — under `use_bk_styles=true` the `BkBullet` style governs
+            // spacing + justification, and `keep_lines()` prevents a numbered
+            // item wrapping across a page break. Secondary numbered items
+            // (children) use the GREY glyph variant instead of ACCENT.
+            let mut p = Paragraph::new();
+            if !ctx.body_render_use_bk_styles {
+                p = p.line_spacing(body_spacing());
             }
+            if let Some(a) = body_alignment_override(
+                ctx.typography,
+                ctx.body_render_use_bk_styles,
+            ) {
+                p = p.align(a);
+            }
+            if ctx.body_render_use_bk_styles {
+                p = p.style("BkBullet").keep_lines(true);
+            }
+            // Secondary numbered items (sub-list) render the glyph GREY so
+            // the eye sees a hierarchy; top-level numbered keeps ACCENT.
+            let glyph_color: &str = if *number > 9 {
+                GREY
+            } else {
+                bullet_glyph_color_for(ctx.typography)
+            };
             p = p.add_run(
                 Run::new()
                     .add_text(format!("{number}.  "))
                     .size(body_size_hp(ctx.typography))
-                    .color(heading_color_for(ctx.typography))
+                    .color(glyph_color)
                     .bold()
                     .fonts(body_fonts_for(ctx.typography)),
             );
@@ -3706,11 +3833,18 @@ fn render_block(
                 } else {
                     "Caption" // ADR-0050 §1 item 8: native Word Caption style
                 };
+                // Round V zone D (2026-06-03): figure captions in the
+                // reference book always render as a multi-line italic block;
+                // `keep_lines(true)` prevents Word from splitting the caption
+                // across a page boundary (caption_count = 1054 in the
+                // reference body, of which the multi-line variants are the
+                // overwhelming majority — selective per the audit row).
                 doc.add_paragraph(
                     Paragraph::new()
                         .style(caption_style_id)
                         .align(AlignmentType::Center)
                         .line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG))
+                        .keep_lines(true)
                         .add_run(cap_style(t(ctx.lang, "fig_prefix")))
                         .add_run(field_run(
                             "SEQ Figure \\* ARABIC",
@@ -6464,6 +6598,68 @@ mod tests {
         assert!(
             bk_bullet >= 3,
             "expected ≥3 BkBullet paragraphs from `1.`/`2.`/`3.`; got {bk_bullet}"
+        );
+    }
+
+    /// Round V zone D (2026-06-03): when `BkBullet` is applied the engine
+    /// must NOT also emit an inline `<w:spacing w:after="160"/>` or
+    /// `<w:jc w:val="both"/>` override — the `BkBullet` style itself
+    /// declares `w:spacing w:after="80"` + `w:jc w:val="left"`, and inline
+    /// overrides would silently flip both values and break reference
+    /// parity. The test renders a single bulleted paragraph and inspects
+    /// the very first `<w:p>` that carries `w:pStyle="BkBullet"` to assert
+    /// neither inline override is present on that paragraph's `<w:pPr>`.
+    #[test]
+    fn bk_bullet_paragraph_has_no_inline_spacing_or_jc_override() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            ..Default::default()
+        };
+        let md = "# C\n\n- Alpha bullet item.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        // Locate the first <w:p> whose pPr carries pStyle="BkBullet".
+        let needle = "w:pStyle w:val=\"BkBullet\"";
+        let bk_at = xml.find(needle).expect("BkBullet pStyle must be present");
+        // Walk back to find the enclosing <w:p ...> start.
+        let p_start = xml[..bk_at].rfind("<w:p ").or_else(|| xml[..bk_at].rfind("<w:p>"))
+            .expect("found enclosing <w:p>");
+        let p_end_rel = xml[p_start..].find("</w:p>").expect("found </w:p>");
+        let p_block = &xml[p_start..p_start + p_end_rel];
+        // The pPr block ends at </w:pPr> — only assert on the pPr, not on
+        // run-level w:rPr (which is unrelated).
+        let ppr_end = p_block.find("</w:pPr>").expect("pPr present on styled <w:p>");
+        let ppr = &p_block[..ppr_end];
+        assert!(
+            !ppr.contains("w:spacing"),
+            "BkBullet paragraph must not carry inline <w:spacing …/> override (style declares after=80); pPr was: {ppr}"
+        );
+        assert!(
+            !ppr.contains("w:jc "),
+            "BkBullet paragraph must not carry inline <w:jc w:val=\"…\"/> override (style declares jc=left); pPr was: {ppr}"
+        );
+    }
+
+    /// Round V zone D (2026-06-03): the bullet glyph (the leading `•` or
+    /// `N.` run) must use the ACCENT colour `0B5C9E` under the Designer
+    /// profile, NOT the NAVY heading colour `1F3864`. The bullet runs are
+    /// emitted with an explicit `<w:color w:val="…"/>` element in the run
+    /// properties.
+    #[test]
+    fn bullet_glyph_uses_accent_color_for_designer() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n- Alpha bullet item.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+        assert!(
+            xml.contains("w:val=\"0B5C9E\""),
+            "Designer bullet glyph must adopt ACCENT 0B5C9E"
         );
     }
 
