@@ -20,7 +20,30 @@ use docx_rs::{
 
 use agentic_core::i18n::t;
 
+use crate::decorations::CalloutFlavor;
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
+
+/// Process-wide monotonic counter for flavor-bookmark ids (Round-V
+/// Zone-E callout-chrome). Bookmarks need to be unique within a
+/// single `document.xml`; using a process-wide counter is unique by
+/// construction (it never decreases). Offset above `100_000` to stay
+/// clear of `Ctx::bookmark_id` (heading anchors, which start at 0).
+fn next_flavor_bookmark_id() -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(100_000);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Plant a flavor sentinel on a `BkCallout` paragraph so the
+/// [`crate::decorations::apply_callout_chrome`] postprocess pass can
+/// inject the per-flavor `<w:pBdr>` + `<w:shd>` after serialisation.
+/// `docx-rs` 0.4.x exposes no public `Paragraph::shading` /
+/// `Paragraph::borders` setter, hence the two-step dance.
+fn plant_flavor_sentinel(p: Paragraph, flavor: CalloutFlavor) -> Paragraph {
+    let id = next_flavor_bookmark_id();
+    p.add_bookmark_start(id, flavor.bookmark_name())
+        .add_bookmark_end(id)
+}
 
 const NAVY: &str = "1F3864"; // gold bookkit HEAD (book_build): headings + title
 const HEAD2: &str = "2E4A7A";
@@ -2069,46 +2092,55 @@ fn table_block(
 /// `BkBullet` for keypoints lines is updated accordingly.
 fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
+    let flavor = CalloutFlavor::Keypoints;
     doc = doc.add_paragraph(spacer());
-    // Round V zone D (2026-06-03): the keypoints heading is glued to its
-    // first bullet via `keep_next(true)`, and every bullet carries
-    // `keep_lines(true)` so the box never splits across a page boundary.
-    // Matches reference BkCallout count = 364 with paragraphs that hold
-    // their group together.
-    doc = doc.add_paragraph(
-        Paragraph::new()
-            .style("BkCallout")
-            .line_spacing(LineSpacing::new().after(40))
-            .keep_next(true)
-            .keep_lines(true)
-            .add_run(
-                Run::new()
-                    .add_text("Key topics at a glance")
-                    .bold()
-                    .size(21)
-                    .color(NAVY)
-                    .fonts(head_fonts()),
-            ),
-    );
-    for line in body
+    // Round V zone D + E1 (2026-06-03): the keypoints heading is glued to
+    // its first bullet via `keep_next(true)`, every bullet carries
+    // `keep_lines(true)` so the box never splits across a page boundary
+    // (Zone D), and the title + each bullet carries a `CalloutFlavor`
+    // sentinel bookmark so the postprocess `apply_callout_chrome` pass
+    // can inject the per-flavor `<w:pBdr>` + `<w:shd>` after serialisation
+    // (Zone E1).
+    let title = Paragraph::new()
+        .style("BkCallout")
+        .line_spacing(LineSpacing::new().after(40))
+        .keep_next(true)
+        .keep_lines(true)
+        .add_run(
+            Run::new()
+                .add_text("Key topics at a glance")
+                .bold()
+                .size(21)
+                .color(NAVY)
+                .fonts(head_fonts()),
+        );
+    doc = doc.add_paragraph(plant_flavor_sentinel(title, flavor));
+    let lines: Vec<&str> = body
         .lines()
         .map(|l| l.trim().trim_start_matches(['-', '•', '*', ' ']).trim())
         .filter(|l| !l.is_empty())
-    {
-        doc = doc.add_paragraph(
-            Paragraph::new()
-                .style("BkCallout")
-                .line_spacing(LineSpacing::new().after(40))
-                .keep_lines(true)
-                .add_run(
-                    Run::new()
-                        .add_text("\u{25B8}  ")
-                        .size(21)
-                        .color(GREY)
-                        .fonts(body_fonts()),
-                )
-                .add_run(Run::new().add_text(line).size(21).fonts(body_fonts())),
-        );
+        .collect();
+    let last_idx = lines.len().saturating_sub(1);
+    for (i, line) in lines.iter().enumerate() {
+        let mut p = Paragraph::new()
+            .style("BkCallout")
+            .line_spacing(LineSpacing::new().after(40))
+            .keep_lines(true)
+            .add_run(
+                Run::new()
+                    .add_text("\u{25B8}  ")
+                    .size(21)
+                    .color(GREY)
+                    .fonts(body_fonts()),
+            )
+            .add_run(Run::new().add_text(*line).size(21).fonts(body_fonts()));
+        // Group-internal bullets keep next to glue the group together;
+        // the final bullet drops the flag so the next block can flow
+        // normally beneath the box.
+        if i < last_idx {
+            p = p.keep_next(true);
+        }
+        doc = doc.add_paragraph(plant_flavor_sentinel(p, flavor));
     }
     doc.add_paragraph(spacer())
 }
@@ -2127,10 +2159,28 @@ fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
 fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &str) -> Docx {
     // Label is localised chrome; the SEQ-free admonition has no field name to
     // keep stable, so the visible word is translated directly.
-    let (word, glyph, _fill, edge) = match kind {
-        "tip" => (t(lang, "tip"), "\u{2714}", "EAF6EC", "2E7D32"),
-        "warning" => (t(lang, "warning"), "\u{26A0}", "FBF1E2", "C77F18"),
-        _ => (t(lang, "note"), "\u{2139}", "EAF1FB", "1F3864"),
+    let (word, glyph, _fill, edge, flavor) = match kind {
+        "tip" => (
+            t(lang, "tip"),
+            "\u{2714}",
+            "EAF6EC",
+            "2E7D32",
+            CalloutFlavor::Tip,
+        ),
+        "warning" => (
+            t(lang, "warning"),
+            "\u{26A0}",
+            "FBF1E2",
+            "C77F18",
+            CalloutFlavor::Warning,
+        ),
+        _ => (
+            t(lang, "note"),
+            "\u{2139}",
+            "EAF1FB",
+            "1F3864",
+            CalloutFlavor::Note,
+        ),
     };
     let text: String = body
         .lines()
@@ -2141,9 +2191,12 @@ fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &s
     // gen_icons PNG (icon_{kind}.png) if the book command rendered it into
     // figdir; otherwise fall back to a unicode glyph.
     let icon = std::fs::read(figdir.join(format!("icon_{kind}.png"))).ok();
+    // Single-paragraph admonition: keep_lines glues label + body on
+    // the same band; the flavor sentinel triggers per-flavor pBdr+shd.
     let mut label_para = Paragraph::new()
         .style("BkCallout")
-        .line_spacing(body_spacing());
+        .line_spacing(body_spacing())
+        .keep_lines(true);
     if let Some(bytes) = &icon {
         let pic = Pic::new(bytes).size(150_000, 150_000); // ≈0.4 cm square
         label_para = label_para.add_run(Run::new().add_image(pic)).add_run(
@@ -2167,7 +2220,7 @@ fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &s
     label_para = label_para.add_run(Run::new().add_text(text).size(22).fonts(body_fonts()));
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
     doc = doc.add_paragraph(spacer());
-    doc = doc.add_paragraph(label_para);
+    doc = doc.add_paragraph(plant_flavor_sentinel(label_para, flavor));
     doc.add_paragraph(spacer())
 }
 
@@ -2214,23 +2267,30 @@ fn callout_box(mut doc: Docx, body: &str) -> Docx {
         ("Note".to_string(), joined.clone())
     };
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
+    let flavor = CalloutFlavor::Generic;
     doc = doc.add_paragraph(spacer());
-    doc = doc.add_paragraph(
-        Paragraph::new().style("BkCallout").add_run(
+    // Title paragraph: keep_next prevents a band-split between title
+    // and body (reference uses `<w:keepNext/>` on the generic-callout
+    // title paragraph — see EEF2F8 fixture sample).
+    let title_p = Paragraph::new()
+        .style("BkCallout")
+        .keep_next(true)
+        .keep_lines(true)
+        .add_run(
             Run::new()
                 .add_text(title.trim_end_matches('.'))
                 .bold()
                 .size(21)
                 .color(NAVY)
                 .fonts(head_fonts()),
-        ),
-    );
-    doc = doc.add_paragraph(
-        Paragraph::new()
-            .style("BkCallout")
-            .line_spacing(body_spacing())
-            .add_run(Run::new().add_text(rest).size(22).fonts(body_fonts())),
-    );
+        );
+    doc = doc.add_paragraph(plant_flavor_sentinel(title_p, flavor));
+    let body_p = Paragraph::new()
+        .style("BkCallout")
+        .line_spacing(body_spacing())
+        .keep_lines(true)
+        .add_run(Run::new().add_text(rest).size(22).fonts(body_fonts()));
+    doc = doc.add_paragraph(plant_flavor_sentinel(body_p, flavor));
     doc.add_paragraph(spacer())
 }
 
@@ -2736,6 +2796,14 @@ fn postprocess_docx_inner_layout(
                 if inject_reference_styles {
                     s = strip_complex_script_noise_for_ascii_runs(&s);
                 }
+                // Round-V Zone-E1 (visual parity, 2026-06-03): inject
+                // per-flavor left accent border + fill on every
+                // `BkCallout` paragraph (tip green / note navy /
+                // warning amber / generic light-navy / keypoints
+                // grey). Runs BEFORE Zone-F's tblPr rewrites (per
+                // cross-cutting risk #8 POSTPROCESS-XML-ORDERING) so
+                // the two XML walkers do not race on the same nodes.
+                s = crate::decorations::apply_callout_chrome(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start document.xml")?;
                 zout.write_all(s.as_bytes()).context("write document.xml")?;
@@ -7437,6 +7505,77 @@ mod tests {
         assert!(
             bk_callout >= 2,
             "fallback callout must still emit ≥2 BkCallout paragraphs; got {bk_callout}"
+        );
+    }
+
+    /// Round-V Zone-E (visual parity, 2026-06-03): every `BkCallout`
+    /// paragraph emitted by `admonition_box` / `callout_box` /
+    /// `keypoints_box` must carry an inline per-flavor `<w:pBdr>`
+    /// (left accent) + `<w:shd>` (fill) pair after postprocess. The
+    /// pair MUST appear inside `<w:pPr>` in correct OOXML schema
+    /// order (`pBdr` BEFORE `shd`; cross-cutting risk #8).
+    ///
+    /// Reference colors (verbatim from
+    /// `book_build/AI_Norms_and_Regulations_BOOK.docx`):
+    /// tip `2E7D32/EAF6EC`, note `1F3864/EAF1FB`,
+    /// warning `C77F18/FBF1E2`, generic `1F3864/EEF2F8`,
+    /// keypoints `8A8A8A/ECECEC`.
+    #[test]
+    fn callout_chrome_per_flavor_pbdr_then_shd() {
+        let meta = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            ..Default::default()
+        };
+        let md = "# C\n\n\
+            ```keypoints\n- Alpha\n- Beta\n```\n\n\
+            ```callout\nKey takeaway:\nBody of generic callout.\n```\n\n\
+            ```note\nAn informational note.\n```\n\n\
+            ```tip\nA helpful tip.\n```\n\n\
+            ```warning\nA loud warning.\n```\n"
+            .to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], Path::new(".")).unwrap();
+        let xml = doc_xml(bytes);
+
+        // Every flavor color must appear at least once on a BkCallout
+        // paragraph. We check the (border, fill) pair per flavor.
+        for (name, border, fill) in [
+            ("tip", "2E7D32", "EAF6EC"),
+            ("note", "1F3864", "EAF1FB"),
+            ("warning", "C77F18", "FBF1E2"),
+            ("generic", "1F3864", "EEF2F8"),
+            ("keypoints", "8A8A8A", "ECECEC"),
+        ] {
+            let border_token = format!(r#"w:color="{border}""#);
+            let fill_token = format!(r#"w:fill="{fill}""#);
+            assert!(
+                xml.contains(&border_token),
+                "{name}: expected border color {border} to appear in document.xml"
+            );
+            assert!(
+                xml.contains(&fill_token),
+                "{name}: expected fill {fill} to appear in document.xml"
+            );
+        }
+
+        // For at least one tip paragraph, verify pBdr precedes shd
+        // inside the same <w:pPr> block (schema order is strict —
+        // OOXML readers and Word both reject the reverse order).
+        let pbdr_pos = xml
+            .find(r#"<w:pBdr><w:left w:val="single" w:sz="24" w:space="8" w:color="2E7D32"/></w:pBdr>"#)
+            .expect("tip pBdr injected verbatim");
+        let shd_pos = xml
+            .find(r#"<w:shd w:val="clear" w:color="auto" w:fill="EAF6EC"/>"#)
+            .expect("tip shd injected verbatim");
+        assert!(
+            pbdr_pos < shd_pos,
+            "OOXML schema requires pBdr to precede shd in pPr (cross-cutting risk #8); got pbdr@{pbdr_pos} shd@{shd_pos}"
+        );
+
+        // All flavor sentinels must be removed after postprocess.
+        assert!(
+            !xml.contains("BkFlavor:"),
+            "flavor sentinels must be stripped by apply_callout_chrome"
         );
     }
 
