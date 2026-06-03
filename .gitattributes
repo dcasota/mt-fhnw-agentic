@@ -1,3 +1,13 @@
 # Shell hooks must stay LF so `sh` can run them (a CRLF shebang breaks /bin/sh).
 .githooks/** text eol=lf
 *.sh text eol=lf
+
+# Round-V byte-parity fixtures. These XML parts are lifted verbatim from a
+# reference Office .docx and must be byte-identical to the original on every
+# platform so the in-zip parity gate succeeds. The original Office bytes use
+# CRLF line endings (7,643 bytes, SHA-256
+# B2295D3198893D2C03F5E584C749A15751B798AEFDCD9BEE2889F13903D68CB2 for
+# theme1_reference.xml). Without this rule git autocrlf normalises to LF on
+# Linux/macOS checkouts (7,642 bytes), breaking both the pinned-length test
+# and the actual docx parity.
+crates/agentic-export/tests/fixtures/theme1_reference.xml binary
