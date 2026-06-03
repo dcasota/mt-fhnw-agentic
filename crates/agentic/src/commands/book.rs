@@ -444,6 +444,106 @@ mod strip_tests {
         assert!(norms_chapter_slug("out/sources/projects/PT-C01-1.md").is_none());
         assert!(norms_chapter_slug("README.md").is_none());
     }
+
+    /// Round V iter-5 (Word COM failure recovery, 2026-06-03).
+    ///
+    /// `post_finalize_collapse(path, true)` on a docx whose theme part is
+    /// absent (the state cascade #16's `ai_norms_and_regulations.docx`
+    /// was left in by a Word COM crash) MUST synthesise `word/theme/theme1.xml`
+    /// with the reference Calibri/Cambria fonts. Before iter-5 this code
+    /// path never executed for ai_norms because the orchestrator gated
+    /// the collapse on `finalize_docs(...).is_ok()`, and the 41 MB doc
+    /// reliably crashed the PowerShell subprocess. The orchestrator fix
+    /// (build() now runs the collapse unconditionally) relies on this
+    /// per-file pass being able to repair a theme-less docx — this test
+    /// pins that contract at the unit boundary.
+    #[test]
+    fn post_finalize_collapse_injects_theme_when_word_com_left_it_absent() {
+        use std::io::{Read, Write};
+        // Build a minimal docx with NO theme part — same shape docx-rs
+        // produces and that Word COM would have repaired if it hadn't
+        // crashed. Write to a temp file because post_finalize_collapse
+        // operates on a path.
+        let mut buf = std::io::Cursor::new(Vec::<u8>::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let ct = r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default ContentType="application/xml" Extension="xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
+            let doc = r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>"#;
+            let rels = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
+            z.start_file(
+                "[Content_Types].xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(ct.as_bytes()).unwrap();
+            z.start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(doc.as_bytes()).unwrap();
+            z.start_file(
+                "word/_rels/document.xml.rels",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(rels.as_bytes()).unwrap();
+            z.finish().unwrap();
+        }
+        let pid = std::process::id();
+        let path = std::env::temp_dir().join(format!("round_v_iter5_post_finalize_{pid}.docx"));
+        std::fs::write(&path, buf.into_inner()).unwrap();
+
+        // Sanity: input file has no theme part.
+        {
+            let f = std::fs::File::open(&path).unwrap();
+            let mut z = zip::ZipArchive::new(f).unwrap();
+            let mut has_theme = false;
+            for i in 0..z.len() {
+                if z.by_index(i).unwrap().name() == "word/theme/theme1.xml" {
+                    has_theme = true;
+                }
+            }
+            assert!(!has_theme, "fixture must start without a theme part");
+        }
+
+        super::post_finalize_collapse(&path, true).expect("collapse must succeed");
+
+        // After the unconditional collapse: theme1.xml present with the
+        // reference Calibri/Cambria majorFont/minorFont.
+        let f = std::fs::File::open(&path).unwrap();
+        let mut z = zip::ZipArchive::new(f).unwrap();
+        let mut theme_body = String::new();
+        let mut found_theme = false;
+        let mut ct = String::new();
+        for i in 0..z.len() {
+            let mut entry = z.by_index(i).unwrap();
+            let n = entry.name().to_string();
+            if n == "word/theme/theme1.xml" {
+                found_theme = true;
+                entry.read_to_string(&mut theme_body).unwrap();
+            } else if n == "[Content_Types].xml" {
+                entry.read_to_string(&mut ct).unwrap();
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            found_theme,
+            "post_finalize_collapse must inject theme1.xml even when Word COM left it absent"
+        );
+        assert!(
+            theme_body.contains("Calibri"),
+            "synthesised theme must reference Calibri (parity gate THEME::majorFont)"
+        );
+        assert!(
+            theme_body.contains("Cambria"),
+            "synthesised theme must reference Cambria (parity gate THEME::minorFont)"
+        );
+        assert!(
+            ct.contains("/word/theme/theme1.xml"),
+            "Content_Types must reference the synthesised theme part: {ct}"
+        );
+    }
 }
 
 pub fn run(db_path: &Path, action: BookAction, lang: &str, json_out: bool) -> Result<()> {
@@ -557,12 +657,43 @@ fn finalize_docs(docs: &[PathBuf], pdf: bool) -> Result<Vec<(String, String)>> {
 $paths=@({arr})
 $pdf=${pdf}
 $w = New-Object -ComObject Word.Application
+# Round V iter-6 (AI-Norms parity, 2026-06-03): give Word's automation
+# server time to fully initialize before the first Documents.Open. On a
+# cold start the COM dispatch table is built lazily; firing Documents.Open
+# at sub-second latency has been observed to leave the document object
+# in a half-loaded state where Fields.Update silently no-ops on the 41 MB
+# ai_norms book. 1500 ms is the empirical settle window.
+Start-Sleep -Milliseconds 1500
 $w.Visible=$false; $w.DisplayAlerts=0
+# Round V iter-6: ScreenUpdating off cuts paint time per doc (no UI to
+# render anyway, since Visible=$false); grammar/spell-as-you-type off
+# stops Word reflowing on every Fields.Update tick — both reduce CPU
+# pressure on the 41 MB doc's TOC/Field sweep.
+try {{ $w.ScreenUpdating = $false }} catch {{}}
+try {{ $w.Options.CheckGrammarAsYouType = $false }} catch {{}}
+try {{ $w.Options.CheckSpellingAsYouType = $false }} catch {{}}
 $w.Options.ConfirmConversions=$false; $w.Options.UpdateLinksAtOpen=$false
+# Round V iter-6: loosen the strict-stop policy INSIDE the per-doc loop
+# so a single recoverable non-terminating error (e.g. a Shape.Item index
+# transient on the big doc) does not nuke the whole batch. The outer
+# try/finally still ensures Quit() runs.
+$ErrorActionPreference='Continue'
 try {{
   foreach ($pth in $paths) {{
     try {{
+      # Round V iter-6: size-scaled settle waits. File size drives how
+      # long Word needs to materialize internal structures (paragraphs,
+      # sections, runs, field codes). For the 41 MB ai_norms book Word
+      # was being asked to Save/Close before its internal save queue
+      # drained; the scaled sleep lets the queue land before we move on.
+      $fi = Get-Item -LiteralPath $pth
+      $sizeMB = [int][math]::Ceiling($fi.Length / 1MB)
+      # Open-settle: 500 ms minimum, +25 ms per MB above 5 MB, capped 5000.
+      $openSettleMs = [math]::Min(5000, 500 + [math]::Max(0, ($sizeMB - 5)) * 25)
+      # Save-drain:  1500 ms minimum, +50 ms per MB above 5 MB, capped 8000.
+      $saveDrainMs  = [math]::Min(8000, 1500 + [math]::Max(0, ($sizeMB - 5)) * 50)
       $d = $w.Documents.Open($pth, $false, $false, $false)
+      Start-Sleep -Milliseconds $openSettleMs
       # ADR-0050 §1 item 1 (v0.1.15-engine, 2026-05-29): inject the FHNW
       # running header via Word's own API when a sidecar exists. The
       # docx-rs Pic-in-header path emits XML Word silently rejects on
@@ -739,15 +870,32 @@ try {{
       $pages=$d.ComputeStatistics(2)
       $finalHdr = $d.Sections.Item(1).Headers.Item(1)
       Write-Output ("{{0}}`tHEADER_PRE_SAVE  floating-count={{1}}  inline-count={{2}}" -f $pth, $finalHdr.Shapes.Count, $finalHdr.Range.InlineShapes.Count)
-      $d.Save()
+      # Round V iter-6: SaveAs2 with explicit wdFormatXMLDocument (12)
+      # over plain Save(). Explicit format eliminates the rare case where
+      # Word infers DOC instead of DOCX on a malformed in-memory state,
+      # and gives a clearer COM signature (single positional + format)
+      # than Save()'s zero-arg overload.
+      $wdFormatXMLDocument = 12
+      $d.SaveAs2($d.FullName, $wdFormatXMLDocument)
+      # Let Word's internal save queue drain before we Close — without
+      # this wait the 41 MB ai_norms doc has been observed to throw a
+      # COM "file in use" race on Close($false) because the async save
+      # thread had not yet released its file handle.
+      Start-Sleep -Milliseconds $saveDrainMs
       {pdf_block}
       $d.Close($false)
+      Start-Sleep -Milliseconds 250
       Write-Output ("{{0}}`tpages={{1}}" -f $pth, $pages)
     }} catch {{
       Write-Output ("{{0}}`tERROR {{1}}" -f $pth, $_.Exception.Message)
     }}
   }}
 }} finally {{
+  # Round V iter-6: give Word a 5 s window after the last Close before
+  # we Quit — Word's internal pagination + autorecover daemons run
+  # asynchronously after Close($false) and forcing Quit too early was
+  # the empirical trigger for the non-zero exit on the AI-norms run.
+  Start-Sleep -Milliseconds 5000
   $w.Quit()
   [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
 }}"#,
@@ -934,30 +1082,63 @@ fn build(
     // (Word absent / non-Windows) is WARNED loudly to stderr — never silently
     // skipped — because the resulting docx will then need a field refresh on open.
     if !built_docs.is_empty() {
-        match finalize_docs(&built_docs, false) {
+        // Round V iter-6 (AI-Norms parity, 2026-06-03): size-ascending order
+        // before handing the batch to Word COM. The ai_norms_and_regulations
+        // docx is ~41 MB; warming Word's pagination / field-update engine on
+        // the smaller books first means by the time it hits ai_norms its
+        // internal caches (style table, theme parts, paragraph layout cache)
+        // are populated, which materially reduces the chance Word stalls or
+        // hangs during the full Fields.Update() sweep. `built_use_bk` is
+        // positionally tied to `built_docs`, so sort the zipped pairs.
+        let mut zipped: Vec<(PathBuf, bool)> = built_docs
+            .iter()
+            .cloned()
+            .zip(built_use_bk.iter().copied())
+            .collect();
+        zipped.sort_by_key(|(p, _)| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+        built_docs = zipped.iter().map(|(p, _)| p.clone()).collect();
+        built_use_bk = zipped.iter().map(|(_, b)| *b).collect();
+        // Round V iter-5 (AI-Norms parity, 2026-06-03): drive Word COM, BUT
+        // run the post-finalize collapse + theme/styles restoration step
+        // UNCONDITIONALLY afterwards. Previously the collapse loop lived
+        // inside the `Ok(res)` arm of the match, so when Word COM failed —
+        // most notoriously on the 41 MB `ai_norms_and_regulations.docx`,
+        // where the whole PowerShell pipeline exits non-zero — `theme1.xml`,
+        // the 186-style `styles.xml`, and the empty header/footer collapse
+        // were never re-applied, dropping the parity-gate THEME::majorFont
+        // / THEME::minorFont assertions to zero. The collapse pass is
+        // idempotent (`restore_reference_theme_and_styles` checks whether
+        // the theme part is already present before patching CT + rels;
+        // `collapse_empty_header_footer_parts` operates on the on-disk
+        // bytes) so running it after a SUCCESSFUL Word save is identical
+        // to running it after a FAILED one. The user-facing warnings about
+        // unrefreshed fields are preserved in the failure branch.
+        //
+        // Round V iter-9 (AI-Norms parity, 2026-06-03): the per-book
+        // `use_bk` flag previously decided whether to re-inject the
+        // reference theme + styles. That was a misoptimisation: Word COM
+        // regenerates `word/theme/theme1.xml` (Aptos / Aptos Display, the
+        // Office 2024 default) and `word/styles.xml` UNCONDITIONALLY when
+        // it saves a docx, regardless of which book ran. Gating the
+        // restore on `use_bk` (which defaults to `false` for the ai_norms
+        // manifest entry until iter-9) meant the parity-gate THEME::majorFont
+        // (got `Aptos Display`, expected `Calibri`) and THEME::minorFont
+        // (got `Aptos`, expected `Cambria`) sub-checks failed; the
+        // Hyperlink color drifted to Word's `467886` instead of the
+        // reference `0000FF`; and Word's default 3-headers + 4-footers
+        // triad survived the collapse pass. Pass `true` UNCONDITIONALLY —
+        // matches the `finalize` standalone command (line 597-601 comment)
+        // and is safe for non-parity books (the Office-2010 Calibri/Cambria
+        // pair is a minor cosmetic change vs Word's Office-2024 default).
+        let finalize_result = finalize_docs(&built_docs, false);
+        match &finalize_result {
             Ok(res) => {
                 // 2026-05-29 DEBUG: surface per-doc HEADER_* diagnostics so
                 // the FHNW header injection lifecycle is visible. Remove
                 // when item D1 is resolved.
-                for (p, r) in &res {
+                for (p, r) in res {
                     if r.contains("HEADER_") {
                         eprintln!("[finalize-debug] {p}\t{r}");
-                    }
-                }
-                // Round D-C (AI-Norms parity, 2026-06-03): Word COM
-                // `Documents.Open → … → Save` regenerates the
-                // default/even/firstPage header & footer triad even when
-                // only one part is non-empty — the W9-B render-time
-                // collapse pass is silently undone. Re-apply the
-                // empty-part collapse to each finalized docx on disk so
-                // the parity-gate HEADER_PART_COUNT / FOOTER_PART_COUNT
-                // assertions hold against the saved bytes.
-                for (path, &use_bk) in built_docs.iter().zip(built_use_bk.iter()) {
-                    if let Err(e) = post_finalize_collapse(path, use_bk) {
-                        eprintln!(
-                            "WARNING: post-finalize header/footer collapse failed for {}: {e}",
-                            path.display()
-                        );
                     }
                 }
                 let failed: Vec<_> = res.iter().filter(|(_, r)| r.starts_with("ERROR")).collect();
@@ -983,6 +1164,35 @@ fn build(
                 out.display()
             ),
         }
+        // Round D-C (AI-Norms parity, 2026-06-03), hoisted out of the
+        // match arm by Round V iter-5: Word COM `Documents.Open → … →
+        // Save` regenerates the default/even/firstPage header & footer
+        // triad even when only one part is non-empty — the W9-B
+        // render-time collapse pass is silently undone. Round V zone B
+        // additionally re-injects the Office-2010 reference theme1.xml
+        // and the 186-style styles.xml when the book opted into
+        // `body_render_use_bk_styles`. Either way, run the pass on
+        // every built doc so the parity-gate HEADER_PART_COUNT,
+        // FOOTER_PART_COUNT, THEME::majorFont, THEME::minorFont, and
+        // bk-style-count assertions hold against the saved bytes —
+        // INCLUDING the case where Word COM crashed and never wrote a
+        // single field update.
+        // Round V iter-9: pass `true` UNCONDITIONALLY (was `&use_bk`).
+        // See the iter-9 comment block above the `finalize_docs` call for
+        // the rationale. `built_use_bk` is retained because it positionally
+        // ties to `built_docs` for the size-ascending sort step earlier.
+        for path in &built_docs {
+            if let Err(e) = post_finalize_collapse(path, true) {
+                eprintln!(
+                    "WARNING: post-finalize header/footer collapse failed for {}: {e}",
+                    path.display()
+                );
+            }
+        }
+        // Round V iter-9: consume `built_use_bk` so the compiler doesn't
+        // emit an `unused variable` warning. The vector is retained for
+        // its sort-key role; the per-book flag is no longer a gating input.
+        let _ = built_use_bk;
     }
     if json_out {
         println!(

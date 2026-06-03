@@ -16,6 +16,7 @@ pub mod index;
 pub mod markdown;
 pub mod numbering_xml;
 pub mod pdf;
+pub mod size_manifest;
 pub mod styles_xml;
 pub mod table_xml;
 pub mod theme_xml;

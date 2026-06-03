@@ -252,6 +252,38 @@ pub fn rewrite_pic_names_in_document_xml(document_xml: &str) -> String {
             }
         }
     }
+    // Round V iter-2 (pic_name_attribute parity, 2026-06-03): any
+    // remaining `<pic:cNvPr id="0" name="" />` (e.g. content-figure
+    // images, QR codes, chapter-extras drawings that don't carry an
+    // icon-sentinel rid) is patched with a sequential placeholder name
+    // `image1.png`, `image2.png`, ... The reference AI-Norms book emits
+    // a non-empty `name=` on every drawing — empty names break Word's
+    // image-list / a11y panel and trip the `pic_name_attribute` parity
+    // sub-check.
+    out = assign_sequential_pic_names(&out);
+    out
+}
+
+/// Walk the XML and replace every `<pic:cNvPr id="0" name="" />` left
+/// over after the icon-sentinel pass with a sequential
+/// `image{N}.png` placeholder name (N = 1, 2, …). Mirrors the
+/// reference book's name convention (most content figures land as
+/// `image1.png` / `image2.png` / …). Idempotent: a second invocation
+/// on already-named XML is a no-op because the pattern matched is
+/// only the bare empty-name shape docx-rs emits.
+pub fn assign_sequential_pic_names(xml: &str) -> String {
+    let cnv_pattern = r#"<pic:cNvPr id="0" name="" />"#;
+    let mut out = String::with_capacity(xml.len() + 64);
+    let mut rest = xml;
+    let mut counter: u32 = 1;
+    while let Some(pos) = rest.find(cnv_pattern) {
+        out.push_str(&rest[..pos]);
+        let replacement = format!(r#"<pic:cNvPr id="0" name="image{counter}.png" />"#);
+        out.push_str(&replacement);
+        rest = &rest[pos + cnv_pattern.len()..];
+        counter += 1;
+    }
+    out.push_str(rest);
     out
 }
 
@@ -306,6 +338,64 @@ mod tests {
         // Idempotency: re-running the rewrite is a no-op.
         let rewritten_twice = rewrite_pic_names_in_document_xml(&rewritten);
         assert_eq!(rewritten, rewritten_twice, "rewrite is idempotent");
+    }
+
+    /// Round V iter-2 (pic_name_attribute parity, 2026-06-03).
+    /// Any leftover `<pic:cNvPr id="0" name="" />` (non-icon embeds such as
+    /// content figures, QR codes, header/footer graphics) is patched with a
+    /// sequential `image{N}.png` placeholder so the parity sub-check sees no
+    /// empty `name=` attributes anywhere in the docx.
+    #[test]
+    fn assign_sequential_names_replaces_empty_names() {
+        let input = concat!(
+            r#"<a><pic:cNvPr id="0" name="" /></a>"#,
+            r#"<b><pic:cNvPr id="0" name="" /></b>"#,
+            r#"<c><pic:cNvPr id="0" name="" /></c>"#,
+        );
+        let out = assign_sequential_pic_names(input);
+        assert!(out.contains(r#"name="image1.png""#));
+        assert!(out.contains(r#"name="image2.png""#));
+        assert!(out.contains(r#"name="image3.png""#));
+        assert!(!out.contains(r#"name="""#));
+    }
+
+    /// Empty-name pic:cNvPr inside header XML must be patched too.
+    #[test]
+    fn rewrite_pic_names_patches_non_icon_embeds_in_any_part() {
+        // A header XML fragment with one icon embed (sentinel rid) +
+        // one plain image (auto rid). Both must end up named.
+        let header_xml = format!(
+            concat!(
+                r#"<?xml version="1.0"?>"#,
+                r#"<w:hdr>"#,
+                // icon (sentinel rid)
+                r#"<w:p><w:r><w:drawing><wp:inline>"#,
+                r#"<pic:cNvPr id="0" name="" />"#,
+                r#"<a:blip r:embed="{rid}"/>"#,
+                r#"</wp:inline></w:drawing></w:r></w:p>"#,
+                // plain image (auto rid)
+                r#"<w:p><w:r><w:drawing><wp:inline>"#,
+                r#"<pic:cNvPr id="0" name="" />"#,
+                r#"<a:blip r:embed="rId99"/>"#,
+                r#"</wp:inline></w:drawing></w:r></w:p>"#,
+                r#"</w:hdr>"#,
+            ),
+            rid = IconKind::Tip.rid_sentinel(),
+        );
+        let out = rewrite_pic_names_in_document_xml(&header_xml);
+        assert!(
+            out.contains(r#"name="icon_tip""#),
+            "icon embed must take its stable name: {out}"
+        );
+        assert!(
+            out.contains(r#"name="image1.png""#),
+            "non-icon embed must take a sequential image{{N}}.png placeholder: {out}"
+        );
+        // No empty names left over.
+        assert!(
+            !out.contains(r#"name="""#),
+            "no empty pic:cNvPr name= attributes should remain: {out}"
+        );
     }
 
     /// All three variants survive the round-trip.

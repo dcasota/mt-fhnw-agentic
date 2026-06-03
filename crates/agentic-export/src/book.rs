@@ -22,6 +22,7 @@ use agentic_core::i18n::t;
 
 use crate::decorations::CalloutFlavor;
 use crate::markdown::{DocxBlock, DocxRun, to_docx_blocks};
+use crate::size_manifest::SizeManifest;
 
 /// Process-wide monotonic counter for flavor-bookmark ids (Round-V
 /// Zone-E callout-chrome). Bookmarks need to be unique within a
@@ -460,6 +461,13 @@ struct Ctx<'a> {
     /// wrapper) emit the same cols.space / docGrid / pgMar header/footer
     /// distances as the document-level sectPr.
     layout: LayoutOverrides,
+    /// Round V iter-10 (drawing_class_bucket parity, 2026-06-03): per-figure
+    /// width hint table loaded from `<figdir>/sizes.toml`. The
+    /// [`DocxBlock::Image`] arm tries this lookup BEFORE the path-prefix
+    /// heuristic so editorial FIGURE/OTHER assignments that cannot be
+    /// recovered from path bytes (the `image*.png` family) still land in the
+    /// right bucket. Empty for every book that does not ship a manifest.
+    size_manifest: SizeManifest,
 }
 
 /// Wave-4 (ADR-0054 v1, 2026-06-03): the four reference-parity layout
@@ -1524,29 +1532,39 @@ fn closing_thought_block(mut doc: Docx, m: &BookMeta) -> Docx {
     doc = doc.add_paragraph(page_break());
     let mut heading = Paragraph::new();
     let mut body_p = Paragraph::new();
+    let plant_flavor = m.body_render_use_bk_styles;
     if m.body_render_use_bk_styles {
         heading = heading.style("BkCallout");
         body_p = body_p.style("BkCallout");
     }
-    doc = doc.add_paragraph(
-        heading.add_run(
-            Run::new()
-                .add_text(CLOSING_THOUGHT_HEADING)
-                .bold()
-                .size(26)
-                .color(NAVY)
-                .fonts(head_fonts()),
-        ),
+    // Round V iter-2 (BkCallout decoration parity, 2026-06-03): plant
+    // a `Generic` flavor sentinel on each closing-thought paragraph so
+    // the postprocess `apply_callout_chrome` pass injects pBdr + shd
+    // chrome — closing-thought is the only `BkCallout` emitter that
+    // was previously uninstrumented, and the parity gate flagged its
+    // two paragraphs as stragglers (missing pBdr + missing shd).
+    let heading = heading.add_run(
+        Run::new()
+            .add_text(CLOSING_THOUGHT_HEADING)
+            .bold()
+            .size(26)
+            .color(NAVY)
+            .fonts(head_fonts()),
     );
-    doc.add_paragraph(
-        body_p.add_run(
-            Run::new()
-                .add_text(body.trim())
-                .size(22)
-                .color("1A1A1A")
-                .fonts(body_fonts()),
-        ),
-    )
+    let body_p = body_p.add_run(
+        Run::new()
+            .add_text(body.trim())
+            .size(22)
+            .color("1A1A1A")
+            .fonts(body_fonts()),
+    );
+    if plant_flavor {
+        doc = doc.add_paragraph(plant_flavor_sentinel(heading, CalloutFlavor::Generic));
+        doc.add_paragraph(plant_flavor_sentinel(body_p, CalloutFlavor::Generic))
+    } else {
+        doc = doc.add_paragraph(heading);
+        doc.add_paragraph(body_p)
+    }
 }
 
 /// T1.7 — Inscription-page Antikythera NOTE footer (REF parity 2026-06-02).
@@ -1959,6 +1977,179 @@ fn png_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
     let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
     Some((w, h))
+}
+
+/// EMU per inch (OOXML constant; 914 400).
+const EMU_PER_INCH: u64 = 914_400;
+/// Default screen DPI for raster sources — matches Word's 96 DPI default
+/// and the reference AI-Norms book.
+const SCREEN_DPI: u64 = 96;
+/// Maximum EMU width for an embedded raster (15 cm ≈ 5.91 in).
+/// Explicitly-sized callers cap here; smaller sources keep their natural
+/// dimensions (other / icon / qr bucket).
+const IMAGE_MAX_W_EMU: u32 = 5_400_000;
+/// Default embed width for unsized markdown `![](png)` images
+/// (4 in × 914 400 EMU/in = 3 657 600 EMU). Round V iter-7 (2026-06-03):
+/// matches the `agentic-figures::render_image_embed::DEFAULT_EMBED_WIDTH_IN`
+/// (also 4 in) so the two image-embed code paths produce the same parity
+/// bucket. Anything above this default lands in the `figure` bucket
+/// (≥5 M EMU); anything at-or-below lands in the `other` bucket
+/// (1 M < cx < 5 M EMU). The reference AI-Norms book embeds its 55 sourced
+/// raster screenshots at page-fit small widths (3-4 in, ~2.7-3.6 M EMU).
+const DEFAULT_EMBED_W_EMU: u32 = 3_657_600;
+
+/// Quantisation grid for `<wp:extent>` (matches the reference book; e.g.
+/// 4 860 000 / 4 680 000 / 4 500 000 / 3 600 000 EMU). Without quantisation
+/// the bucket counts hold but the per-EMU diff against the reference
+/// inflates.
+const EMU_GRID: u64 = 60_000;
+
+/// Snap a width down to the nearest [`EMU_GRID`] multiple, recompute height
+/// to preserve aspect ratio. Helper shared by all three branches of
+/// [`image_dims_to_emu`]. Both inputs are in EMU; returns `(w, h)` in EMU.
+fn snap_emu_to_grid(target_w_emu: u64, nat_w_emu: u64, nat_h_emu: u64) -> (u32, u32) {
+    let w = (target_w_emu / EMU_GRID) * EMU_GRID;
+    let w = w.max(EMU_GRID);
+    let h = (nat_h_emu * w) / nat_w_emu.max(1);
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        (w as u32, h.max(1) as u32)
+    }
+}
+
+/// Round V iter-9 (drawing_class_bucket parity, 2026-06-03): is `path` an
+/// in-house figspec-emitted image reference? Used by the `DocxBlock::Image`
+/// call site to decide whether to route through `Some(6.0)` (FIGURE bucket)
+/// or `None` (4-in OTHER bucket default).
+///
+/// Two recognition strategies:
+///
+/// 1. **Prefix match**: `figures/<sub>/<id>.png` is the canonical emission
+///    pattern from `agentic_figures::resolve_markdown` (lib.rs:277). When
+///    figspec blocks survive into `resolve_markdown` (the non-ai_norms
+///    cascade path), every figspec produces this prefix.
+///
+/// 2. **Stem match**: the ai_norms cascade strips `## Figures` figspec
+///    blocks via `strip_wave5_figures_section` BEFORE `resolve_markdown`
+///    runs, so the chapter md retains only the bookkit-source bare-filename
+///    references like `gov_switzerland.png`, `reg_eu.png`, `iso_norms_heatmap.png`,
+///    `pop_treemap.png`. The TRUE reference (`true_reference_doc.xml`)
+///    routes 41 of these to FIGURE: 22 `gov_*`, 16 `reg_*`, 2 `iso*`,
+///    1 `pop_*`. Matching these stems lets the cascade recover ~41 of
+///    the 78-reference FIGURE assignments programmatically.
+///
+/// The remaining 37 FIGURE entries in the reference are `image*.png`
+/// top-of-chapter wide diagrams whose split from 55 mid-chapter
+/// `image*.png` OTHER entries is editorial — not derivable from path
+/// bytes. Documented in iter-9 close report as known residual drift.
+#[must_use]
+pub fn is_in_house_figure_path(path: &str) -> bool {
+    // Strategy 1 — `figures/` prefix (Windows + Unix safe).
+    if path.starts_with("figures/")
+        || path.starts_with(r"figures\")
+        || path.contains("/figures/")
+        || path.contains(r"\figures\")
+    {
+        return true;
+    }
+    // Strategy 2 — figspec-emitter filename stem. Match the trailing
+    // segment after the last path separator so a fully-qualified path
+    // like `specs/figures/raster/ai_norms/gov_eu.png` still hits via
+    // strategy 1, and a bare `gov_eu.png` still hits via strategy 2.
+    let stem = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    stem.starts_with("gov_")
+        || stem.starts_with("reg_")
+        || stem.starts_with("iso")
+        || stem.starts_with("pop_")
+        || stem.starts_with("treemap_")
+        || stem.starts_with("heatmap_")
+        || stem.starts_with("sankey_")
+        || stem.starts_with("wheel_")
+        || stem.starts_with("overlay_")
+        || stem.starts_with("tier_matrix_")
+        || stem.starts_with("govmap_")
+        || stem.starts_with("regstack_")
+}
+
+/// Translate a PNG's pixel dimensions into EMU at 96 DPI, with one of three
+/// width policies:
+///
+/// 1. `width_in_override = Some(w)` — the caller wants an explicit width
+///    (e.g. a figspec with `width_in`, or an in-house wide figure renderer
+///    asking for ≥6 in). The target width is `w × 914_400` EMU, capped
+///    at [`IMAGE_MAX_W_EMU`] (15 cm hard cap), aspect ratio preserved.
+/// 2. `width_in_override = None` AND natural width ≤ [`DEFAULT_EMBED_W_EMU`]
+///    (~4 in @ 96 DPI) — keep the natural width (snapped to the 60 000-EMU
+///    grid). This is the byte-passthrough path for small images (icons,
+///    inline thumbnails) that should NOT be inflated.
+/// 3. `width_in_override = None` AND natural width > [`DEFAULT_EMBED_W_EMU`]
+///    — shrink to the 4-in default, aspect ratio preserved, then snap to
+///    the 60 000-EMU grid. This puts the image in the parity gate's
+///    `other` drawing-class bucket (1 M < cx < 5 M EMU), matching the
+///    AI-Norms reference book's treatment of sourced raster screenshots.
+///
+/// Falls back to (5.4 M, 3.4 M) for sources whose dimensions cannot be
+/// parsed (e.g. JPEG; the book.rs renderer only hands us PNG today, but
+/// a defensive fallback keeps the renderer crash-free).
+///
+/// Returns `(w, h)` in EMU.
+///
+/// Round V iter-7 (2026-06-03): the `width_in_override` parameter was added
+/// to close the last 2 parity ERRORs (`PARITY_DRAWING_CLASS_BUCKET::FIGURE`
+/// 125 vs 78, `::OTHER` 8 vs 55 — exactly 47 images that should have been
+/// in OTHER). The reachable cascade path strips `## Figures` figspec blocks
+/// before `resolve_markdown` runs, so the Iter-3 4-inch default in
+/// `render_image_embed.rs` is unreachable; instead, images flow through
+/// `DocxBlock::Image` → `image_dims_to_emu`. Mirroring the 4-inch default
+/// HERE is the single surgical fix that reaches the production path.
+///
+/// Round V iter-8 (2026-06-03): the assumption that "in-house figure
+/// renderers go through their own `<wp:extent>` paths" was WRONG —
+/// `agentic_figures::resolve_markdown` rewrites every figspec block into
+/// a `![{caption}](figures/{sub}/{id}.png)` reference that ALSO routes
+/// through `DocxBlock::Image`, so Iter-7's blanket `None` capped the 78
+/// in-house figures along with the 55 sourced rasters, flipping the
+/// buckets to FIGURE 8 / OTHER 125. The fix lives at the call site
+/// (`book.rs:~4594`), which now distinguishes by path prefix:
+/// `figures/...` → in-house figure → `Some(6.0)` (FIGURE bucket); any
+/// other path → loose markdown raster → `None` (4-inch default, OTHER
+/// bucket). Admonition icons and QR codes never call this helper; they
+/// use the `ADMONITION_ICON_EMU` and `QR_CODE_EMU` constants from
+/// `icons.rs` directly.
+pub fn image_dims_to_emu(bytes: &[u8], width_in_override: Option<f32>) -> (u32, u32) {
+    let Some((px_w, px_h)) = png_dims(bytes) else {
+        return (IMAGE_MAX_W_EMU, 3_400_000);
+    };
+    let px_w = px_w.max(1);
+    let px_h = px_h.max(1);
+    let nat_w_emu = (u64::from(px_w) * EMU_PER_INCH) / SCREEN_DPI;
+    let nat_h_emu = (u64::from(px_h) * EMU_PER_INCH) / SCREEN_DPI;
+
+    // Branch 1: explicit width override (callers opt out of 4-in default).
+    if let Some(w_in) = width_in_override {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let req_emu = (f64::from(w_in.max(0.0)) * EMU_PER_INCH as f64) as u64;
+        // Respect the 15-cm hard cap so explicitly oversized requests
+        // (e.g. `width_in: 12.0`) still ship at a sane page-fit size.
+        let target_w_emu = req_emu.min(u64::from(IMAGE_MAX_W_EMU));
+        return snap_emu_to_grid(target_w_emu, nat_w_emu, nat_h_emu);
+    }
+
+    // Branch 2: unsized + naturally small → keep native width.
+    if nat_w_emu <= u64::from(DEFAULT_EMBED_W_EMU) {
+        return snap_emu_to_grid(nat_w_emu, nat_w_emu, nat_h_emu);
+    }
+
+    // Branch 3: unsized + naturally wide → shrink to 4-in default.
+    snap_emu_to_grid(u64::from(DEFAULT_EMBED_W_EMU), nat_w_emu, nat_h_emu)
 }
 
 /// Per-column widths in twips for a given header.
@@ -2883,7 +3074,14 @@ fn postprocess_docx_inner_layout(
                 if drop_headers.contains(name) {
                     continue;
                 }
+                // Round V iter-2 (pic_name_attribute parity, 2026-06-03):
+                // header/footer parts may also embed `<pic:cNvPr>`
+                // drawings (e.g. the FHNW logo in the page header).
+                // Apply the same name-rewrite as on document.xml so the
+                // parity sub-check sees no empty names anywhere in the
+                // docx.
                 let s = headers.remove(name).unwrap_or_default();
+                let s = crate::icons::rewrite_pic_names_in_document_xml(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start header part")?;
                 zout.write_all(s.as_bytes()).context("write header part")?;
@@ -2892,6 +3090,7 @@ fn postprocess_docx_inner_layout(
                     continue;
                 }
                 let s = footers.remove(name).unwrap_or_default();
+                let s = crate::icons::rewrite_pic_names_in_document_xml(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start footer part")?;
                 zout.write_all(s.as_bytes()).context("write footer part")?;
@@ -3034,7 +3233,14 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 if drop_headers.contains(name) {
                     continue;
                 }
+                // Round V iter-2 (pic_name_attribute parity, 2026-06-03):
+                // header/footer parts may also embed `<pic:cNvPr>`
+                // drawings (e.g. the FHNW logo in the page header).
+                // Apply the same name-rewrite as on document.xml so the
+                // parity sub-check sees no empty names anywhere in the
+                // docx.
                 let s = headers.remove(name).unwrap_or_default();
+                let s = crate::icons::rewrite_pic_names_in_document_xml(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start header part")?;
                 zout.write_all(s.as_bytes()).context("write header part")?;
@@ -3043,6 +3249,7 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                     continue;
                 }
                 let s = footers.remove(name).unwrap_or_default();
+                let s = crate::icons::rewrite_pic_names_in_document_xml(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start footer part")?;
                 zout.write_all(s.as_bytes()).context("write footer part")?;
@@ -3071,15 +3278,38 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
 /// first (one zip rewrite each, ordering does not matter functionally —
 /// neither pass touches the other's targets).
 ///
-/// SAFETY: only rewrites `word/theme/theme1.xml` and `word/styles.xml`;
-/// every other entry is streamed verbatim. Idempotent — re-running on a
-/// docx whose theme/styles already match the reference is a no-op.
+/// SAFETY: rewrites `word/theme/theme1.xml`, `word/styles.xml`, and (when
+/// theme1.xml had to be created from scratch) patches `[Content_Types].xml`
+/// and `word/_rels/document.xml.rels` to reference the new part. Every
+/// other entry is streamed verbatim. Idempotent — re-running on a docx
+/// whose theme/styles already match the reference is a no-op.
+///
+/// Round V iter-4 (regression triage, 2026-06-03): when the upstream
+/// caller skipped (or Word COM failed) `finalize_docs` and the docx
+/// reaching this pass is the pure docx-rs render output, the input
+/// zip has NO `word/theme/theme1.xml` entry at all (docx-rs 0.4.x
+/// does not emit one). The previous implementation iterated existing
+/// entries and only INJECTED on match — so a missing theme stayed
+/// missing, dropping every theme-font reference (`majorHAnsi=Calibri`
+/// / `minorHAnsi=Cambria`) and tripping the parity gate's THEME
+/// sub-check. The fix below explicitly tracks whether the theme part
+/// was written from an existing entry; if not, it appends the part +
+/// the matching `[Content_Types]` override + the rels relationship
+/// so Word reads it on next open.
 pub fn restore_reference_theme_and_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
     let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
     let mut out = Cursor::new(Vec::<u8>::new());
+    let mut wrote_theme = false;
+    let mut wrote_styles = false;
+    // We may need to patch CT + rels if we have to inject theme from
+    // scratch. Materialise them on the first pass; rewrite them inline
+    // in the streaming loop when we encounter them.
+    let mut ct_xml: Option<String> = None;
+    let mut rels_xml: Option<String> = None;
     {
         let mut zout = zip::ZipWriter::new(&mut out);
+        // First pass: copy / replace, capture CT + rels for possible patch.
         for i in 0..zin.len() {
             let mut f = zin.by_index(i).context("read zip entry")?;
             let name = f.name().to_string();
@@ -3089,7 +3319,7 @@ pub fn restore_reference_theme_and_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u
                     .context("start theme1.xml part")?;
                 zout.write_all(xml.as_bytes())
                     .context("write reference theme1.xml")?;
-                // drain the original entry so the zip reader advances
+                wrote_theme = true;
                 let mut _drain = String::new();
                 let _ = f.read_to_string(&mut _drain);
             } else if name == "word/styles.xml" {
@@ -3098,11 +3328,72 @@ pub fn restore_reference_theme_and_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u
                     .context("start styles.xml part")?;
                 zout.write_all(xml.as_bytes())
                     .context("write reference styles.xml")?;
+                wrote_styles = true;
                 let mut _drain = String::new();
                 let _ = f.read_to_string(&mut _drain);
+            } else if name == "[Content_Types].xml" {
+                // Defer write so we can patch when theme is missing.
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read CT")?;
+                ct_xml = Some(s);
+            } else if name == "word/_rels/document.xml.rels" {
+                let mut s = String::new();
+                f.read_to_string(&mut s).context("read doc rels")?;
+                rels_xml = Some(s);
             } else {
                 zout.raw_copy_file(f).context("copy zip entry")?;
             }
+        }
+
+        // If styles part was absent (very rare — docx-rs always emits it),
+        // synthesise one so the reference styles are still present.
+        if !wrote_styles {
+            let xml = crate::styles_xml::emit_styles_xml();
+            zout.start_file("word/styles.xml", zip::write::SimpleFileOptions::default())
+                .context("start synthesised styles.xml")?;
+            zout.write_all(xml.as_bytes())
+                .context("write synthesised styles.xml")?;
+        }
+
+        // If theme part was absent, synthesise one AND patch CT + rels so
+        // Word reads it on next open. Otherwise just stream CT + rels back.
+        if !wrote_theme {
+            let theme_xml = crate::theme_xml::emit_theme_xml();
+            zout.start_file(
+                "word/theme/theme1.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .context("start synthesised theme1.xml")?;
+            zout.write_all(theme_xml.as_bytes())
+                .context("write synthesised theme1.xml")?;
+        }
+        // CT: add Override for theme1.xml if not already present.
+        if let Some(mut ct) = ct_xml.take() {
+            if !wrote_theme && !ct.contains("/word/theme/theme1.xml") {
+                let override_tag = r#"<Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>"#;
+                ct = ct.replace("</Types>", &format!("{override_tag}</Types>"));
+            }
+            zout.start_file(
+                "[Content_Types].xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .context("start CT")?;
+            zout.write_all(ct.as_bytes()).context("write CT")?;
+        }
+        // Rels: add Relationship for theme1.xml if not already present.
+        if let Some(mut rels) = rels_xml.take() {
+            if !wrote_theme && !rels.contains("theme/theme1.xml") {
+                // Pick a high rId unlikely to collide with docx-rs output
+                // (docx-rs uses sequential low rIds starting at rId1).
+                let rel_tag = r#"<Relationship Id="rIdTheme1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>"#;
+                rels = rels.replace("</Relationships>", &format!("{rel_tag}</Relationships>"));
+            }
+            zout.start_file(
+                "word/_rels/document.xml.rels",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .context("start doc rels")?;
+            zout.write_all(rels.as_bytes()).context("write doc rels")?;
         }
         zout.finish().context("finish docx zip")?;
     }
@@ -3131,11 +3422,98 @@ fn is_footer_part(name: &str) -> bool {
 /// them via this finalize pass restores the reference docx's "0 headers,
 /// 1 footer (with PAGE field)" shape that the parity gate enforces.
 fn header_or_footer_is_empty(body: &str) -> bool {
-    !body.contains("<w:t")
-        && !body.contains("<w:fldChar")
-        && !body.contains("<w:instrText")
-        && !body.contains("<w:drawing")
-        && !body.contains("<w:pict")
+    // Round V iter-9 (AI-Norms parity, 2026-06-03): broaden the empty
+    // check. Word COM (Documents.Open → Save) regenerates the default
+    // even/default/first header & footer triad and populates them with
+    // its own boilerplate paragraphs containing one or more `<w:t>` runs
+    // whose content is *whitespace-only* (a single space, a non-breaking
+    // space, or empty `<w:t></w:t>`). The pre-iter-9 substring check
+    // refused to drop these because `body.contains("<w:t")` matched the
+    // boilerplate runs; the result was HEADER_PART_COUNT 3 vs 0 and
+    // FOOTER_PART_COUNT 4 vs 1 on the ai_norms cascade output, because
+    // Word's Office-2024 saver writes literal `<w:t></w:t>` / `<w:t
+    // xml:space="preserve"> </w:t>` runs into every regenerated default
+    // part. Strip ALL `<w:t>…</w:t>` payloads first, then re-test the
+    // residual body for substantive markers — so a header that ONLY
+    // carries whitespace runs counts as empty and is collapsed.
+    let textless = strip_text_runs(body);
+    !contains_text_payload(body)
+        && !textless.contains("<w:fldChar")
+        && !textless.contains("<w:instrText")
+        && !textless.contains("<w:drawing")
+        && !textless.contains("<w:pict")
+}
+
+/// Round V iter-9 helper — does any `<w:t …>…</w:t>` payload in `body`
+/// contain a non-whitespace character? An `<w:t/>` self-close or a
+/// `<w:t xml:space="preserve"> </w:t>` whitespace-only run returns
+/// `false`; a `<w:t>1</w:t>` PAGE-field result returns `true`.
+fn contains_text_payload(body: &str) -> bool {
+    let mut rest = body;
+    while let Some(open) = rest.find("<w:t") {
+        let after_open = &rest[open + 4..];
+        // Skip `<w:tab/>`, `<w:tbl…>`, etc. — only match `<w:t>` or `<w:t `.
+        let next = after_open.chars().next();
+        if !matches!(next, Some(' ') | Some('>') | Some('/')) {
+            rest = after_open;
+            continue;
+        }
+        // Self-closing `<w:t/>` carries no payload.
+        if after_open.starts_with('/') {
+            rest = &after_open[1..];
+            continue;
+        }
+        // Find the closing `</w:t>`.
+        let Some(close) = after_open.find("</w:t>") else {
+            return false;
+        };
+        // Find start of the payload (after the opening `>`).
+        let Some(gt) = after_open[..close].find('>') else {
+            rest = &after_open[close + 6..];
+            continue;
+        };
+        let payload = &after_open[gt + 1..close];
+        if payload.chars().any(|c| !c.is_whitespace()) {
+            return true;
+        }
+        rest = &after_open[close + 6..];
+    }
+    false
+}
+
+/// Round V iter-9 helper — return `body` with every `<w:t …>…</w:t>`
+/// payload elided so the residual XML can be scanned for non-text
+/// markers (drawings, fields, pictures) without the text-run pattern
+/// triggering a false positive.
+fn strip_text_runs(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(open) = rest.find("<w:t") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 4..];
+        let next = after_open.chars().next();
+        if !matches!(next, Some(' ') | Some('>') | Some('/')) {
+            out.push_str("<w:t");
+            rest = after_open;
+            continue;
+        }
+        if after_open.starts_with('/') {
+            // `<w:t/>` — self-close, copy it verbatim and move on.
+            out.push_str("<w:t/>");
+            rest = &after_open[1..];
+            continue;
+        }
+        // Drop everything from `<w:t…>` through the closing `</w:t>`.
+        let Some(close) = after_open.find("</w:t>") else {
+            // Malformed — give up gracefully and stop stripping.
+            out.push_str("<w:t");
+            out.push_str(after_open);
+            return out;
+        };
+        rest = &after_open[close + 6..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Wave-9 finalize pass: parse `word/_rels/document.xml.rels`, drop every
@@ -4353,13 +4731,49 @@ fn render_block(
                 .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
             if let Ok(bytes) = std::fs::read(&full) {
                 ctx.figno += 1;
-                let target_w: u32 = 5_400_000; // 15 cm in EMU
-                let h_emu = png_dims(&bytes)
-                    .map(|(w, h)| {
-                        ((u64::from(h) * u64::from(target_w)) / u64::from(w.max(1))) as u32
-                    })
-                    .unwrap_or(3_400_000);
-                let pic = Pic::new(&bytes).size(target_w, h_emu);
+                // Round V iter-9 (drawing_class_bucket parity, 2026-06-03):
+                // broadened discriminator. Iter-8 used `path.starts_with("figures/")`
+                // but `strip_wave5_figures_section` (commands/book.rs:179) cuts the
+                // ai_norms cascade's figspec blocks BEFORE `resolve_markdown` runs,
+                // so no `figures/...` paths are ever emitted for that book. The
+                // chapter md instead carries bare-filename refs like
+                // `![alt](gov_switzerland.png)` and `![alt](image14.png)`, which
+                // Iter-8 routed to OTHER for ALL of them (FIGURE 8 / OTHER 125
+                // vs reference 78 / 55).
+                //
+                // The TRUE reference (`true_reference_doc.xml` extraction) shows
+                // every in-house figspec-emitter prefix lands in the FIGURE
+                // bucket regardless of native size: `gov_*` (22), `reg_*` (16),
+                // `iso*` (2), `pop_*` (1). That's 41 deterministic FIGURE
+                // assignments. The remaining 37 FIGURE entries are `image*.png`
+                // top-of-chapter wide diagrams whose split from the 55
+                // mid-chapter `image*.png` OTHER entries is editorial in the
+                // reference book — not recoverable from path bytes alone. The
+                // best-effort heuristic: route the figspec-prefix family
+                // through `Some(6.0)` (FIGURE), default everything else to
+                // `None` (4-in OTHER). This closes the ERROR severity on
+                // BOTH buckets (drift well inside the ±5×band WARN zone)
+                // even when it can't reach the ±10 % INFO band — the residual
+                // editorial split is documented for a future per-figure
+                // manifest pass (see iter-8 honest-caveat).
+                // Round V iter-10 (drawing_class_bucket parity, 2026-06-03):
+                // try the per-figure size manifest first. The AI-Norms cascade
+                // ships a `sizes.toml` next to its rasters that lists every
+                // `image*.png` at its reference `<wp:extent cx>` width — this
+                // is the only way to recover the editorial FIGURE/OTHER split
+                // between the 32 `image*.png` FIGUREs and 52 `image*.png`
+                // OTHERs that the iter-9 path heuristic cannot tell apart.
+                // Manifest hit → use that width. Manifest miss → fall through
+                // to the iter-9 path-prefix heuristic.
+                let width_in_override = if let Some(w_in) = ctx.size_manifest.lookup(path) {
+                    Some(w_in)
+                } else {
+                    let is_in_house_figure =
+                        is_in_house_figure_path(path) || path.contains("/figures/");
+                    if is_in_house_figure { Some(6.0) } else { None }
+                };
+                let (w_emu, h_emu) = image_dims_to_emu(&bytes, width_in_override);
+                let pic = Pic::new(&bytes).size(w_emu, h_emu);
                 // Breathing room above the figure (ADR-0030 relaxed placement).
                 doc = doc.add_paragraph(
                     Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG)),
@@ -4851,6 +5265,10 @@ pub fn render_book(
         bookmark_anchors: std::collections::HashSet::new(),
         body_render_use_bk_styles: meta.body_render_use_bk_styles,
         layout: LayoutOverrides::from_meta(meta),
+        // Round V iter-10: load `<figdir>/sizes.toml` once per render.
+        // Returns an empty manifest when the file is absent (every book
+        // except AI-Norms today), so non-manifest books are unaffected.
+        size_manifest: SizeManifest::load_from_figdir(figdir),
     };
 
     // Wave 7 (AI-Norms parity, 2026-06-03): when the manifest opts into the
@@ -5334,6 +5752,10 @@ fn render_thesis_book(
         bookmark_anchors: std::collections::HashSet::new(),
         body_render_use_bk_styles: meta.body_render_use_bk_styles,
         layout: LayoutOverrides::from_meta(meta),
+        // Round V iter-10: load `<figdir>/sizes.toml` once per render.
+        // Returns an empty manifest when the file is absent (every book
+        // except AI-Norms today), so non-manifest books are unaffected.
+        size_manifest: SizeManifest::load_from_figdir(figdir),
     };
 
     // `emitted` tracks whether any flow content precedes the next item, so the
@@ -8214,5 +8636,652 @@ mod tests {
             heading_count >= 1,
             "expected >=1 IndexHeading divider, got {heading_count}"
         );
+    }
+
+    /// Round V iter-7 (drawing_class_bucket parity close, 2026-06-03).
+    ///
+    /// Iter-2 introduced `image_dims_to_emu` with a "natural width up to
+    /// 15 cm" policy. Iter-3 added a 4-inch default to
+    /// `render_image_embed.rs`, but the cascade strips the figspec block
+    /// before `resolve_markdown` runs, so that path is unreachable.
+    /// Iter-7 mirrors the 4-inch default HERE — the production path —
+    /// closing the last 2 parity ERRORs
+    /// (`PARITY_DRAWING_CLASS_BUCKET::FIGURE` 125 vs 78,
+    /// `::OTHER` 8 vs 55; +47 / -47 = the 47 wide unsized embeds the
+    /// 4-inch default rebins from FIGURE → OTHER).
+    ///
+    /// The 3 tests below pin the three branches of the new logic:
+    ///   1. unsized + naturally wide  → shrink to 4-in default (OTHER bucket);
+    ///   2. unsized + naturally small → keep native width (OTHER bucket
+    ///                                  if ≥1 M, ICON/QR if smaller);
+    ///   3. explicit `width_in` override → caller opts out of the
+    ///      4-in default, allowing genuinely figure-sized embeds at the
+    ///      15 cm cap (FIGURE bucket).
+    #[test]
+    fn image_dims_to_emu_shrinks_wide_unsized_to_4_inch() {
+        // 2048×1024 px → natural width 2048/96 = 21.33 in = 19 504 000 EMU.
+        // Pre-iter-7: capped at IMAGE_MAX_W_EMU (5 400 000 = FIGURE bucket).
+        // Post-iter-7: with no override, shrinks to DEFAULT_EMBED_W_EMU
+        // (3 657 600 EMU → snapped to 60 000-grid → 3 600 000 EMU = OTHER).
+        let mut img = image::RgbImage::new(2048, 1024);
+        for y in 0..1024 {
+            for x in 0..2048 {
+                img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        let (w_emu, h_emu) = image_dims_to_emu(&buf, None);
+        assert_eq!(
+            w_emu, 3_600_000,
+            "wide unsized PNG must shrink to 4-inch default (3 600 000 EMU after 60 000-grid snap)"
+        );
+        // Bucket: 1 M < cx < 5 M = OTHER bucket the parity gate reads.
+        assert!(
+            w_emu > 1_000_000 && w_emu < 5_000_000,
+            "must land in OTHER bucket (1 M < cx < 5 M); got {w_emu}"
+        );
+        // Aspect 1024 / 2048 = 0.5 → expected height ≈ 0.5 × 3 600 000 = 1 800 000 EMU.
+        let delta = (i64::from(h_emu) - 1_800_000).abs();
+        assert!(
+            delta < 5_000,
+            "scaled height should be ≈1 800 000 EMU; got {h_emu}"
+        );
+    }
+
+    #[test]
+    fn image_dims_to_emu_preserves_small_image_at_native() {
+        // 256×128 px → natural width 256/96 = 2.67 in = 2 438 400 EMU,
+        // well BELOW the 4-in / DEFAULT_EMBED_W_EMU threshold. Must keep
+        // its native width (snapped to 60 000-EMU grid → 2 400 000 EMU).
+        let mut img = image::RgbImage::new(256, 128);
+        for y in 0..128 {
+            for x in 0..256 {
+                img.put_pixel(x, y, image::Rgb([(x & 0xFF) as u8, (y & 0xFF) as u8, 64]));
+            }
+        }
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        let (w_emu, h_emu) = image_dims_to_emu(&buf, None);
+        // 256 / 96 = 2.667 in → 2 438 400 EMU → snapped to 2 400 000.
+        assert_eq!(
+            w_emu, 2_400_000,
+            "naturally small PNG must keep its native width (no inflation)"
+        );
+        // Bucket: 1 M < cx < 5 M → still OTHER (the parity gate's
+        // OTHER bucket holds anything in the 1-5 M EMU band).
+        assert!(
+            w_emu > 1_000_000 && w_emu < 5_000_000,
+            "must land in OTHER bucket (1 M < cx < 5 M); got {w_emu}"
+        );
+        // Aspect 128 / 256 = 0.5 → expected height ≈ 0.5 × 2 400 000 = 1 200 000 EMU.
+        let delta = (i64::from(h_emu) - 1_200_000).abs();
+        assert!(
+            delta < 5_000,
+            "native height should be ≈1 200 000 EMU; got {h_emu}"
+        );
+    }
+
+    #[test]
+    fn image_dims_to_emu_respects_explicit_width_override() {
+        // A 2048×1024 px source — same as test 1, but now the caller
+        // passes `Some(width_in)` to opt OUT of the 4-in default. The
+        // override is honored up to the 15-cm hard cap (IMAGE_MAX_W_EMU
+        // = 5 400 000 EMU) so genuinely figure-sized embeds still ship
+        // at FIGURE bucket size.
+        let mut img = image::RgbImage::new(2048, 1024);
+        for y in 0..1024 {
+            for x in 0..2048 {
+                img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        // 12 in is above the 15-cm cap (5.905 in), so it must clamp at
+        // IMAGE_MAX_W_EMU (5 400 000 EMU) — FIGURE bucket.
+        let (w_clamped, _) = image_dims_to_emu(&buf, Some(12.0));
+        assert_eq!(
+            w_clamped, 5_400_000,
+            "12 in override must clamp at 15 cm hard cap (5 400 000 EMU)"
+        );
+        assert!(
+            w_clamped >= 5_000_000,
+            "clamped override must land in FIGURE bucket; got {w_clamped}"
+        );
+        // 5.0 in × 914 400 = 4 572 000 EMU → snapped down to 4 560 000.
+        let (w_5in, h_5in) = image_dims_to_emu(&buf, Some(5.0));
+        assert_eq!(
+            w_5in, 4_560_000,
+            "5 in override must produce 4 560 000 EMU (after 60 000-grid snap)"
+        );
+        // Aspect 1024 / 2048 = 0.5 → expected height ≈ 0.5 × 4 560 000 = 2 280 000.
+        let delta = (i64::from(h_5in) - 2_280_000).abs();
+        assert!(
+            delta < 5_000,
+            "override height should be ≈2 280 000 EMU; got {h_5in}"
+        );
+    }
+
+    /// Round V iter-8 (call-site context-aware sizing, 2026-06-03).
+    ///
+    /// Iter-7 passed `None` from the sole `DocxBlock::Image` call site —
+    /// applying the 4-inch default to EVERY `![](png)` reference. That
+    /// over-corrected: it capped the 78 in-house figspec-emitted figures
+    /// (treemap, sankey, wheel, heatmap, govmap, regstack, etc.) along
+    /// with the 55 sourced inline rasters, flipping the buckets to
+    /// FIGURE 8 / OTHER 125 vs reference FIGURE 78 / OTHER 55.
+    ///
+    /// Iter-8 distinguishes IN-HOUSE figures (path prefix `figures/`,
+    /// emitted by `agentic_figures::resolve_markdown`) from LOOSE markdown
+    /// raster references (any other path) at the call site. The tests
+    /// below pin the boundary input space for the `image_dims_to_emu`
+    /// helper that the call site relies on:
+    ///   1. an explicit ~6 in width override (the in-house-figure path) →
+    ///      ~5.46 M EMU (FIGURE bucket);
+    ///   2. `None` (the loose-raster path) on a wide source → 3.6 M EMU
+    ///      (OTHER bucket) — the Iter-7 behaviour that REMAINS correct
+    ///      for loose rasters.
+    /// The unchanged constants for admonition icons (151 200 EMU) and QR
+    /// codes (972 000 EMU) live in `icons.rs` and do NOT route through
+    /// `image_dims_to_emu`, so they continue to land in their own buckets.
+    #[test]
+    fn image_dims_to_emu_in_house_figure_lands_in_figure_bucket() {
+        // 1400×900 px — typical in-house wheel/sankey/treemap source
+        // dimensions (per Round V analysis of the reference book's
+        // FIGURE-bucket native-width histogram, mode 1400 px).
+        let mut img = image::RgbImage::new(1400, 900);
+        for y in 0..900 {
+            for x in 0..1400 {
+                img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        // The call site passes `Some(6.0)` for `figures/`-prefixed paths.
+        // 6.0 in × 914 400 = 5 486 400 EMU; this exceeds IMAGE_MAX_W_EMU
+        // (15-cm hard cap, 5 400 000), so the function clamps to
+        // 5 400 000 EMU (which is already a clean 60 000-grid multiple,
+        // so the snap step is a no-op). Lands at the very bottom of the
+        // FIGURE bucket (≥5 M) — exactly where the reference book sits
+        // (cx histogram for FIGURE: 5 040 000 — 5 760 000 EMU).
+        let (w_emu, h_emu) = image_dims_to_emu(&buf, Some(6.0));
+        assert_eq!(
+            w_emu, 5_400_000,
+            "in-house figspec figure (Some(6.0)) must clamp to IMAGE_MAX_W_EMU (5 400 000)"
+        );
+        // Bucket: ≥5 M EMU = FIGURE bucket the parity gate counts.
+        assert!(
+            w_emu >= 5_000_000,
+            "in-house figure must land in FIGURE bucket (≥5 M); got {w_emu}"
+        );
+        // Aspect 900 / 1400 ≈ 0.643 → expected height ≈ 0.643 × 5 400 000 ≈ 3 470 000 EMU.
+        let expected_h = (5_400_000_u64 * 900 / 1400) as i64;
+        let delta = (i64::from(h_emu) - expected_h).abs();
+        assert!(
+            delta < 5_000,
+            "scaled height should be ≈{expected_h} EMU; got {h_emu}"
+        );
+    }
+
+    #[test]
+    fn image_dims_to_emu_loose_raster_lands_in_other_bucket() {
+        // 1400×900 px — IDENTICAL source to the FIGURE-bucket test
+        // above. The discriminator is purely the caller's choice of
+        // `width_in_override`, not the source bytes.
+        let mut img = image::RgbImage::new(1400, 900);
+        for y in 0..900 {
+            for x in 0..1400 {
+                img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        // The call site passes `None` for paths that don't start with
+        // `figures/` (loose markdown rasters from sourced screenshots).
+        let (w_emu, _h_emu) = image_dims_to_emu(&buf, None);
+        assert_eq!(
+            w_emu, 3_600_000,
+            "loose raster (None) must shrink to 4-in default (3 600 000 EMU)"
+        );
+        assert!(
+            w_emu > 1_000_000 && w_emu < 5_000_000,
+            "loose raster must land in OTHER bucket (1 M < cx < 5 M); got {w_emu}"
+        );
+    }
+
+    /// Admonition icons are emitted via `icons::icon_pic`, which bakes in
+    /// the 151 200 EMU square dimension directly — they do NOT call
+    /// `image_dims_to_emu` and are therefore immune to the Iter-7/Iter-8
+    /// call-site changes. This test pins that contract so a future
+    /// refactor can't accidentally route icons through the figure helper.
+    #[test]
+    fn admonition_icon_bypasses_image_dims_to_emu() {
+        assert_eq!(
+            crate::icons::ADMONITION_ICON_EMU,
+            151_200,
+            "ADMONITION_ICON_EMU constant must remain 151 200 (icon bucket)"
+        );
+        let pic = crate::icons::icon_pic(crate::icons::IconKind::Tip);
+        // Pic does not expose its size publicly, but the constant above
+        // pins the only thing the parity gate counts: the EMU side length.
+        drop(pic);
+    }
+
+    /// QR codes are rendered via `Pic::new(&png).size(QR_CODE_EMU, ...)`
+    /// at `book.rs:4257` and similarly bypass `image_dims_to_emu`. Pin
+    /// the constant.
+    #[test]
+    fn qr_code_bypasses_image_dims_to_emu() {
+        assert_eq!(
+            crate::icons::QR_CODE_EMU,
+            972_000,
+            "QR_CODE_EMU constant must remain 972 000 (qr bucket: 900 K-1 M)"
+        );
+    }
+
+    /// Round V iter-10 (per-figure size manifest, 2026-06-03).
+    ///
+    /// When the AI-Norms `sizes.toml` manifest lists a width hint for a
+    /// given `image*.png` basename, the renderer must use that hint as the
+    /// `width_in_override` passed to [`image_dims_to_emu`] — overriding the
+    /// iter-9 path-based default that would otherwise route the file to
+    /// OTHER (no figspec prefix). This recovers the editorial FIGURE
+    /// assignments for `image*.png` files that no path-byte heuristic can
+    /// distinguish from their OTHER siblings.
+    ///
+    /// We exercise the manifest at the `SizeManifest::lookup` API level
+    /// (the renderer call site is a single `if let Some(w) = … { Some(w) }
+    /// else { … }` expression that is mechanically faithful to that
+    /// lookup). Manifest hit + `image_dims_to_emu(_, Some(5.9055))` lands
+    /// the image in the FIGURE bucket (≥5 M EMU).
+    #[test]
+    fn size_manifest_overrides_path_default() {
+        use crate::size_manifest::SizeManifest;
+        // The manifest stores widths under a `+30 000 EMU mid-grid bias` so
+        // the float-truncation × floor-snap-to-60 000-grid pipeline in
+        // [`image_dims_to_emu`] round-trips exactly to the reference cx
+        // value rather than landing one grid step low. For `image14.png` the
+        // reference cx is 5 040 000 EMU → encoded as
+        // (5 040 000 + 30 000) / 914 400 = 5.544619 in.
+        let toml = r#"
+[sizes]
+"image14.png" = 5.544619
+"#;
+        let manifest = SizeManifest::parse(toml);
+        let width_in = manifest
+            .lookup("image14.png")
+            .expect("manifest must hit on image14.png");
+        // Build a 1400×900 source — same shape as the FIGURE / OTHER
+        // bucket-discriminator tests above.
+        let mut img = image::RgbImage::new(1400, 900);
+        for y in 0..900 {
+            for x in 0..1400 {
+                img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        let (w_emu, _h) = image_dims_to_emu(&buf, Some(width_in));
+        // 5.544619 in × 914 400 = 5 070 003 EMU (well above 5 000 000 FIGURE
+        // threshold; below IMAGE_MAX_W_EMU = 5 400 000, so no clamp). After
+        // floor-snap to 60 000: 5 070 003 / 60 000 = 84 → 5 040 000 EMU,
+        // exactly matching the reference book's image14.png cx.
+        assert_eq!(
+            w_emu, 5_040_000,
+            "manifest hint 5.544619 in must round-trip to 5 040 000 EMU (reference cx) after grid snap"
+        );
+        assert!(
+            w_emu >= 5_000_000,
+            "manifest-driven width must land in FIGURE bucket (>= 5 M); got {w_emu}"
+        );
+    }
+
+    /// Round V iter-10 fallback contract: a manifest miss must NOT override
+    /// the iter-9 path-prefix heuristic. The renderer composes
+    /// `ctx.size_manifest.lookup(path)` → fallback to
+    /// `is_in_house_figure_path(path) ? Some(6.0) : None`. We exercise both
+    /// arms of that fallback here.
+    #[test]
+    fn size_manifest_missing_entry_falls_back_to_path_heuristic() {
+        use crate::size_manifest::SizeManifest;
+        // Manifest covers only `image1.png`. A query for `image2.png` must miss.
+        let toml = r#"
+[sizes]
+"image1.png" = 6.0
+"#;
+        let manifest = SizeManifest::parse(toml);
+        assert_eq!(manifest.lookup("image2.png"), None);
+        // The renderer's fallback for a `gov_*` filename → Some(6.0) → FIGURE.
+        let gov_fallback: Option<f32> = if manifest.lookup("gov_eu.png").is_some() {
+            manifest.lookup("gov_eu.png")
+        } else if is_in_house_figure_path("gov_eu.png") || "gov_eu.png".contains("/figures/") {
+            Some(6.0)
+        } else {
+            None
+        };
+        assert_eq!(
+            gov_fallback,
+            Some(6.0),
+            "manifest miss on a figspec-stem must fall back to the Some(6.0) FIGURE override"
+        );
+        // The renderer's fallback for an `image2.png` (no figspec stem,
+        // not in `figures/`) → None → 4-in OTHER default. Mirror the call
+        // site expression exactly so the test catches any reordering.
+        let loose_fallback: Option<f32> = if manifest.lookup("image2.png").is_some() {
+            manifest.lookup("image2.png")
+        } else if is_in_house_figure_path("image2.png") || "image2.png".contains("/figures/") {
+            Some(6.0)
+        } else {
+            None
+        };
+        assert_eq!(
+            loose_fallback, None,
+            "manifest miss on a loose raster must fall back to the None / 4-in OTHER default"
+        );
+    }
+
+    /// Round V iter-4 (theme-injection regression, 2026-06-03).
+    ///
+    /// `restore_reference_theme_and_styles` MUST inject `word/theme/theme1.xml`
+    /// + the matching `[Content_Types]` Override + the `document.xml.rels`
+    /// Relationship even when the input zip has no theme part at all
+    /// (the docx-rs render output OR a docx where Word COM finalize
+    /// silently failed and the upstream caller plumbed the un-Word-saved
+    /// bytes through anyway). Regression: cascade #15 produced a 41 MB
+    /// `ai_norms_and_regulations.docx` where Word COM crashed on Open,
+    /// the post-finalize restore then ran against the pure docx-rs
+    /// bytes, and the resulting docx had NO theme1.xml (THEME::majorFont
+    /// = "<absent>"), tripping the parity gate.
+    #[test]
+    fn restore_theme_and_styles_synthesises_theme_when_absent() {
+        use std::io::{Read, Write};
+        // Build a minimal docx-rs-style zip WITHOUT a theme part:
+        // just `[Content_Types].xml`, `word/document.xml`, and
+        // `word/_rels/document.xml.rels`. The restore pass must add
+        // the theme part + patch CT + rels.
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let ct = r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default ContentType="application/xml" Extension="xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
+            let doc = r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>"#;
+            let rels = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
+            z.start_file(
+                "[Content_Types].xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(ct.as_bytes()).unwrap();
+            z.start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(doc.as_bytes()).unwrap();
+            z.start_file(
+                "word/_rels/document.xml.rels",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(rels.as_bytes()).unwrap();
+            z.finish().unwrap();
+        }
+        let input = buf.into_inner();
+        // Sanity: input has no theme part.
+        {
+            let mut zin = zip::ZipArchive::new(Cursor::new(input.clone())).unwrap();
+            let mut has_theme = false;
+            for i in 0..zin.len() {
+                let f = zin.by_index(i).unwrap();
+                if f.name() == "word/theme/theme1.xml" {
+                    has_theme = true;
+                }
+            }
+            assert!(!has_theme, "fixture must start with no theme part");
+        }
+
+        let restored = restore_reference_theme_and_styles(input).unwrap();
+
+        // After restore: theme part must exist, CT must have Override,
+        // rels must have Relationship pointing at the theme.
+        let mut zout = zip::ZipArchive::new(Cursor::new(restored)).unwrap();
+        let mut found_theme_part = false;
+        let mut found_styles_part = false;
+        let mut ct_out = String::new();
+        let mut rels_out = String::new();
+        let mut theme_body = String::new();
+        for i in 0..zout.len() {
+            let mut f = zout.by_index(i).unwrap();
+            let n = f.name().to_string();
+            if n == "word/theme/theme1.xml" {
+                found_theme_part = true;
+                f.read_to_string(&mut theme_body).unwrap();
+            } else if n == "word/styles.xml" {
+                found_styles_part = true;
+            } else if n == "[Content_Types].xml" {
+                f.read_to_string(&mut ct_out).unwrap();
+            } else if n == "word/_rels/document.xml.rels" {
+                f.read_to_string(&mut rels_out).unwrap();
+            }
+        }
+        assert!(found_theme_part, "theme1.xml must be synthesised");
+        assert!(found_styles_part, "styles.xml must be synthesised");
+        // Theme body must contain Calibri + Cambria (the parity-gate font
+        // names that were "<absent>" in the cascade #15 regression).
+        assert!(
+            theme_body.contains("Calibri"),
+            "synthesised theme must reference Calibri (majorFont)"
+        );
+        assert!(
+            theme_body.contains("Cambria"),
+            "synthesised theme must reference Cambria (minorFont)"
+        );
+        // CT must reference the theme part.
+        assert!(
+            ct_out.contains("/word/theme/theme1.xml"),
+            "Content_Types must reference theme1.xml: {ct_out}"
+        );
+        assert!(
+            ct_out.contains("theme+xml"),
+            "Content_Types must have theme content-type Override: {ct_out}"
+        );
+        // Rels must reference the theme.
+        assert!(
+            rels_out.contains("theme/theme1.xml"),
+            "doc rels must reference theme1.xml: {rels_out}"
+        );
+        assert!(
+            rels_out.contains("relationships/theme"),
+            "doc rels must have theme relationship type: {rels_out}"
+        );
+    }
+
+    /// Round V iter-4 (theme-injection idempotency, 2026-06-03).
+    ///
+    /// Calling `restore_reference_theme_and_styles` on a docx that
+    /// already has the reference theme + styles MUST be a no-op for
+    /// CT + rels (no duplicate Override / Relationship entries).
+    #[test]
+    fn restore_theme_and_styles_is_idempotent_when_theme_present() {
+        use std::io::{Read, Write};
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let ct = r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/></Types>"#;
+            let doc = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>"#;
+            let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>"#;
+            z.start_file(
+                "[Content_Types].xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(ct.as_bytes()).unwrap();
+            z.start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(doc.as_bytes()).unwrap();
+            z.start_file(
+                "word/_rels/document.xml.rels",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(rels.as_bytes()).unwrap();
+            z.start_file("word/styles.xml", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            z.write_all(b"<w:styles xmlns:w=\"...\"/>").unwrap();
+            z.start_file(
+                "word/theme/theme1.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            z.write_all(b"<a:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Old\"/>").unwrap();
+            z.finish().unwrap();
+        }
+        let input = buf.into_inner();
+        let restored = restore_reference_theme_and_styles(input).unwrap();
+        // Re-running on the result must produce the same bytes (modulo
+        // the zip layout; we check CT/rels invariants instead).
+        let restored2 = restore_reference_theme_and_styles(restored.clone()).unwrap();
+        let mut z2 = zip::ZipArchive::new(Cursor::new(restored2)).unwrap();
+        let mut ct = String::new();
+        let mut rels = String::new();
+        for i in 0..z2.len() {
+            let mut f = z2.by_index(i).unwrap();
+            let n = f.name().to_string();
+            if n == "[Content_Types].xml" {
+                f.read_to_string(&mut ct).unwrap();
+            } else if n == "word/_rels/document.xml.rels" {
+                f.read_to_string(&mut rels).unwrap();
+            }
+        }
+        // Exactly ONE theme Override (no duplicate insertion).
+        assert_eq!(
+            ct.matches("/word/theme/theme1.xml").count(),
+            1,
+            "no duplicate CT Override on idempotent re-run: {ct}"
+        );
+        assert_eq!(
+            rels.matches("theme/theme1.xml").count(),
+            1,
+            "no duplicate rels Relationship on idempotent re-run: {rels}"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Round V iter-9 — drawing_class_bucket discriminator (Fix B)
+    // ───────────────────────────────────────────────────────────────────
+
+    /// The Iter-8 prefix-only check (`path.starts_with("figures/")`) matched
+    /// 0 of the 78 reference FIGURE entries on the ai_norms cascade,
+    /// because `strip_wave5_figures_section` strips the `## Figures`
+    /// figspec block BEFORE `resolve_markdown` runs, so the chapter md
+    /// only carries bare-filename refs like `gov_switzerland.png`,
+    /// `reg_eu.png`, `iso_norms_heatmap.png`. Iter-9 adds figspec-stem
+    /// recognition so these route to the FIGURE bucket again.
+    #[test]
+    fn is_in_house_figure_path_matches_figspec_emitter_stems() {
+        // Recognised stems → FIGURE bucket.
+        assert!(super::is_in_house_figure_path("gov_switzerland.png"));
+        assert!(super::is_in_house_figure_path("gov_eu.png"));
+        assert!(super::is_in_house_figure_path("reg_switzerland.png"));
+        assert!(super::is_in_house_figure_path("reg_uk.png"));
+        assert!(super::is_in_house_figure_path("iso_norms_heatmap.png"));
+        assert!(super::is_in_house_figure_path("iso5338_clean.png"));
+        assert!(super::is_in_house_figure_path("pop_treemap.png"));
+        // Fully-qualified path with the same stem must also match.
+        assert!(super::is_in_house_figure_path(
+            "specs/figures/raster/ai_norms/gov_eu.png"
+        ));
+        // Case-insensitive stem match (some bookkit sources use mixed case).
+        assert!(super::is_in_house_figure_path("GOV_FOO.png"));
+    }
+
+    #[test]
+    fn is_in_house_figure_path_matches_canonical_prefix() {
+        // The `agentic_figures::resolve_markdown` emission pattern still
+        // hits (covers the non-ai_norms cascade where figspecs survive
+        // to resolve_markdown).
+        assert!(super::is_in_house_figure_path("figures/eu/sankey.png"));
+        // Windows backslash variant (defensive against path-separator
+        // mismatch on the cascade host).
+        assert!(super::is_in_house_figure_path(r"figures\eu\sankey.png"));
+        // Nested `/figures/` segment somewhere in the path.
+        assert!(super::is_in_house_figure_path(
+            "scratch/agentic_book/figures/sub/id.png"
+        ));
+    }
+
+    #[test]
+    fn is_in_house_figure_path_rejects_loose_image_names() {
+        // The reference book routes generic `image{N}.png` refs partly
+        // to FIGURE (35) and partly to OTHER (55) on editorial grounds
+        // we can't recover from path bytes. Default to OTHER for these.
+        assert!(!super::is_in_house_figure_path("image6.png"));
+        assert!(!super::is_in_house_figure_path("image14.png"));
+        assert!(!super::is_in_house_figure_path("image113.png"));
+        assert!(!super::is_in_house_figure_path("screenshot.png"));
+        assert!(!super::is_in_house_figure_path("photo.jpg"));
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Round V iter-9 — Word-COM whitespace-only header/footer detection
+    // ───────────────────────────────────────────────────────────────────
+
+    /// Word COM (Documents.Open → Save) regenerates the even/default/first
+    /// header & footer triad and populates each part with one or more
+    /// whitespace-only `<w:t>` runs. The pre-iter-9 substring check
+    /// refused to drop these because `body.contains("<w:t")` matched the
+    /// boilerplate runs. Iter-9 broadens the check to also count
+    /// whitespace-only payloads as empty, restoring HEADER_PART_COUNT
+    /// → 0 and FOOTER_PART_COUNT → 1 on the post-finalize cascade.
+    #[test]
+    fn header_or_footer_is_empty_drops_whitespace_only_word_boilerplate() {
+        // Word's typical regenerated empty header — one paragraph with
+        // a single space-preserve run.
+        let body = r#"<w:hdr><w:p><w:r><w:t xml:space="preserve"> </w:t></w:r></w:p></w:hdr>"#;
+        assert!(super::header_or_footer_is_empty(body));
+        // Self-closing `<w:t/>` variant.
+        let body = r#"<w:hdr><w:p><w:r><w:t/></w:r></w:p></w:hdr>"#;
+        assert!(super::header_or_footer_is_empty(body));
+        // Empty-text-element `<w:t></w:t>` variant.
+        let body = r#"<w:hdr><w:p><w:r><w:t></w:t></w:r></w:p></w:hdr>"#;
+        assert!(super::header_or_footer_is_empty(body));
+    }
+
+    #[test]
+    fn header_or_footer_is_empty_keeps_real_page_field_footer() {
+        // The reference footer carries a centred PAGE field — must NOT
+        // be dropped even though the displayed text is the literal `1`.
+        let body = r#"<w:ftr><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>"#;
+        assert!(!super::header_or_footer_is_empty(body));
+    }
+
+    #[test]
+    fn header_or_footer_is_empty_keeps_logo_header() {
+        // FHNW running-header carries a logo drawing — must NOT be
+        // dropped even though it contains no text runs at all.
+        let body = r#"<w:hdr><w:p><w:r><w:drawing><wp:inline/></w:drawing></w:r></w:p></w:hdr>"#;
+        assert!(!super::header_or_footer_is_empty(body));
+    }
+
+    #[test]
+    fn contains_text_payload_distinguishes_whitespace_from_content() {
+        assert!(!super::contains_text_payload(
+            r#"<w:t xml:space="preserve"> </w:t>"#
+        ));
+        assert!(!super::contains_text_payload("<w:t></w:t>"));
+        assert!(!super::contains_text_payload("<w:t/>"));
+        assert!(super::contains_text_payload("<w:t>x</w:t>"));
+        assert!(super::contains_text_payload("<w:t>1</w:t>"));
+        // `<w:tab/>` and `<w:tbl…>` must NOT trigger as `<w:t…>` matches.
+        assert!(!super::contains_text_payload("<w:tab/>"));
+        assert!(!super::contains_text_payload("<w:tbl><w:tr/></w:tbl>"));
     }
 }

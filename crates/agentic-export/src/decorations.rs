@@ -188,10 +188,42 @@ pub fn apply_callout_chrome(doc: &str) -> String {
 /// Returns `(new_inner, true)` if a flavor sentinel was found and
 /// decorated, or `(old_inner.to_string(), false)` otherwise. Public
 /// for test access only.
+///
+/// Round V iter-2 (BkCallout decoration parity, 2026-06-03): when a
+/// paragraph carries `<w:pStyle w:val="BkCallout"/>` but no flavor
+/// sentinel (e.g. emitted by an uninstrumented call site such as
+/// `closing_thought_block` or a future emitter), it falls back to
+/// [`CalloutFlavor::Generic`] (`1F3864` border / `EEF2F8` fill). Pure
+/// non-callout paragraphs are still left untouched.
+///
+/// Round V iter-3 (BkCallout unknown-flavor parity, 2026-06-03):
+/// idempotent-normalisation extension — when a BkCallout paragraph
+/// already carries pBdr+shd chrome but the (border, fill) pair does
+/// NOT match any documented [`CalloutFlavor`], the chrome is stripped
+/// and replaced with Generic. This closes the WARN stragglers reported
+/// by `parity_icons::check_bkcallout_decoration` when an emitter
+/// hard-coded an off-flavour colour pair.
 fn decorate_one_paragraph(inner: &str) -> (String, bool) {
     // 1) Find a flavor sentinel `<w:bookmarkStart … w:name="BkFlavor:…"/>`.
     //    Match liberally on attribute order.
     let Some(name_start) = inner.find(r#"w:name="BkFlavor:"#) else {
+        // No sentinel → handle BkCallout paragraphs as follows:
+        //   (a) no chrome at all              → inject Generic chrome
+        //   (b) chrome present, KNOWN flavor  → leave untouched (idempotent)
+        //   (c) chrome present, UNKNOWN flavor → strip + replace with Generic
+        if paragraph_is_bkcallout(inner) {
+            if !paragraph_has_chrome(inner) {
+                // case (a)
+                let decorated = inject_chrome_into_ppr(inner, CalloutFlavor::Generic);
+                return (decorated, true);
+            }
+            if !paragraph_chrome_is_known_flavor(inner) {
+                // case (c): replace off-flavour chrome with Generic
+                let decorated = inject_chrome_into_ppr(inner, CalloutFlavor::Generic);
+                return (decorated, true);
+            }
+            // case (b) — known flavour, leave alone.
+        }
         return (inner.to_string(), false);
     };
     // Recover the flavor name (closing quote terminates it).
@@ -255,6 +287,106 @@ fn extract_bookmark_id(start_tag: &str) -> Option<String> {
     let key = "w:id=\"";
     let idx = start_tag.find(key)?;
     let after = &start_tag[idx + key.len()..];
+    let end = after.find('"')?;
+    Some(after[..end].to_string())
+}
+
+/// Cheap sniff: does the paragraph inner carry
+/// `<w:pStyle w:val="BkCallout"/>` somewhere in its pPr? Used by the
+/// fallback path in [`decorate_one_paragraph`] when no flavor sentinel
+/// is present. Restricts the scan to the pPr region (capped at the
+/// first `<w:r` / `</w:pPr>` boundary) so a body run that happens to
+/// contain the literal string `BkCallout` does not trigger a
+/// false-positive decoration.
+fn paragraph_is_bkcallout(inner: &str) -> bool {
+    let cap = inner
+        .find("</w:pPr>")
+        .map(|i| i + "</w:pPr>".len())
+        .or_else(|| inner.find("<w:r>"))
+        .or_else(|| inner.find("<w:r "))
+        .unwrap_or(inner.len());
+    inner[..cap].contains(r#"w:pStyle w:val="BkCallout""#)
+}
+
+/// Cheap sniff: does the paragraph's pPr already carry BOTH `<w:pBdr>`
+/// AND `<w:shd …/>` chrome? Used by the fallback path so the second
+/// `apply_callout_chrome` pass on already-decorated XML is a no-op.
+fn paragraph_has_chrome(inner: &str) -> bool {
+    let cap = inner
+        .find("</w:pPr>")
+        .map(|i| i + "</w:pPr>".len())
+        .unwrap_or(inner.len());
+    let ppr = &inner[..cap];
+    ppr.contains("<w:pBdr>") && ppr.contains("<w:shd ")
+}
+
+/// Round V iter-3 (BkCallout unknown-flavor normalization, 2026-06-03).
+///
+/// Read the `(border colour, shd fill)` pair from a paragraph's pPr and
+/// return `true` iff it matches one of the documented [`CalloutFlavor`]
+/// variants (the 5 entries `Tip / Note / Warning / Generic / Keypoints`,
+/// which exactly mirror the parity gate's `REF_CALLOUT_FLAVORS`).
+///
+/// `false` when chrome is absent, when only one of the two is present,
+/// or when the (border, fill) pair is not a known flavour. The fallback
+/// path in [`decorate_one_paragraph`] uses this to overwrite off-flavour
+/// chrome with `Generic`.
+fn paragraph_chrome_is_known_flavor(inner: &str) -> bool {
+    let cap = inner
+        .find("</w:pPr>")
+        .map(|i| i + "</w:pPr>".len())
+        .unwrap_or(inner.len());
+    let ppr = &inner[..cap];
+    let Some(border) = sniff_pbdr_color(ppr) else {
+        return false;
+    };
+    let Some(fill) = sniff_shd_fill(ppr) else {
+        return false;
+    };
+    for flavor in [
+        CalloutFlavor::Tip,
+        CalloutFlavor::Note,
+        CalloutFlavor::Warning,
+        CalloutFlavor::Generic,
+        CalloutFlavor::Keypoints,
+    ] {
+        if border.eq_ignore_ascii_case(flavor.border_hex())
+            && fill.eq_ignore_ascii_case(flavor.fill_hex())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract the FIRST `w:color="…"` attribute value inside a `<w:pBdr>`
+/// block; case-preserved hex (caller compares case-insensitively).
+fn sniff_pbdr_color(ppr: &str) -> Option<String> {
+    let bdr_open = ppr.find("<w:pBdr>")?;
+    let bdr_close = ppr[bdr_open..]
+        .find("</w:pBdr>")
+        .map(|n| bdr_open + n)
+        .unwrap_or(ppr.len());
+    let bdr = &ppr[bdr_open..bdr_close];
+    let key = r#"w:color=""#;
+    let k = bdr.find(key)?;
+    let after = &bdr[k + key.len()..];
+    let end = after.find('"')?;
+    Some(after[..end].to_string())
+}
+
+/// Extract the `w:fill="…"` attribute value inside the first
+/// `<w:shd …/>` element of the pPr; case-preserved hex.
+fn sniff_shd_fill(ppr: &str) -> Option<String> {
+    let shd_open = ppr.find("<w:shd ")?;
+    let shd_close = ppr[shd_open..]
+        .find("/>")
+        .map(|n| shd_open + n)
+        .unwrap_or(ppr.len());
+    let shd = &ppr[shd_open..shd_close];
+    let key = r#"w:fill=""#;
+    let k = shd.find(key)?;
+    let after = &shd[k + key.len()..];
     let end = after.find('"')?;
     Some(after[..end].to_string())
 }
@@ -546,5 +678,161 @@ mod tests {
         let s = horizontal_rule_xml("1F3864", 12);
         assert!(s.contains(r#"<w:bottom w:val="single" w:sz="12" w:space="1" w:color="1F3864"/>"#));
         assert!(s.starts_with("<w:p>") && s.ends_with("</w:p>"));
+    }
+
+    /// Round V iter-2: a `BkCallout`-styled paragraph WITHOUT a flavor
+    /// sentinel (e.g. emitted by `closing_thought_block`) must fall
+    /// back to `Generic` (`1F3864` border / `EEF2F8` fill) so the
+    /// parity sub-check sees pBdr + shd on every BkCallout paragraph.
+    #[test]
+    fn bkcallout_without_sentinel_falls_back_to_generic() {
+        let para_inner = concat!(
+            r#"<w:pPr><w:pStyle w:val="BkCallout"/></w:pPr>"#,
+            r#"<w:r><w:t>Closing thought</w:t></w:r>"#,
+        );
+        let (decorated, did) = decorate_one_paragraph(para_inner);
+        assert!(
+            did,
+            "must decorate a BkCallout paragraph even without sentinel"
+        );
+        assert!(
+            decorated.contains(r#"w:color="1F3864""#),
+            "generic border colour must be 1F3864: {decorated}"
+        );
+        assert!(
+            decorated.contains(r#"w:fill="EEF2F8""#),
+            "generic fill colour must be EEF2F8: {decorated}"
+        );
+        let pbdr_at = decorated.find("<w:pBdr>").expect("pBdr injected");
+        let shd_at = decorated.find("<w:shd ").expect("shd injected");
+        assert!(pbdr_at < shd_at, "pBdr MUST precede shd in pPr");
+    }
+
+    /// Non-callout paragraphs (no `BkCallout` pStyle and no sentinel)
+    /// must remain untouched — the fallback path is restricted to
+    /// paragraphs that actually carry the BkCallout style.
+    #[test]
+    fn non_bkcallout_paragraph_unchanged_by_fallback() {
+        let para_inner = concat!(
+            r#"<w:pPr><w:pStyle w:val="BkBody"/></w:pPr>"#,
+            r#"<w:r><w:t>regular body text</w:t></w:r>"#,
+        );
+        let (decorated, did) = decorate_one_paragraph(para_inner);
+        assert!(!did, "non-callout paragraph must not be decorated");
+        assert_eq!(decorated, para_inner);
+    }
+
+    /// Round V iter-3: a BkCallout paragraph that already carries chrome
+    /// but with NON-canonical colours (e.g. a future emitter that
+    /// hard-coded an off-flavour border/fill pair) must be normalised
+    /// to `Generic` so the parity gate doesn't count it as
+    /// `unknown_flavor`. This is the idempotent-normalization fix.
+    #[test]
+    fn bkcallout_with_unknown_chrome_normalized_to_generic() {
+        let para_inner = concat!(
+            r#"<w:pPr><w:pStyle w:val="BkCallout"/>"#,
+            // Off-flavour chrome: a teal border + lavender fill that
+            // matches none of the documented flavours.
+            r#"<w:pBdr><w:left w:val="single" w:sz="24" w:space="8" w:color="00CED1"/></w:pBdr>"#,
+            r#"<w:shd w:val="clear" w:color="auto" w:fill="DAB6FB"/>"#,
+            r#"</w:pPr>"#,
+            r#"<w:r><w:t>weird</w:t></w:r>"#,
+        );
+        let (decorated, did) = decorate_one_paragraph(para_inner);
+        assert!(
+            did,
+            "off-flavour BkCallout chrome must be normalised: {decorated}"
+        );
+        // The teal border must be gone, replaced by Generic navy.
+        assert!(
+            !decorated.contains(r#"w:color="00CED1""#),
+            "off-flavour border must be stripped: {decorated}"
+        );
+        assert!(
+            !decorated.contains(r#"w:fill="DAB6FB""#),
+            "off-flavour fill must be stripped: {decorated}"
+        );
+        assert!(
+            decorated.contains(r#"w:color="1F3864""#),
+            "Generic border must replace: {decorated}"
+        );
+        assert!(
+            decorated.contains(r#"w:fill="EEF2F8""#),
+            "Generic fill must replace: {decorated}"
+        );
+    }
+
+    /// A BkCallout paragraph that already carries one of the documented
+    /// flavours (e.g. `Tip = 2E7D32 / EAF6EC`) must NOT be touched by
+    /// the fallback path — preserves the idempotency contract.
+    #[test]
+    fn bkcallout_with_known_flavor_chrome_untouched() {
+        let para_inner = concat!(
+            r#"<w:pPr><w:pStyle w:val="BkCallout"/>"#,
+            r#"<w:pBdr><w:left w:val="single" w:sz="24" w:space="8" w:color="2E7D32"/></w:pBdr>"#,
+            r#"<w:shd w:val="clear" w:color="auto" w:fill="EAF6EC"/>"#,
+            r#"</w:pPr>"#,
+            r#"<w:r><w:t>tip body</w:t></w:r>"#,
+        );
+        let (decorated, did) = decorate_one_paragraph(para_inner);
+        assert!(!did, "known-flavour chrome must be left as-is");
+        assert_eq!(decorated, para_inner);
+    }
+
+    /// The Note flavour (`1F3864 / EAF1FB`) is a documented flavour
+    /// even though its fill differs from Generic. Must not be normalised.
+    #[test]
+    fn bkcallout_with_note_chrome_untouched() {
+        let para_inner = concat!(
+            r#"<w:pPr><w:pStyle w:val="BkCallout"/>"#,
+            r#"<w:pBdr><w:left w:val="single" w:sz="24" w:space="8" w:color="1F3864"/></w:pBdr>"#,
+            r#"<w:shd w:val="clear" w:color="auto" w:fill="EAF1FB"/>"#,
+            r#"</w:pPr>"#,
+            r#"<w:r><w:t>note body</w:t></w:r>"#,
+        );
+        let (decorated, did) = decorate_one_paragraph(para_inner);
+        assert!(!did, "Note flavour must be a recognised documented flavour");
+        assert_eq!(decorated, para_inner);
+    }
+
+    /// Sniff helpers must extract the colour/fill out of plausible pPr
+    /// shapes and return `None` when the attribute is missing.
+    #[test]
+    fn sniff_helpers_extract_colour_and_fill() {
+        let ppr = r#"<w:pPr><w:pBdr><w:left w:val="single" w:sz="24" w:space="8" w:color="1F3864"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="EAF1FB"/></w:pPr>"#;
+        assert_eq!(sniff_pbdr_color(ppr).as_deref(), Some("1F3864"));
+        assert_eq!(sniff_shd_fill(ppr).as_deref(), Some("EAF1FB"));
+        // Absent chrome → None.
+        let bare = r#"<w:pPr><w:pStyle w:val="BkCallout"/></w:pPr>"#;
+        assert!(sniff_pbdr_color(bare).is_none());
+        assert!(sniff_shd_fill(bare).is_none());
+    }
+
+    /// The full pipeline: a body with one sentinel-decorated callout
+    /// and one bare BkCallout (no sentinel) must end up with chrome
+    /// on BOTH paragraphs.
+    #[test]
+    fn apply_callout_chrome_decorates_bare_bkcallout_too() {
+        let body = concat!(
+            r#"<w:body>"#,
+            // sentinelled tip
+            r#"<w:p><w:pPr><w:pStyle w:val="BkCallout"/></w:pPr>"#,
+            r#"<w:bookmarkStart w:id="100200" w:name="BkFlavor:tip"/>"#,
+            r#"<w:bookmarkEnd w:id="100200"/>"#,
+            r#"<w:r><w:t>tip</w:t></w:r></w:p>"#,
+            // bare BkCallout (no sentinel — e.g. closing-thought)
+            r#"<w:p><w:pPr><w:pStyle w:val="BkCallout"/></w:pPr>"#,
+            r#"<w:r><w:t>closing</w:t></w:r></w:p>"#,
+            r#"</w:body>"#,
+        );
+        let out = apply_callout_chrome(body);
+        // Tip flavor colour appears once.
+        assert_eq!(out.matches(r#"w:color="2E7D32""#).count(), 1);
+        // Generic flavor colour appears once (the bare BkCallout fallback).
+        assert_eq!(out.matches(r#"w:color="1F3864""#).count(), 1);
+        // Both pBdr blocks present.
+        assert_eq!(out.matches("<w:pBdr>").count(), 2);
+        // Both shd blocks present.
+        assert_eq!(out.matches("<w:shd ").count(), 2);
     }
 }

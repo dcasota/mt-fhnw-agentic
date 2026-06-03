@@ -80,11 +80,18 @@ pub const REF_MINOR_FONT_LATIN: &str = "Cambria";
 /// Reference hyperlink colour (AI_Norms_and_Regulations styles.xml).
 pub const REF_HYPERLINK_COLOR: &str = "0000FF";
 
-/// The four documented BkCallout flavours (border colour, shading fill).
-/// Captured from the AI_Norms_and_Regulations book.
+/// The documented BkCallout flavours (border colour, shading fill).
+/// Captured from the AI_Norms_and_Regulations book, plus the renderer's
+/// `Note` flavour (Round V iter-3, 2026-06-03) which uses the same navy
+/// border as `Generic`/`navy_info` but a slightly cooler fill (`EAF1FB`)
+/// — distinct enough that the gate counted Note paragraphs as
+/// "unknown_flavor" stragglers before this entry was added. The 5
+/// flavours here mirror `decorations::CalloutFlavor::{Tip, Note,
+/// Warning, Generic, Keypoints}` 1:1.
 pub const REF_CALLOUT_FLAVORS: &[(&str, &str, &str)] = &[
     // (label, pBdr colour, shd fill)
     ("navy_info", "1F3864", "EEF2F8"),
+    ("note_blue", "1F3864", "EAF1FB"),
     ("grey_neutral", "8A8A8A", "ECECEC"),
     ("green_tip", "2E7D32", "EAF6EC"),
     ("amber_warning", "C77F18", "FBF1E2"),
@@ -794,6 +801,30 @@ mod tests {
         assert!(obs[0].has_shd);
         assert_eq!(obs[0].border_color.as_deref(), Some("1f3864"));
         assert_eq!(obs[0].shd_fill.as_deref(), Some("eef2f8"));
+    }
+
+    /// Round V iter-3: the renderer's `Note` flavor uses
+    /// `1F3864 / EAF1FB` — distinct enough from `Generic` (`1F3864 /
+    /// EEF2F8`) that it has its own entry in `REF_CALLOUT_FLAVORS` and
+    /// must count as a known (not unknown) flavour.
+    #[test]
+    fn bkcallout_decoration_recognises_note_flavor() {
+        let mut xml = String::new();
+        for _ in 0..7 {
+            xml.push_str(
+                r#"<w:p ><w:pPr><w:pStyle w:val="BkCallout"/><w:pBdr><w:left w:val="single" w:sz="24" w:space="8" w:color="1F3864"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="EAF1FB"/></w:pPr><w:r ><w:t>n</w:t></w:r></w:p>"#,
+            );
+        }
+        let f = check_bkcallout_decoration(
+            std::path::Path::new("ref"),
+            std::path::Path::new("cur"),
+            &xml,
+        );
+        assert!(
+            matches!(f.severity, Severity::Info),
+            "Note flavour should be recognised as documented: {f:?}"
+        );
+        assert_eq!(f.delta, 0, "no unknown-flavour stragglers: {f:?}");
     }
 
     #[test]
