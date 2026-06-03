@@ -3563,7 +3563,8 @@ fn insert_index_section_breaks(doc: &str) -> String {
         return doc.to_string();
     }
     // 2-col continuous sectPr (opens the Index region).
-    let two_col_sectpr = "<w:sectPr><w:type w:val=\"continuous\"/><w:cols w:num=\"2\" w:space=\"708\"/></w:sectPr>";
+    let two_col_sectpr =
+        "<w:sectPr><w:type w:val=\"continuous\"/><w:cols w:num=\"2\" w:space=\"708\"/></w:sectPr>";
     // 1-col continuous sectPr (closes the Index region, restores 1-col).
     let one_col_sectpr =
         "<w:sectPr><w:type w:val=\"continuous\"/><w:cols w:space=\"708\"/></w:sectPr>";
@@ -4027,11 +4028,13 @@ fn flush_sources(
                 ),
             );
         let qr_para = match qr_png(url) {
-            Some(png) => Paragraph::new()
-                .align(AlignmentType::Center)
-                .add_run(Run::new().add_image(
-                    Pic::new(&png).size(crate::icons::QR_CODE_EMU, crate::icons::QR_CODE_EMU),
-                )),
+            Some(png) => {
+                Paragraph::new()
+                    .align(AlignmentType::Center)
+                    .add_run(Run::new().add_image(
+                        Pic::new(&png).size(crate::icons::QR_CODE_EMU, crate::icons::QR_CODE_EMU),
+                    ))
+            }
             None => Paragraph::new()
                 .align(AlignmentType::Center)
                 .add_run(Run::new().add_text("[QR]").size(16).color(GREY)),
@@ -4147,10 +4150,8 @@ fn render_block(
             if !ctx.body_render_use_bk_styles {
                 p = p.line_spacing(body_spacing());
             }
-            if let Some(a) = body_alignment_override(
-                ctx.typography,
-                ctx.body_render_use_bk_styles,
-            ) {
+            if let Some(a) = body_alignment_override(ctx.typography, ctx.body_render_use_bk_styles)
+            {
                 p = p.align(a);
             }
             if ctx.body_render_use_bk_styles {
@@ -4193,10 +4194,8 @@ fn render_block(
             if !ctx.body_render_use_bk_styles {
                 p = p.line_spacing(body_spacing());
             }
-            if let Some(a) = body_alignment_override(
-                ctx.typography,
-                ctx.body_render_use_bk_styles,
-            ) {
+            if let Some(a) = body_alignment_override(ctx.typography, ctx.body_render_use_bk_styles)
+            {
                 p = p.align(a);
             }
             if ctx.body_render_use_bk_styles {
@@ -5021,9 +5020,8 @@ pub fn render_book(
     // books on the historical 1-col Index. The matching CLOSE sentinel
     // is emitted at the end of the Index body further down.
     if meta.body_render_use_bk_styles {
-        doc = doc.add_paragraph(
-            Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_OPEN__")),
-        );
+        doc = doc
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_OPEN__")));
     }
     doc = doc.add_paragraph(
         Paragraph::new().style(index_h1_style).add_run(
@@ -5106,9 +5104,8 @@ pub fn render_book(
     // rewrites it into a 1-col continuous sectPr so any tail content (and
     // Word's implicit doc-end sectPr) resumes single-column flow.
     if meta.body_render_use_bk_styles {
-        doc = doc.add_paragraph(
-            Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_CLOSE__")),
-        );
+        doc = doc
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_CLOSE__")));
     }
 
     let mut cur = Cursor::new(Vec::<u8>::new());
@@ -5544,7 +5541,8 @@ mod tests {
     /// sentinels must pass through byte-for-byte.
     #[test]
     fn index_section_breaks_rewrite_sentinels() {
-        let no_sentinels = "<w:document><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>";
+        let no_sentinels =
+            "<w:document><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>";
         assert_eq!(insert_index_section_breaks(no_sentinels), no_sentinels);
 
         let with_sentinels = "<w:document><w:body>\
@@ -7326,13 +7324,17 @@ mod tests {
         let needle = "w:pStyle w:val=\"BkBullet\"";
         let bk_at = xml.find(needle).expect("BkBullet pStyle must be present");
         // Walk back to find the enclosing <w:p ...> start.
-        let p_start = xml[..bk_at].rfind("<w:p ").or_else(|| xml[..bk_at].rfind("<w:p>"))
+        let p_start = xml[..bk_at]
+            .rfind("<w:p ")
+            .or_else(|| xml[..bk_at].rfind("<w:p>"))
             .expect("found enclosing <w:p>");
         let p_end_rel = xml[p_start..].find("</w:p>").expect("found </w:p>");
         let p_block = &xml[p_start..p_start + p_end_rel];
         // The pPr block ends at </w:pPr> — only assert on the pPr, not on
         // run-level w:rPr (which is unrelated).
-        let ppr_end = p_block.find("</w:pPr>").expect("pPr present on styled <w:p>");
+        let ppr_end = p_block
+            .find("</w:pPr>")
+            .expect("pPr present on styled <w:p>");
         let ppr = &p_block[..ppr_end];
         assert!(
             !ppr.contains("w:spacing"),

@@ -48,8 +48,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::parity::ParityFinding;
 use crate::Severity;
+use crate::parity::ParityFinding;
 
 // ── Reference inventory captured by Round V (AI_Norms_and_Regulations book).
 //    The buckets reflect the actual `<wp:extent cx=…>` distribution:
@@ -67,12 +67,8 @@ pub const QR_EMU_MAX: i64 = 1_000_000;
 pub const FIGURE_EMU_MIN: i64 = 5_000_000;
 
 /// Reference drawing-class inventory (AI_Norms_and_Regulations).
-pub const REF_DRAWING_CLASS_COUNTS: &[(&str, usize)] = &[
-    ("icon", 15),
-    ("qr", 285),
-    ("figure", 78),
-    ("other", 55),
-];
+pub const REF_DRAWING_CLASS_COUNTS: &[(&str, usize)] =
+    &[("icon", 15), ("qr", 285), ("figure", 78), ("other", 55)];
 
 /// Reference horizontal-rule count (AI_Norms_and_Regulations).
 pub const REF_HORIZONTAL_RULE_MIN: usize = 40;
@@ -111,7 +107,7 @@ pub fn run(reference: &Path, current: &Path) -> Vec<ParityFinding> {
                 0,
                 &format!("could not open {}: {e}", reference.display()),
                 "reference docx could not be opened — skipping visual-detail checks",
-            )]
+            )];
         }
     };
     let cur_doc = match crate::parity::load_document_xml(current) {
@@ -126,12 +122,14 @@ pub fn run(reference: &Path, current: &Path) -> Vec<ParityFinding> {
                 0,
                 &format!("could not open {}: {e}", current.display()),
                 "current docx could not be opened — skipping visual-detail checks",
-            )]
+            )];
         }
     };
 
     let mut out = Vec::new();
-    out.extend(check_drawing_classes(reference, current, &ref_doc, &cur_doc));
+    out.extend(check_drawing_classes(
+        reference, current, &ref_doc, &cur_doc,
+    ));
     out.push(check_bkcallout_decoration(reference, current, &cur_doc));
     out.push(check_pic_name_attribute(reference, current, &cur_doc));
     out.push(check_horizontal_rule_count(reference, current, &cur_doc));
@@ -324,11 +322,7 @@ fn extract_shd_fill(ppr: &str) -> Option<String> {
     Some(shd[v_start..v_start + q].to_ascii_lowercase())
 }
 
-fn check_bkcallout_decoration(
-    reference: &Path,
-    current: &Path,
-    cur_xml: &str,
-) -> ParityFinding {
+fn check_bkcallout_decoration(reference: &Path, current: &Path, cur_xml: &str) -> ParityFinding {
     let obs = collect_bkcallout_observations(cur_xml);
     let total = obs.len();
     let missing_pbdr = obs.iter().filter(|o| !o.has_pbdr).count();
@@ -409,11 +403,7 @@ pub fn count_pic_name_attributes(xml: &str) -> (usize, usize) {
     (total, named)
 }
 
-fn check_pic_name_attribute(
-    reference: &Path,
-    current: &Path,
-    cur_xml: &str,
-) -> ParityFinding {
+fn check_pic_name_attribute(reference: &Path, current: &Path, cur_xml: &str) -> ParityFinding {
     let (total, named) = count_pic_name_attributes(cur_xml);
     let missing = total - named;
     let severity = if total == 0 {
@@ -476,11 +466,7 @@ pub fn count_horizontal_rules(xml: &str) -> usize {
     count
 }
 
-fn check_horizontal_rule_count(
-    reference: &Path,
-    current: &Path,
-    cur_xml: &str,
-) -> ParityFinding {
+fn check_horizontal_rule_count(reference: &Path, current: &Path, cur_xml: &str) -> ParityFinding {
     let cur_n = count_horizontal_rules(cur_xml);
     let severity = if cur_n >= REF_HORIZONTAL_RULE_MIN {
         Severity::Info
@@ -613,9 +599,7 @@ pub fn extract_hyperlink_color(styles_xml: &str) -> Option<String> {
     let key = "w:styleId=\"Hyperlink\"";
     let s = styles_xml.find(key)?;
     let close_marker = "</w:style>";
-    let e = styles_xml[s..]
-        .find(close_marker)
-        .map(|n| s + n)?;
+    let e = styles_xml[s..].find(close_marker).map(|n| s + n)?;
     let block = &styles_xml[s..e];
     let ck = "<w:color w:val=\"";
     let cpos = block.find(ck)?;

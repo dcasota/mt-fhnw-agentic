@@ -28,8 +28,7 @@
 /// embedded at compile time so the emitter is hermetic (no runtime file I/O).
 /// Wave-0 fingerprint: 7,476 bytes (declares 9 `<w:abstractNum>` definitions
 /// + 9 `<w:num>` instances).
-const REFERENCE_NUMBERING_XML: &str =
-    include_str!("../tests/fixtures/numbering_reference.xml");
+const REFERENCE_NUMBERING_XML: &str = include_str!("../tests/fixtures/numbering_reference.xml");
 
 /// Glyph color flavour selector for [`emit_numbering_xml`].
 ///
