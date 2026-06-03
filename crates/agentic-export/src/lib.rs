@@ -10,6 +10,7 @@
 pub mod book;
 pub mod collect;
 pub mod docx;
+pub mod icons;
 pub mod index;
 pub mod markdown;
 pub mod pdf;
