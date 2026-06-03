@@ -1258,17 +1258,28 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
         );
     }
     // Blue rule + descriptive line under the title (bookkit DESCRIPTION).
+    //
+    // Round-V E2 (AI-Norms parity, 2026-06-03): the rule used to be a centred
+    // text run of three em-dashes ("———") coloured ACCENT. That rendered as
+    // a font-dependent glyph trio whose precise width drifted between
+    // Calibri / Arial fallbacks and confused the reference-parity gate
+    // (which scans for `<w:pBdr><w:bottom …/>` rule paragraphs). Replaced
+    // with an empty paragraph carrying a navy bottom border (sz=12,
+    // single) — that emits the exact `<w:pBdr>` Word expects for a
+    // cover-page rule, decouples width from the running font, and matches
+    // the reference book's serialised XML.
     if !m.description.is_empty() {
-        doc = doc.add_paragraph(
-            Paragraph::new()
-                .align(AlignmentType::Center)
-                .line_spacing(LineSpacing::new().before(160).after(120))
-                .add_run(
-                    Run::new()
-                        .add_text("\u{2014}\u{2014}\u{2014}")
-                        .color(ACCENT),
-                ),
+        let mut rule_para = Paragraph::new()
+            .align(AlignmentType::Center)
+            .line_spacing(LineSpacing::new().before(160).after(120));
+        rule_para.property = rule_para.property.set_border(
+            ParagraphBorder::new(ParagraphBorderPosition::Bottom)
+                .val(BorderType::Single)
+                .size(12)
+                .space(1)
+                .color(NAVY),
         );
+        doc = doc.add_paragraph(rule_para);
         let mut p = Paragraph::new().align(AlignmentType::Center);
         if use_bk {
             p = p.style("BkSubtitle");
@@ -2156,10 +2167,22 @@ fn keypoints_box(mut doc: Docx, body: &str) -> Docx {
 /// label, the optional icon, and the body text inline — visual flavour
 /// (background tint, left border) is now driven by the `BkCallout` style
 /// definition shipped in the 186-style reference port (Wave 2).
-fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &str) -> Docx {
+fn admonition_box(mut doc: Docx, kind: &str, body: &str, _figdir: &Path, lang: &str) -> Docx {
     // Label is localised chrome; the SEQ-free admonition has no field name to
     // keep stable, so the visible word is translated directly.
-    let (word, glyph, _fill, edge, flavor) = match kind {
+    //
+    // Round-V E2 (AI-Norms parity, 2026-06-03): the icon PNG is now sourced
+    // from the embedded `icons` module instead of the per-render `figdir`
+    // side-channel. The figdir path silently fell back to a unicode glyph
+    // whenever the scratch directory was empty (partial builds, unit-test
+    // paths, post-clean reruns), which broke `<w:drawing>` parity without
+    // any error surface. The `_figdir` parameter is retained for ABI parity
+    // with `conventions_block` + the dispatcher in `render_chapter`.
+    //
+    // Round-V E1 (visual parity, 2026-06-03): the `CalloutFlavor` discriminator
+    // is plumbed into `plant_flavor_sentinel` so the `apply_callout_chrome`
+    // postprocess pass can inject per-flavor pBdr + shd after serialisation.
+    let (word, _glyph, _fill, edge, flavor) = match kind {
         "tip" => (
             t(lang, "tip"),
             "\u{2714}",
@@ -2188,18 +2211,19 @@ fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &s
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    // gen_icons PNG (icon_{kind}.png) if the book command rendered it into
-    // figdir; otherwise fall back to a unicode glyph.
-    let icon = std::fs::read(figdir.join(format!("icon_{kind}.png"))).ok();
-    // Single-paragraph admonition: keep_lines glues label + body on
-    // the same band; the flavor sentinel triggers per-flavor pBdr+shd.
+    // Round-V E1 + E2 (visual parity, 2026-06-03): the icon Pic comes from
+    // the embedded `icons` module (no figdir side-channel), and the paragraph
+    // carries `keep_lines` so the label + body stay on one band. The flavor
+    // sentinel (planted below) triggers per-flavor pBdr+shd via
+    // `apply_callout_chrome`.
+    let icon_kind = crate::icons::IconKind::from_tag(kind);
     let mut label_para = Paragraph::new()
         .style("BkCallout")
         .line_spacing(body_spacing())
         .keep_lines(true);
-    if let Some(bytes) = &icon {
-        let pic = Pic::new(bytes).size(150_000, 150_000); // ≈0.4 cm square
-        label_para = label_para.add_run(Run::new().add_image(pic)).add_run(
+    label_para = label_para
+        .add_run(Run::new().add_image(crate::icons::icon_pic(icon_kind)))
+        .add_run(
             Run::new()
                 .add_text(format!(" {word}  "))
                 .bold()
@@ -2207,16 +2231,6 @@ fn admonition_box(mut doc: Docx, kind: &str, body: &str, figdir: &Path, lang: &s
                 .color(edge)
                 .fonts(head_fonts()),
         );
-    } else {
-        label_para = label_para.add_run(
-            Run::new()
-                .add_text(format!("{glyph} {word}  "))
-                .bold()
-                .size(21)
-                .color(edge)
-                .fonts(head_fonts()),
-        );
-    }
     label_para = label_para.add_run(Run::new().add_text(text).size(22).fonts(body_fonts()));
     let spacer = || Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_TABLE));
     doc = doc.add_paragraph(spacer());
@@ -2804,6 +2818,15 @@ fn postprocess_docx_inner_layout(
                 // cross-cutting risk #8 POSTPROCESS-XML-ORDERING) so
                 // the two XML walkers do not race on the same nodes.
                 s = crate::decorations::apply_callout_chrome(&s);
+                // Round-V E2 (AI-Norms parity, 2026-06-03): patch
+                // `<pic:cNvPr id="0" name="" />` back to the stable
+                // per-icon name (`icon_tip` / `icon_note` /
+                // `icon_warning`) on the three admonition drawings.
+                // docx-rs 0.4.20 hardcodes `name=""`; rather than fork
+                // for a single attribute, the icons module emits a
+                // sentinel `r:embed` rid which this post-process pass
+                // keys off to locate the correct cNvPr element.
+                s = crate::icons::rewrite_pic_names_in_document_xml(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start document.xml")?;
                 zout.write_all(s.as_bytes()).context("write document.xml")?;
@@ -3939,7 +3962,12 @@ fn flush_sources(
                     .fonts(body_fonts_for(typography)),
             ),
     );
-    const QR_COL: usize = 1700; // ≈3.0 cm
+    // Round-V E2 (AI-Norms parity, 2026-06-03): widened from 1700 (≈3.0 cm)
+    // to 1850 (≈3.26 cm) in concert with `QR_CODE_EMU` 900_000 → 972_000;
+    // the extra column width keeps Word's scaler from interpolating noise
+    // into the QR's finder-pattern corners at print zoom. See
+    // `crate::icons::QR_COL_TWIPS` / `QR_CODE_EMU` for the single source.
+    const QR_COL: usize = crate::icons::QR_COL_TWIPS;
     let text_col = CONTENT_TWIPS - QR_COL;
     let mut rows = Vec::new();
     for (i, (label, url)) in links.iter().enumerate() {
@@ -3974,7 +4002,9 @@ fn flush_sources(
         let qr_para = match qr_png(url) {
             Some(png) => Paragraph::new()
                 .align(AlignmentType::Center)
-                .add_run(Run::new().add_image(Pic::new(&png).size(900_000, 900_000))),
+                .add_run(Run::new().add_image(
+                    Pic::new(&png).size(crate::icons::QR_CODE_EMU, crate::icons::QR_CODE_EMU),
+                )),
             None => Paragraph::new()
                 .align(AlignmentType::Center)
                 .add_run(Run::new().add_text("[QR]").size(16).color(GREY)),

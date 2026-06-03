@@ -11,6 +11,7 @@ pub mod book;
 pub mod collect;
 pub mod decorations;
 pub mod docx;
+pub mod icons;
 pub mod index;
 pub mod markdown;
 pub mod numbering_xml;
