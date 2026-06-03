@@ -31,6 +31,7 @@ pub mod model_review_gate;
 pub mod normalize;
 pub mod page_boundary_gate;
 pub mod parity;
+pub mod parity_icons;
 pub mod parity_report;
 pub mod predatory_gate;
 pub mod prisma_gate;
