@@ -1015,7 +1015,10 @@ mod tests {
 
     #[test]
     fn horizontal_rule_check_warns_when_close_to_threshold() {
-        let xml = "<w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"auto\"/></w:pBdr>".repeat(35);
+        // With "ref" path unreadable the fallback target = REF_HORIZONTAL_RULE_MIN (40)
+        // and band = ceil(40 * 0.20).max(5) = 8. Warn band is (8, 24] in either
+        // direction, so 30 (|delta|=10) sits just outside Info and inside Warn.
+        let xml = "<w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"auto\"/></w:pBdr>".repeat(30);
         let f = check_horizontal_rule_count(
             std::path::Path::new("ref"),
             std::path::Path::new("cur"),

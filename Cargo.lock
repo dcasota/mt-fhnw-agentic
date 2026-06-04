@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "agentic"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "agentic-checks",
  "agentic-core",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-checks"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "agentic-core",
  "agentic-providers",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-core"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "chrono",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-export"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "agentic-core",
  "anyhow",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-figures"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "image 0.25.10",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-import"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "agentic-core",
  "agentic-providers",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-providers"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -165,14 +165,14 @@ dependencies = [
 
 [[package]]
 name = "agentic-resources"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "agentic-risk"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "serde",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-tui"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "agentic-core",
  "anyhow",
