@@ -7,6 +7,7 @@
 //! (Info) DB paths not materialised on disk (expected when the DB is the sole
 //! home of a file).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use agentic_core::{Connection, worktree};
@@ -111,6 +112,218 @@ fn scan_out_deprecated(root: &Path, findings: &mut Vec<Finding>) {
         ),
         location: Some("out/".into()),
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ADR-0061 §3.4 — thesis-content drift guard
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Compare the project's current `thesis/*.md` blob SHAs against a baseline
+/// snapshot taken at cascade start. Used by the `master_thesis_bookkit`
+/// cascade to enforce the "no content edits during a bookkit cascade"
+/// constraint codified by ADR-0061 §3.4 (policy
+/// `master-thesis-bookkit-no-thesis-content-edit`).
+///
+/// Returns one [`Finding`] per drifted `thesis/*.md` path (severity
+/// `Severity::Error`) PLUS an info marker reporting how many thesis files
+/// were inspected. If `baseline` is empty (no snapshot supplied), the gate
+/// emits a single WARN — the cascade should always record a baseline first.
+///
+/// `baseline` maps `thesis/<file>.md → blob_sha_hex` as recorded by the
+/// cascade harness before any wave-1 work runs. `current` is the DB's
+/// current view of the same prefix (typically from
+/// `agentic_core::worktree::list(conn, project_id, "thesis/")`).
+pub fn scan_thesis_content_drift(
+    baseline: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if baseline.is_empty() {
+        findings.push(Finding {
+            category: "thesis-drift-no-baseline".into(),
+            severity: Severity::Warn,
+            message: "no cascade baseline supplied — cannot enforce thesis-content immutability \
+                      (ADR-0061 §3.4); the bookkit cascade harness must record a baseline before \
+                      running work"
+                .into(),
+            location: Some("thesis/".into()),
+        });
+        return findings;
+    }
+    let mut inspected = 0usize;
+    for (path, baseline_sha) in baseline {
+        if !path.starts_with("thesis/") || !path.ends_with(".md") {
+            continue;
+        }
+        inspected += 1;
+        match current.get(path) {
+            Some(cur_sha) if cur_sha == baseline_sha => { /* clean */ }
+            Some(cur_sha) => findings.push(Finding {
+                category: "thesis-content-drift".into(),
+                severity: Severity::Error,
+                message: format!(
+                    "{path}: blob SHA changed during bookkit cascade (baseline={}, current={}); \
+                     ADR-0061 §3.4 forbids thesis-content edits during a `master_thesis_bookkit` \
+                     cascade (policy: master-thesis-bookkit-no-thesis-content-edit)",
+                    short_sha(baseline_sha),
+                    short_sha(cur_sha),
+                ),
+                location: Some(path.clone()),
+            }),
+            None => findings.push(Finding {
+                category: "thesis-content-removed".into(),
+                severity: Severity::Error,
+                message: format!(
+                    "{path}: present at cascade baseline (blob {}) but absent from current tree; \
+                     ADR-0061 §3.4 forbids removing thesis content during a bookkit cascade",
+                    short_sha(baseline_sha),
+                ),
+                location: Some(path.clone()),
+            }),
+        }
+    }
+    findings.push(Finding {
+        category: "thesis-content-ok".into(),
+        severity: if findings.iter().any(|f| f.severity == Severity::Error) {
+            // If any drift was recorded, the summary is informational only.
+            Severity::Info
+        } else {
+            Severity::Info
+        },
+        message: format!(
+            "{inspected} thesis/*.md path(s) inspected against cascade baseline; \
+             {} drift(s) detected",
+            findings
+                .iter()
+                .filter(|f| f.severity == Severity::Error)
+                .count()
+        ),
+        location: Some("thesis/".into()),
+    });
+    findings
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(12).collect()
+}
+
+#[cfg(test)]
+mod thesis_content_drift_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn baseline() -> BTreeMap<String, String> {
+        let mut m = BTreeMap::new();
+        m.insert(
+            "thesis/fhnw_1_introduction.md".to_string(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        m.insert(
+            "thesis/fhnw_2_theory.md".to_string(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        );
+        m
+    }
+
+    /// Clean run: current matches baseline ⇒ no error findings, only the
+    /// info summary.
+    #[test]
+    fn clean_run_emits_no_error() {
+        let base = baseline();
+        let current = base.clone();
+        let findings = scan_thesis_content_drift(&base, &current);
+        assert!(
+            !findings.iter().any(|f| f.severity == Severity::Error),
+            "{findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.category == "thesis-content-ok"
+                && f.message.contains("2 thesis/*.md")
+                && f.message.contains("0 drift(s)")),
+            "{findings:?}"
+        );
+    }
+
+    /// Mutation: fhnw_1_introduction.md blob SHA changed ⇒ ERROR finding,
+    /// labelled `thesis-content-drift`.
+    ///
+    /// This is the test that demonstrates the guard catches a fake
+    /// `thesis/*.md` change — required by Wave-1 brief task 5.
+    #[test]
+    fn guards_against_thesis_md_blob_change() {
+        let base = baseline();
+        let mut current = base.clone();
+        current.insert(
+            "thesis/fhnw_1_introduction.md".to_string(),
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+        );
+        let findings = scan_thesis_content_drift(&base, &current);
+        let drift = findings
+            .iter()
+            .find(|f| f.category == "thesis-content-drift")
+            .expect("drift finding emitted");
+        assert_eq!(drift.severity, Severity::Error);
+        assert_eq!(
+            drift.location.as_deref(),
+            Some("thesis/fhnw_1_introduction.md")
+        );
+        assert!(
+            drift.message.contains("ADR-0061"),
+            "drift message must cite ADR-0061: {}",
+            drift.message
+        );
+        // The clean file must NOT show a drift finding.
+        assert!(
+            !findings.iter().any(|f| f.category == "thesis-content-drift"
+                && f.location.as_deref() == Some("thesis/fhnw_2_theory.md"))
+        );
+    }
+
+    /// Removed file ⇒ ERROR with category `thesis-content-removed`.
+    #[test]
+    fn flags_removed_thesis_file() {
+        let base = baseline();
+        let mut current = base.clone();
+        current.remove("thesis/fhnw_2_theory.md");
+        let findings = scan_thesis_content_drift(&base, &current);
+        let removed = findings
+            .iter()
+            .find(|f| f.category == "thesis-content-removed")
+            .expect("removed finding emitted");
+        assert_eq!(removed.severity, Severity::Error);
+    }
+
+    /// Missing baseline ⇒ WARN, no errors.
+    #[test]
+    fn warns_when_baseline_absent() {
+        let base: BTreeMap<String, String> = BTreeMap::new();
+        let current = baseline();
+        let findings = scan_thesis_content_drift(&base, &current);
+        let warn = findings
+            .iter()
+            .find(|f| f.category == "thesis-drift-no-baseline")
+            .expect("no-baseline warn emitted");
+        assert_eq!(warn.severity, Severity::Warn);
+        assert!(!findings.iter().any(|f| f.severity == Severity::Error));
+    }
+
+    /// Non-thesis paths in the baseline are ignored.
+    #[test]
+    fn ignores_non_thesis_paths_in_baseline() {
+        let mut base = baseline();
+        base.insert(
+            "out/sources/foo.md".to_string(),
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
+        );
+        let mut current = base.clone();
+        // Drift in non-thesis path — should be ignored.
+        current.insert(
+            "out/sources/foo.md".to_string(),
+            "1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+        );
+        let findings = scan_thesis_content_drift(&base, &current);
+        assert!(!findings.iter().any(|f| f.severity == Severity::Error));
+    }
 }
 
 #[cfg(test)]

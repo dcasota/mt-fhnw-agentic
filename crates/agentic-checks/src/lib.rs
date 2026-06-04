@@ -9,12 +9,15 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::missing_errors_doc, clippy::module_name_repetitions, dead_code)]
 
+pub mod acronym_xcheck;
 pub mod adr_enforcement_gate;
 pub mod aibom_gate;
 pub mod bibliography_gate;
 pub mod bookkit_gate;
 pub mod calibration_gate;
+pub mod caption_location;
 pub mod citation_tracker;
+pub mod citation_worklist;
 pub mod compliance_gate;
 pub mod contamination;
 pub mod cross_model_gate;
@@ -25,6 +28,7 @@ pub mod facts_gate;
 pub mod figure_quality_gate;
 pub mod freshness_gate;
 pub mod ground_truth_gate;
+pub mod heading_typos;
 pub mod i18n_gate;
 pub mod integrity_gate;
 pub mod model_review_gate;
@@ -45,6 +49,7 @@ pub mod term_rename_gate;
 pub mod toc_coverage_gate;
 pub mod tree_integrity;
 pub mod undefined_terms;
+pub mod url_research_report;
 pub mod writing_quality;
 
 use serde::{Deserialize, Serialize};

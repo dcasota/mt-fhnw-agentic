@@ -431,6 +431,9 @@ pub enum CascadeAction {
         /// Bookkit C — the master-thesis key (FHNW structure + thesis-only gates).
         #[arg(long, default_value = "master_thesis")]
         thesis_key: String,
+        /// Bookkit — the master-thesis-bookkit key (parity + toc-coverage scoped gates).
+        #[arg(long, default_value = "master_thesis_bookkit")]
+        bookkit_key: String,
         /// Resume: skip the expensive steps (regenerate/merge/build) already
         /// completed for the current content fingerprint (ADR-0047 R3).
         #[arg(long)]

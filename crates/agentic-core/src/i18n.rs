@@ -29,6 +29,25 @@ pub const KEYS: &[&str] = &[
     "note",
     "tip",
     "warning",
+    // ── master_thesis_bookkit Wave-2 (Agent D, 2026-06-04) ────────────────
+    // 13 additional chrome strings surfaced by the W2-A/W2-B inventory of
+    // hard-coded English literals in `agentic-export/src/book.rs`. These are
+    // emitted in the master-thesis-bookkit profile (and also reusable by the
+    // AI-Norms profile). EN-default only; ADR-0035 EN-core keeps non-EN
+    // values held until the translation pipeline is unfrozen.
+    "table_of_contents",         // back-matter / front-matter ToC heading
+    "table_of_figures",          // reference-book wording variant of list_of_figures
+    "table_of_tables",           // reference-book wording variant of list_of_tables
+    "bibliography",              // bibliography section heading
+    "references",                // alternative references heading (some chapters use this)
+    "appendix",                  // appendix section heading
+    "index_heading",             // back-of-book index heading (when emit_index=true)
+    "management_summary",        // front-matter management-summary heading
+    "acronyms",                  // front-matter acronyms / abbreviations heading
+    "declaration_of_authorship", // legal declaration ("Ehrenwörtliche Erklärung")
+    "glossary",                  // optional glossary heading
+    "fig_caption_sep_colon",     // separator between "Figure N" and caption text in Colon format
+    "fig_caption_sep_period",    // separator between "Figure N" and caption text in Period format
 ];
 
 /// Supported language codes, English first.
@@ -154,6 +173,79 @@ fn lookup(lang: &str, key: &str) -> Option<&'static str> {
             "Avertiment",
             "चेतावनी",
         ],
+        // ── master_thesis_bookkit Wave-2 (Agent D, 2026-06-04) ───────────
+        // EN-core seed per ADR-0035. Other langs hold the EN value until
+        // the translation pipeline is unfrozen — `has()` still reports true
+        // for those slots because they carry an EXPLICIT entry (see the
+        // pre-existing `fr/fig_prefix` precedent on line ~190).
+        "table_of_contents" => [
+            "Table of Contents",
+            "Table of Contents",
+            "Table of Contents",
+            "Table of Contents",
+            "Table of Contents",
+            "Table of Contents",
+        ],
+        "table_of_figures" => [
+            "Table of Figures",
+            "Table of Figures",
+            "Table of Figures",
+            "Table of Figures",
+            "Table of Figures",
+            "Table of Figures",
+        ],
+        "table_of_tables" => [
+            "Table of Tables",
+            "Table of Tables",
+            "Table of Tables",
+            "Table of Tables",
+            "Table of Tables",
+            "Table of Tables",
+        ],
+        "bibliography" => [
+            "Bibliography",
+            "Bibliography",
+            "Bibliography",
+            "Bibliography",
+            "Bibliography",
+            "Bibliography",
+        ],
+        "references" => [
+            "References",
+            "References",
+            "References",
+            "References",
+            "References",
+            "References",
+        ],
+        "appendix" => [
+            "Appendix", "Appendix", "Appendix", "Appendix", "Appendix", "Appendix",
+        ],
+        "index_heading" => ["Index", "Index", "Index", "Index", "Index", "Index"],
+        "management_summary" => [
+            "Management Summary",
+            "Management Summary",
+            "Management Summary",
+            "Management Summary",
+            "Management Summary",
+            "Management Summary",
+        ],
+        "acronyms" => [
+            "Acronyms", "Acronyms", "Acronyms", "Acronyms", "Acronyms", "Acronyms",
+        ],
+        "declaration_of_authorship" => [
+            "Declaration of Authorship",
+            "Declaration of Authorship",
+            "Declaration of Authorship",
+            "Declaration of Authorship",
+            "Declaration of Authorship",
+            "Declaration of Authorship",
+        ],
+        "glossary" => [
+            "Glossary", "Glossary", "Glossary", "Glossary", "Glossary", "Glossary",
+        ],
+        "fig_caption_sep_colon" => [": ", ": ", ": ", ": ", ": ", ": "],
+        "fig_caption_sep_period" => [". ", ". ", ". ", ". ", ". ", ". "],
         _ => return None,
     };
     let idx = match lang {
@@ -242,6 +334,38 @@ mod tests {
                 "warning",
             ] {
                 assert!(!t(lang, key).is_empty(), "{lang}/{key} empty");
+            }
+        }
+    }
+
+    /// Wave-2 Agent D (2026-06-04) — the 13 new master-thesis-bookkit chrome
+    /// keys must (a) appear in the `KEYS` constant so the i18n gate iterates
+    /// them, (b) resolve to a non-empty EN value, and (c) be reported as
+    /// EXPLICIT by `has()` for every supported language (the EN string is
+    /// seeded into all language slots per ADR-0035 hold).
+    #[test]
+    fn i18n_master_thesis_bookkit_keys() {
+        const NEW_KEYS: &[&str] = &[
+            "table_of_contents",
+            "table_of_figures",
+            "table_of_tables",
+            "bibliography",
+            "references",
+            "appendix",
+            "index_heading",
+            "management_summary",
+            "acronyms",
+            "declaration_of_authorship",
+            "glossary",
+            "fig_caption_sep_colon",
+            "fig_caption_sep_period",
+        ];
+        assert_eq!(NEW_KEYS.len(), 13, "13 new keys expected");
+        for key in NEW_KEYS {
+            assert!(KEYS.contains(key), "{key} missing from KEYS constant");
+            assert!(!t("en", key).is_empty(), "{key} resolves to empty EN value");
+            for lang in LANGS {
+                assert!(has(lang, key), "missing explicit {lang}/{key}");
             }
         }
     }

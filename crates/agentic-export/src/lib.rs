@@ -20,6 +20,8 @@ pub mod size_manifest;
 pub mod styles_xml;
 pub mod table_xml;
 pub mod theme_xml;
+pub mod thesis_styles;
+pub mod thesis_typography;
 
 use anyhow::Result;
 use rusqlite::Connection;

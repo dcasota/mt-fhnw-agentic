@@ -135,6 +135,21 @@ impl RuleMatrix {
                     .collect(),
             },
         );
+        profiles.insert(
+            "master_thesis_bookkit".to_string(),
+            Profile {
+                additions: [
+                    "page-boundary",
+                    "rr-matrix",
+                    "calibration",
+                    "parity",
+                    "toc-coverage",
+                ]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            },
+        );
         Self {
             universal,
             profiles,
@@ -195,6 +210,27 @@ mod tests {
         }
         assert!(!m.is_universal("page-boundary"));
         assert!(m.is_universal("freshness"));
+    }
+
+    #[test]
+    fn default_matrix_recognises_master_thesis_bookkit() {
+        let m = RuleMatrix::default_matrix();
+        let p = m
+            .profiles
+            .get("master_thesis_bookkit")
+            .expect("master_thesis_bookkit profile must be registered");
+        for expected in [
+            "page-boundary",
+            "rr-matrix",
+            "calibration",
+            "parity",
+            "toc-coverage",
+        ] {
+            assert!(
+                p.additions.iter().any(|a| a == expected),
+                "master_thesis_bookkit must include addition `{expected}`"
+            );
+        }
     }
 
     #[test]

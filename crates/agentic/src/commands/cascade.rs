@@ -42,6 +42,8 @@ struct CascadeOpts {
     companion_key: String,
     /// Bookkit C — the master-thesis key.
     thesis_key: String,
+    /// Bookkit — the master-thesis-bookkit key (parity + toc-coverage scoped gates).
+    bookkit_key: String,
     /// Skip expensive steps already completed for the current fingerprint.
     resume: bool,
     /// Ignore checkpoints; run every step from scratch.
@@ -484,6 +486,14 @@ fn push_build_book(steps: &mut Vec<Step>, opts: &CascadeOpts) {
             format!("book build C ({})", opts.thesis_key),
             build(Some(&opts.thesis_key)),
         ));
+        // Bookkit build runs AFTER the master_thesis book (cross-cutting risk #2:
+        // ordering matters — the bookkit overlay reads artefacts produced by
+        // the thesis book build).
+        steps.push(Step::run(
+            5,
+            format!("book build bookkit ({})", opts.bookkit_key),
+            build(Some(&opts.bookkit_key)),
+        ));
     }
 }
 
@@ -505,31 +515,41 @@ fn push_audit_gates(
     gate_suite: &[(&'static str, &'static str)],
 ) {
     let p = &opts.project;
+    // Scope-narrowed per-key: page-boundary and bookkit run once per key
+    // (master_thesis + master_thesis_bookkit) so the two profiles can carry
+    // distinct manifest-scoped findings (ADR-0047 R4 + the new bookkit
+    // overlay). Other gates run once, profile-agnostic.
+    let scoped_keys: Vec<&String> = vec![&opts.thesis_key, &opts.bookkit_key];
     for (sub, cp) in gate_suite {
-        let mut args = vec!["check".into(), (*sub).into(), "--project".into(), p.clone()];
         match *sub {
-            "tree" | "docs" => {
-                args.push("--root".into());
-                args.push(opts.root.clone());
+            "page-boundary" | "bookkit" => {
+                for key in &scoped_keys {
+                    let mut args =
+                        vec!["check".into(), (*sub).into(), "--project".into(), p.clone()];
+                    args.push("--paths-from-manifest".into());
+                    args.push(opts.manifest.clone());
+                    args.push("--book-key".into());
+                    args.push((*key).clone());
+                    if *sub == "page-boundary" {
+                        args.push("--words-per-page".into());
+                        args.push("280".into());
+                    }
+                    steps.push(Step::gate(6, format!("check {sub} ({key})"), args, cp));
+                }
             }
-            "contamination" => args.push("--offline".into()),
-            "page-boundary" => {
-                args.push("--paths-from-manifest".into());
-                args.push(opts.manifest.clone());
-                args.push("--book-key".into());
-                args.push(opts.thesis_key.clone());
-                args.push("--words-per-page".into());
-                args.push("280".into());
+            _ => {
+                let mut args = vec!["check".into(), (*sub).into(), "--project".into(), p.clone()];
+                match *sub {
+                    "tree" | "docs" => {
+                        args.push("--root".into());
+                        args.push(opts.root.clone());
+                    }
+                    "contamination" => args.push("--offline".into()),
+                    _ => {}
+                }
+                steps.push(Step::gate(6, format!("check {sub}"), args, cp));
             }
-            "bookkit" => {
-                args.push("--paths-from-manifest".into());
-                args.push(opts.manifest.clone());
-                args.push("--book-key".into());
-                args.push(opts.thesis_key.clone());
-            }
-            _ => {}
         }
-        steps.push(Step::gate(6, format!("check {sub}"), args, cp));
     }
 }
 
@@ -628,6 +648,7 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
             merged_key,
             companion_key,
             thesis_key,
+            bookkit_key,
             resume,
             force_full,
             dry_run,
@@ -652,6 +673,7 @@ pub fn run(db_path: &Path, action: CascadeAction, json_out: bool) -> Result<()> 
                 merged_key,
                 companion_key,
                 thesis_key,
+                bookkit_key,
                 resume,
                 force_full,
                 dry_run,
@@ -898,6 +920,7 @@ mod tests {
             merged_key: "governing_the_agentic_machine".into(),
             companion_key: "student_notes".into(),
             thesis_key: "master_thesis".into(),
+            bookkit_key: "master_thesis_bookkit".into(),
             resume: false,
             force_full: false,
             dry_run,
@@ -974,19 +997,30 @@ mod tests {
                 .filter(|s| s.phase == 7)
                 .all(|s| s.args.is_empty())
         );
-        // The gate suite (phase 6) runs every gate the rule-matrix composes.
-        assert_eq!(plan.iter().filter(|s| s.phase == 6).count(), suite().len());
+        // The gate suite (phase 6) runs every gate the rule-matrix composes,
+        // plus an extra invocation per scoped key for page-boundary + bookkit
+        // (now fanned out across thesis_key + bookkit_key).
+        let scoped_extras = 2; // page-boundary and bookkit each get +1 extra step
+        assert_eq!(
+            plan.iter().filter(|s| s.phase == 6).count(),
+            suite().len() + scoped_extras
+        );
     }
 
     #[test]
     fn default_builds_three_profiles_per_dimension_builds_all() {
-        // Default (no --per-dimension): three profile builds (A/B/C), each --only.
+        // Default (no --per-dimension): four profile builds (A/B/C + bookkit),
+        // each --only.
         let plan = build_plan(&opts(false, false, false), &dims(), false, &suite());
         let profile_builds: Vec<&Step> = plan
             .iter()
             .filter(|s| s.label.starts_with("book build ") && s.label != "book build (all)")
             .collect();
-        assert_eq!(profile_builds.len(), 3, "A + B + C profile builds");
+        assert_eq!(
+            profile_builds.len(),
+            4,
+            "A + B + C + bookkit profile builds"
+        );
         assert!(
             profile_builds
                 .iter()
@@ -999,6 +1033,7 @@ mod tests {
         assert!(keys.contains(&"governing_the_agentic_machine".to_string()));
         assert!(keys.contains(&"student_notes".to_string()));
         assert!(keys.contains(&"master_thesis".to_string()));
+        assert!(keys.contains(&"master_thesis_bookkit".to_string()));
 
         // With --per-dimension: one all-books build, `--only` omitted.
         let plan = build_plan(&opts(false, true, false), &dims(), false, &suite());
@@ -1088,8 +1123,8 @@ mod tests {
         let plan = build_plan(&opts(true, false, false), &dims(), false, &suite());
         let pb = plan
             .iter()
-            .find(|s| s.label == "check page-boundary")
-            .expect("page-boundary present in gate suite");
+            .find(|s| s.label == "check page-boundary (master_thesis)")
+            .expect("page-boundary scoped to master_thesis present in gate suite");
         assert!(pb.args.contains(&"--paths-from-manifest".to_string()));
         assert!(pb.args.contains(&"out/book_manifest.json".to_string()));
         assert!(pb.args.contains(&"--book-key".to_string()));
@@ -1097,21 +1132,68 @@ mod tests {
         assert!(pb.args.contains(&"--words-per-page".to_string()));
         assert!(pb.args.contains(&"280".to_string()));
 
+        let pb_bk = plan
+            .iter()
+            .find(|s| s.label == "check page-boundary (master_thesis_bookkit)")
+            .expect("page-boundary scoped to bookkit present in gate suite");
+        assert!(pb_bk.args.contains(&"master_thesis_bookkit".to_string()));
+
         let bk = plan
             .iter()
-            .find(|s| s.label == "check bookkit")
-            .expect("bookkit present in gate suite");
+            .find(|s| s.label == "check bookkit (master_thesis)")
+            .expect("bookkit scoped to master_thesis present in gate suite");
         assert!(bk.args.contains(&"--paths-from-manifest".to_string()));
         assert!(bk.args.contains(&"--book-key".to_string()));
         assert!(bk.args.contains(&"master_thesis".to_string()));
         // bookkit must NOT receive --words-per-page (it has no such concept).
         assert!(!bk.args.contains(&"--words-per-page".to_string()));
 
+        let bk_bk = plan
+            .iter()
+            .find(|s| s.label == "check bookkit (master_thesis_bookkit)")
+            .expect("bookkit scoped to bookkit present in gate suite");
+        assert!(bk_bk.args.contains(&"master_thesis_bookkit".to_string()));
+
         // Other gates (e.g. citations) must NOT receive the manifest args.
         if let Some(cit) = plan.iter().find(|s| s.label == "check citations") {
             assert!(!cit.args.contains(&"--paths-from-manifest".to_string()));
             assert!(!cit.args.contains(&"--book-key".to_string()));
         }
+    }
+
+    #[test]
+    fn cascade_opts_default_bookkit_key() {
+        // The test fixture mirrors the clap default for --bookkit-key: when
+        // callers don't override it, the cascade composes its bookkit step +
+        // scoped page-boundary/bookkit gates against `master_thesis_bookkit`.
+        let o = opts(true, false, false);
+        assert_eq!(o.bookkit_key, "master_thesis_bookkit");
+
+        // And the plan actually wires that default through the build + gate
+        // phases (label fan-out is the observable contract).
+        let plan = build_plan(&o, &dims(), false, &suite());
+        // Dry-run skips phase-5 build steps (they're intent-only), so check
+        // a non-dry-run build instead.
+        let live = opts(false, false, false);
+        let live_plan = build_plan(&live, &dims(), false, &suite());
+        assert!(
+            live_plan
+                .iter()
+                .any(|s| s.label == "book build bookkit (master_thesis_bookkit)"),
+            "phase-5 must emit a 4th `book build bookkit` step for the default key"
+        );
+        // page-boundary / bookkit fan-out is visible even in dry-run (they're
+        // gate steps, which dry-run preserves).
+        assert!(
+            plan.iter()
+                .any(|s| s.label == "check page-boundary (master_thesis_bookkit)"),
+            "page-boundary must fan out to the default bookkit key"
+        );
+        assert!(
+            plan.iter()
+                .any(|s| s.label == "check bookkit (master_thesis_bookkit)"),
+            "bookkit must fan out to the default bookkit key"
+        );
     }
 
     #[test]

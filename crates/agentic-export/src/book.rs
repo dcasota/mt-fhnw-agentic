@@ -272,7 +272,7 @@ pub enum CaptionFormat {
     Colon,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BookMeta {
     pub title: String,
     pub subtitle: String,
@@ -419,6 +419,121 @@ pub struct BookMeta {
     /// emits the centred italic paragraph extracted from the reference
     /// book (see `ANTIKYTHERA_INSCRIPTION_TEXT`). REF parity 2026-06-03.
     pub inscription_page_enabled: bool,
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04).
+    /// When `true` (the historical default) the engine emits the back-of-book
+    /// Index section (`Heading1 "Index"` + either an `INDEX \c 2` field or
+    /// the `IndexHeading`/`Index1` letter blocks). Setting to `false`
+    /// suppresses the whole Index section so the document closes on the
+    /// preceding back-matter list (TOF/TOT/Bibliography). Used by the
+    /// `master_thesis_bookkit` profile to match the reference thesis which
+    /// has no Index. Affects both [`render_book`] and [`render_thesis_book`].
+    pub emit_index: bool,
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04).
+    /// When `true` (the historical default) chapters classified as
+    /// [`ThesisSlot::Appendix`] are emitted in the thesis back-matter just
+    /// before the Table of Figures (per `thesis_layout`). Setting to
+    /// `false` SKIPS Appendix-classified chapters entirely. Used by the
+    /// `master_thesis_bookkit` profile to match the reference thesis which
+    /// has no Appendix between body and back-matter lists. Only affects
+    /// [`render_thesis_book`]; non-thesis books are unaffected.
+    pub emit_appendix_in_back_matter: bool,
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04).
+    /// When `true` (the historical default) the engine emits an end-of-
+    /// chapter "Sources & QR codes" box (bookkit `flush_sources`) listing
+    /// every link harvested in the chapter, each with a QR drawing. The
+    /// reference master thesis has no per-chapter Sources boxes, so the
+    /// `master_thesis_bookkit` profile sets this to `false` to suppress
+    /// every `flush_sources` call across [`render_book`] and
+    /// [`render_thesis_book`].
+    pub emit_per_chapter_sources_box: bool,
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04).
+    /// When `true` (the historical default) the engine emits a thin gray
+    /// horizontal-rule paragraph (`chapter_end_rule`) at the close of
+    /// every chapter when `body_render_use_bk_styles` is also true. The
+    /// reference master thesis carries ≥40 such rules, so this flag stays
+    /// `true` for the `master_thesis_bookkit` profile. Setting to `false`
+    /// would suppress the divider without affecting the underlying
+    /// `body_render_use_bk_styles` opt-in (kept for symmetry with the
+    /// other suppression flags).
+    pub emit_chapter_dividers: bool,
+    /// Wave-3 iter-D (REF parity 2026-06-04). When `true`, the thesis
+    /// renderer emits a per-chapter `<w:sectPr>` (continuous, no override)
+    /// at every chapter close so the document carries one section break
+    /// per chapter (matching the FHNW reference docx: 19 in-body sectPrs
+    /// plus the document-level sectPr = 20 total). Defaults to `false`
+    /// so every existing book / profile keeps the historical single
+    /// document-level sectPr behaviour. Only honoured by
+    /// `render_thesis_book` (the bookkit thesis profile); non-thesis
+    /// `render_book` paths ignore this flag.
+    pub emit_per_chapter_sectpr: bool,
+    /// Wave-3 iter-D (REF parity 2026-06-04). When `true` (the historical
+    /// default) the engine renders fenced ```keypoints```, ```quiz``` and
+    /// ```callout``` blocks as the bookkit `chapter_extras` chrome
+    /// (key-topic boxes, review-question lists, callouts). When `false`,
+    /// those fenced blocks are skipped entirely (no paragraphs emitted),
+    /// matching the FHNW reference thesis which has no per-chapter
+    /// key-topic / review-question / callout chrome. Set to `false` by
+    /// the `master_thesis_bookkit` manifest to suppress every chapter-
+    /// extras emitter across the thesis renderer.
+    pub emit_chapter_extras: bool,
+}
+
+/// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04). The
+/// four new chrome-suppression flags default to `true` so every existing
+/// book and test keeps its historical output unchanged; the
+/// `master_thesis_bookkit` manifest entry opts out of the three thesis-
+/// specific ones (`emit_index`, `emit_appendix_in_back_matter`,
+/// `emit_per_chapter_sources_box`).
+impl Default for BookMeta {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            subtitle: String::new(),
+            author: String::new(),
+            context: String::new(),
+            description: String::new(),
+            dedication: None,
+            epigraph: None,
+            epigraph_by: None,
+            disclaimer: None,
+            imprint: None,
+            thesis_profile: false,
+            companion: false,
+            index_terms: Vec::new(),
+            lang: String::new(),
+            thesis_typography: TypographyProfile::default(),
+            page_numbering: PageNumbering::default(),
+            caption_format: CaptionFormat::default(),
+            header_logo: None,
+            header_lines: Vec::new(),
+            dedication_page: None,
+            antikythera_note: None,
+            qrlink: None,
+            body_render_use_bk_styles: false,
+            header_distance_twips: None,
+            footer_distance_twips: None,
+            cols_space_twips: None,
+            doc_grid_line_pitch: None,
+            dedication_personal: None,
+            closing_thought: None,
+            byline_institution_full: None,
+            tof_heading: None,
+            tot_heading: None,
+            inscription_page_enabled: false,
+            // Bookkit chrome flags — true preserves historical behaviour.
+            emit_index: true,
+            emit_appendix_in_back_matter: true,
+            emit_per_chapter_sources_box: true,
+            emit_chapter_dividers: true,
+            // Wave-3 iter-D (2026-06-04). Default OFF so historical books
+            // keep their single doc-level sectPr.
+            emit_per_chapter_sectpr: false,
+            // Wave-3 iter-D (2026-06-04). Default ON so historical books
+            // keep their chapter_extras emission (AI Norms, etc.). The
+            // bookkit thesis profile opts out via the manifest.
+            emit_chapter_extras: true,
+        }
+    }
 }
 
 /// Per-book render state threaded through `render_block`: running figure / table
@@ -468,6 +583,14 @@ struct Ctx<'a> {
     /// recovered from path bytes (the `image*.png` family) still land in the
     /// right bucket. Empty for every book that does not ship a manifest.
     size_manifest: SizeManifest,
+    /// Wave-3 iter-D (2026-06-04). Mirrors
+    /// [`BookMeta::emit_chapter_extras`]: when `false`, the
+    /// [`DocxBlock::CodeBlock`] arm skips `keypoints`, `quiz` and
+    /// `callout` fenced blocks entirely (no paragraphs emitted). Default
+    /// `true` preserves historical behaviour for every existing book
+    /// (AI Norms, campaigns, etc.); the `master_thesis_bookkit` profile
+    /// opts out via the manifest.
+    emit_chapter_extras: bool,
 }
 
 /// Wave-4 (ADR-0054 v1, 2026-06-03): the four reference-parity layout
@@ -1209,6 +1332,27 @@ fn chapter_end_rule(is_title: bool) -> Paragraph {
     let mut p = Paragraph::new();
     p.property = p.property.set_border(border);
     p
+}
+
+/// Wave-3 iter-D (REF parity 2026-06-04). Emit an empty paragraph whose
+/// `<w:pPr>` carries a `<w:sectPr>` so Word treats the chapter close as a
+/// continuous section break. The sectPr carries portrait A4 page geometry
+/// + the manifest's layout overrides (header/footer distance, cols.space,
+/// docGrid line-pitch) so every per-chapter section inherits the same
+/// layout as the document-level sectPr.
+///
+/// Word's content model requires the sectPr to sit inside the `<w:pPr>` of
+/// a body paragraph (not as a standalone child of `<w:body>`). docx-rs's
+/// `Paragraph::section_property` setter places the value exactly there —
+/// it serialises as `<w:p><w:pPr><w:sectPr>…</w:sectPr></w:pPr></w:p>`,
+/// which Word reads as a section terminator at that paragraph's end.
+///
+/// The paragraph itself is empty (no runs) so it doesn't add visible
+/// content to the rendered document — only the structural section break.
+fn per_chapter_sectpr_paragraph(meta: &BookMeta) -> Paragraph {
+    let lo = LayoutOverrides::from_meta(meta);
+    let sp = portrait_sectpr_with(&lo);
+    Paragraph::new().section_property(sp)
 }
 
 /// Conditional chapter-end-rule emit. Returns `Some(paragraph)` only when
@@ -2842,7 +2986,7 @@ fn field_run(instr: &str, cached: &str, dirty: bool) -> Run {
 /// repeats on each page a long table spans — docx-rs 0.4 has no API for it).
 #[allow(dead_code)]
 fn postprocess_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
-    postprocess_docx_inner(docx, false)
+    postprocess_docx_inner(docx, false, crate::thesis_styles::StylesProfile::AiNorms)
 }
 
 /// Variant of [`postprocess_docx`] that ALSO replaces `word/styles.xml` with
@@ -2852,12 +2996,21 @@ fn postprocess_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
 /// `word/document.xml` resolve against the reference style definitions.
 #[allow(dead_code)]
 fn postprocess_docx_with_reference_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
-    postprocess_docx_inner(docx, true)
+    postprocess_docx_inner(docx, true, crate::thesis_styles::StylesProfile::AiNorms)
 }
 
 #[allow(dead_code)]
-fn postprocess_docx_inner(docx: Vec<u8>, inject_reference_styles: bool) -> anyhow::Result<Vec<u8>> {
-    postprocess_docx_inner_layout(docx, inject_reference_styles, &LayoutOverrides::default())
+fn postprocess_docx_inner(
+    docx: Vec<u8>,
+    inject_reference_styles: bool,
+    styles_profile: crate::thesis_styles::StylesProfile,
+) -> anyhow::Result<Vec<u8>> {
+    postprocess_docx_inner_layout(
+        docx,
+        inject_reference_styles,
+        &LayoutOverrides::default(),
+        styles_profile,
+    )
 }
 
 /// Variant of [`postprocess_docx_inner`] that also normalises every
@@ -2869,6 +3022,7 @@ fn postprocess_docx_inner_layout(
     docx: Vec<u8>,
     inject_reference_styles: bool,
     layout: &LayoutOverrides,
+    styles_profile: crate::thesis_styles::StylesProfile,
 ) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
     let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
@@ -2925,7 +3079,7 @@ fn postprocess_docx_inner_layout(
                 // style definitions (including TableGrid, IndexHeading, the
                 // Bk* family with theme-font references, the latentStyles
                 // block, and the docDefaults preamble) are present.
-                let xml = crate::styles_xml::emit_styles_xml();
+                let xml = crate::thesis_styles::emit_styles_xml_for_profile(styles_profile);
                 zout.start_file(&name, zip::write::SimpleFileOptions::default())
                     .context("start styles.xml part")?;
                 zout.write_all(xml.as_bytes())
@@ -3296,7 +3450,10 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
 /// was written from an existing entry; if not, it appends the part +
 /// the matching `[Content_Types]` override + the rels relationship
 /// so Word reads it on next open.
-pub fn restore_reference_theme_and_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+pub fn restore_reference_theme_and_styles(
+    docx: Vec<u8>,
+    styles_profile: crate::thesis_styles::StylesProfile,
+) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
     let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip")?;
     let mut out = Cursor::new(Vec::<u8>::new());
@@ -3323,7 +3480,7 @@ pub fn restore_reference_theme_and_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 let mut _drain = String::new();
                 let _ = f.read_to_string(&mut _drain);
             } else if name == "word/styles.xml" {
-                let xml = crate::styles_xml::emit_styles_xml();
+                let xml = crate::thesis_styles::emit_styles_xml_for_profile(styles_profile);
                 zout.start_file(&name, zip::write::SimpleFileOptions::default())
                     .context("start styles.xml part")?;
                 zout.write_all(xml.as_bytes())
@@ -3348,7 +3505,7 @@ pub fn restore_reference_theme_and_styles(docx: Vec<u8>) -> anyhow::Result<Vec<u
         // If styles part was absent (very rare — docx-rs always emits it),
         // synthesise one so the reference styles are still present.
         if !wrote_styles {
-            let xml = crate::styles_xml::emit_styles_xml();
+            let xml = crate::thesis_styles::emit_styles_xml_for_profile(styles_profile);
             zout.start_file("word/styles.xml", zip::write::SimpleFileOptions::default())
                 .context("start synthesised styles.xml")?;
             zout.write_all(xml.as_bytes())
@@ -4599,13 +4756,22 @@ fn render_block(
         }
         DocxBlock::CodeBlock { lang, body } => match lang.as_str() {
             // chapter_extras.py port: the "Key topics at a glance" box.
-            "keypoints" => keypoints_box(doc, body),
+            // Wave-3 iter-D (2026-06-04): gated on `emit_chapter_extras`
+            // (default true) so the master_thesis_bookkit profile can
+            // suppress every keypoints box across the document without
+            // touching chapter markdown.
+            "keypoints" if ctx.emit_chapter_extras => keypoints_box(doc, body),
+            "keypoints" => doc,
             // chapter_extras.py port: the per-chapter "Review questions".
-            "quiz" => quiz_block(doc, body, ctx.body_render_use_bk_styles),
+            "quiz" if ctx.emit_chapter_extras => {
+                quiz_block(doc, body, ctx.body_render_use_bk_styles)
+            }
+            "quiz" => doc,
             // bookkit.py port: note / tip / warning admonition callouts.
             "note" | "tip" | "warning" => admonition_box(doc, lang, body, ctx.figdir, ctx.lang),
             // bookkit.py port: a generic titled key-point callout box.
-            "callout" => callout_box(doc, body),
+            "callout" if ctx.emit_chapter_extras => callout_box(doc, body),
+            "callout" => doc,
             // bookkit.py port: pull-quote with optional "— attribution".
             "quote" => quote_block(doc, body),
             // bookkit.py port: lead-in paragraph (slightly larger).
@@ -5269,6 +5435,10 @@ pub fn render_book(
         // Returns an empty manifest when the file is absent (every book
         // except AI-Norms today), so non-manifest books are unaffected.
         size_manifest: SizeManifest::load_from_figdir(figdir),
+        // Wave-3 iter-D (2026-06-04): forward the chapter-extras gate
+        // from the manifest so the CodeBlock arm can skip keypoints /
+        // quiz / callout fenced blocks under the bookkit thesis profile.
+        emit_chapter_extras: meta.emit_chapter_extras,
     };
 
     // Wave 7 (AI-Norms parity, 2026-06-03): when the manifest opts into the
@@ -5342,12 +5512,27 @@ pub fn render_book(
             first = false;
         }
         // End-of-chapter Sources & QR-codes box (bookkit flush_sources).
-        doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
+        // Wave-2 (bookkit chrome suppression, 2026-06-04): gated on
+        // `emit_per_chapter_sources_box` (default true) so the
+        // master_thesis_bookkit profile can suppress every per-chapter
+        // Sources box across the document without touching any chapter
+        // markdown. When suppressed the harvested `ctx.links` are
+        // cleared anyway (we drain via `flush_sources` semantics) so
+        // they do not bleed into the next chapter.
+        if meta.emit_per_chapter_sources_box {
+            doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
+        } else {
+            ctx.links.clear();
+        }
         // Round V (zone A — psb-02, 2026-06-03): emit a thin gray
         // horizontal-rule divider at each chapter end (reference book
         // carries 40 of these). Gated on the bookkit parity opt-in so
         // non-parity books keep the historical untouched chapter close.
-        if meta.body_render_use_bk_styles {
+        // Wave-2 (bookkit chrome suppression, 2026-06-04): also gated on
+        // `emit_chapter_dividers` (default true) so a profile can
+        // suppress the divider even when the bookkit parity opt-in is
+        // active.
+        if meta.body_render_use_bk_styles && meta.emit_chapter_dividers {
             doc = doc.add_paragraph(chapter_end_rule(false));
         }
     }
@@ -5406,11 +5591,17 @@ pub fn render_book(
             doc = render_block(doc, b, &mut ctx, first, numbered);
             first = false;
         }
-        doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
+        // Wave-2 (bookkit chrome suppression, 2026-06-04): mirror the
+        // body-loop gate for the deferred Bibliography chapter.
+        if meta.emit_per_chapter_sources_box {
+            doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
+        } else {
+            ctx.links.clear();
+        }
         // Round V (zone A — psb-02, 2026-06-03): chapter-end divider on
         // the deferred Bibliography chapter(s) too. Same gating as the
-        // body loop above.
-        if meta.body_render_use_bk_styles {
+        // body loop above (now also honouring `emit_chapter_dividers`).
+        if meta.body_render_use_bk_styles && meta.emit_chapter_dividers {
             doc = doc.add_paragraph(chapter_end_rule(false));
         }
     }
@@ -5424,86 +5615,92 @@ pub fn render_book(
     //   * `body_render_use_bk_styles=false` → the historical `INDEX \c 2`
     //     field, filled from XE entries on field update (unchanged
     //     behaviour for every non-parity book).
-    doc = doc.add_paragraph(page_break());
-    let index_h1_style = if meta.body_render_use_bk_styles {
-        "BkH1"
-    } else {
-        "Heading1"
-    };
-    // Round V (zone A — psb-04, 2026-06-03): emit a sentinel paragraph
-    // immediately before the Index heading; the post-process pass
-    // (`insert_index_section_breaks`) rewrites it into a 2-col continuous
-    // sectPr so the Index renders in two columns matching the reference
-    // book layout. Gated on the bookkit parity opt-in to keep non-parity
-    // books on the historical 1-col Index. The matching CLOSE sentinel
-    // is emitted at the end of the Index body further down.
-    if meta.body_render_use_bk_styles {
-        doc = doc
-            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_OPEN__")));
-    }
-    doc = doc.add_paragraph(
-        Paragraph::new().style(index_h1_style).add_run(
-            Run::new()
-                .add_text("Index")
-                .bold()
-                .size(32)
-                .color(NAVY)
-                .fonts(head_fonts()),
-        ),
-    );
-    if meta.body_render_use_bk_styles {
-        let blocks = crate::index::emit_index_section(harvested_index);
-        // Wave 9 diagnostic logging: surface emitted paragraph counts so the
-        // parity gate can be debugged from the build log alone.
-        let n_head = blocks
-            .iter()
-            .filter(|b| matches!(b, crate::index::IndexBlock::Heading(_)))
-            .count();
-        let n_entry = blocks
-            .iter()
-            .filter(|b| matches!(b, crate::index::IndexBlock::Entry { .. }))
-            .count();
-        eprintln!(
-            "    emit_index_section: produced {n_head} IndexHeading + {n_entry} Index1 paragraphs"
-        );
-        for b in blocks {
-            doc = match b {
-                crate::index::IndexBlock::Heading(letter) => doc.add_paragraph(
-                    Paragraph::new().style("IndexHeading").add_run(
-                        Run::new()
-                            .add_text(letter)
-                            .bold()
-                            .size(24)
-                            .fonts(head_fonts()),
-                    ),
-                ),
-                crate::index::IndexBlock::Entry { term, refs } => {
-                    let mut p = Paragraph::new()
-                        .style("Index1")
-                        .add_run(Run::new().add_text(term).size(20).fonts(body_fonts()))
-                        .add_run(Run::new().add_tab());
-                    if refs.is_empty() {
-                        p = p.add_run(Run::new().add_text("?").size(20).fonts(body_fonts()));
-                    } else {
-                        for (i, r) in refs.iter().enumerate() {
-                            if i > 0 {
-                                p = p.add_run(
-                                    Run::new().add_text(", ").size(20).fonts(body_fonts()),
-                                );
-                            }
-                            p = p.add_run(field_run(
-                                &format!("PAGEREF {} \\h", r.bookmark),
-                                "?",
-                                true,
-                            ));
-                        }
-                    }
-                    doc.add_paragraph(p)
-                }
-            };
+    // Wave-2 (bookkit chrome suppression, 2026-06-04): the entire Index
+    // section (page break + heading + body + section-break sentinels) is
+    // gated on `emit_index` (default true). Profiles that want a thesis-
+    // style closing on TOF/TOT/Bibliography (no Index) set this to false.
+    if meta.emit_index {
+        doc = doc.add_paragraph(page_break());
+        let index_h1_style = if meta.body_render_use_bk_styles {
+            "BkH1"
+        } else {
+            "Heading1"
+        };
+        // Round V (zone A — psb-04, 2026-06-03): emit a sentinel paragraph
+        // immediately before the Index heading; the post-process pass
+        // (`insert_index_section_breaks`) rewrites it into a 2-col continuous
+        // sectPr so the Index renders in two columns matching the reference
+        // book layout. Gated on the bookkit parity opt-in to keep non-parity
+        // books on the historical 1-col Index. The matching CLOSE sentinel
+        // is emitted at the end of the Index body further down.
+        if meta.body_render_use_bk_styles {
+            doc = doc.add_paragraph(
+                Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_OPEN__")),
+            );
         }
-    } else {
         doc = doc.add_paragraph(
+            Paragraph::new().style(index_h1_style).add_run(
+                Run::new()
+                    .add_text("Index")
+                    .bold()
+                    .size(32)
+                    .color(NAVY)
+                    .fonts(head_fonts()),
+            ),
+        );
+        if meta.body_render_use_bk_styles {
+            let blocks = crate::index::emit_index_section(harvested_index);
+            // Wave 9 diagnostic logging: surface emitted paragraph counts so the
+            // parity gate can be debugged from the build log alone.
+            let n_head = blocks
+                .iter()
+                .filter(|b| matches!(b, crate::index::IndexBlock::Heading(_)))
+                .count();
+            let n_entry = blocks
+                .iter()
+                .filter(|b| matches!(b, crate::index::IndexBlock::Entry { .. }))
+                .count();
+            eprintln!(
+                "    emit_index_section: produced {n_head} IndexHeading + {n_entry} Index1 paragraphs"
+            );
+            for b in blocks {
+                doc = match b {
+                    crate::index::IndexBlock::Heading(letter) => doc.add_paragraph(
+                        Paragraph::new().style("IndexHeading").add_run(
+                            Run::new()
+                                .add_text(letter)
+                                .bold()
+                                .size(24)
+                                .fonts(head_fonts()),
+                        ),
+                    ),
+                    crate::index::IndexBlock::Entry { term, refs } => {
+                        let mut p = Paragraph::new()
+                            .style("Index1")
+                            .add_run(Run::new().add_text(term).size(20).fonts(body_fonts()))
+                            .add_run(Run::new().add_tab());
+                        if refs.is_empty() {
+                            p = p.add_run(Run::new().add_text("?").size(20).fonts(body_fonts()));
+                        } else {
+                            for (i, r) in refs.iter().enumerate() {
+                                if i > 0 {
+                                    p = p.add_run(
+                                        Run::new().add_text(", ").size(20).fonts(body_fonts()),
+                                    );
+                                }
+                                p = p.add_run(field_run(
+                                    &format!("PAGEREF {} \\h", r.bookmark),
+                                    "?",
+                                    true,
+                                ));
+                            }
+                        }
+                        doc.add_paragraph(p)
+                    }
+                };
+            }
+        } else {
+            doc = doc.add_paragraph(
             Paragraph::new().add_run(
                 Run::new()
                     .add_text(
@@ -5515,21 +5712,33 @@ pub fn render_book(
                     .fonts(body_fonts()),
             ),
         );
-        doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)));
-    }
-    // Round V (zone A — psb-04, 2026-06-03): close the 2-col Index section
-    // by emitting the matching CLOSE sentinel. The post-process pass
-    // rewrites it into a 1-col continuous sectPr so any tail content (and
-    // Word's implicit doc-end sectPr) resumes single-column flow.
-    if meta.body_render_use_bk_styles {
-        doc = doc
-            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_CLOSE__")));
-    }
+            doc = doc.add_paragraph(Paragraph::new().add_run(field_run("INDEX \\c 2", "", true)));
+        }
+        // Round V (zone A — psb-04, 2026-06-03): close the 2-col Index section
+        // by emitting the matching CLOSE sentinel. The post-process pass
+        // rewrites it into a 1-col continuous sectPr so any tail content (and
+        // Word's implicit doc-end sectPr) resumes single-column flow.
+        if meta.body_render_use_bk_styles {
+            doc = doc.add_paragraph(
+                Paragraph::new().add_run(Run::new().add_text("__SECTPR_INDEX_CLOSE__")),
+            );
+        }
+    } // end `if meta.emit_index`
 
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
     let layout = LayoutOverrides::from_meta(meta);
-    postprocess_docx_inner_layout(cur.into_inner(), meta.body_render_use_bk_styles, &layout)
+    let styles_profile = if meta.thesis_typography == TypographyProfile::FhnwProposalParity {
+        crate::thesis_styles::StylesProfile::FhnwMasterThesis
+    } else {
+        crate::thesis_styles::StylesProfile::AiNorms
+    };
+    postprocess_docx_inner_layout(
+        cur.into_inner(),
+        meta.body_render_use_bk_styles,
+        &layout,
+        styles_profile,
+    )
 }
 
 /// FHNW thesis front/back-matter slot a chapter belongs to, decided by its first
@@ -5680,13 +5889,42 @@ fn render_thesis_chapter(
         doc = render_block(doc, b, ctx, first && page_break_before, numbered);
         first = false;
     }
-    doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
+    // Wave-2 Agent C (Python→Rust port, 2026-06-04): honour the bookkit
+    // chrome-suppression flag here too. The two call sites in `render_book`
+    // (lines ≈5440 + 5514) were already gated; this thesis path was not, so
+    // the `master_thesis_bookkit` profile still leaked per-chapter Sources
+    // boxes despite `emit_per_chapter_sources_box=false`. Without this gate
+    // `ctx.links` would still drain via `flush_sources`; we clear it
+    // explicitly to keep semantics identical to the other suppressed paths.
+    if meta.emit_per_chapter_sources_box {
+        doc = flush_sources(doc, &mut ctx.links, &meta.lang, ctx.typography);
+    } else {
+        ctx.links.clear();
+    }
     // Round V (zone A — psb-02, 2026-06-03): chapter-end gray divider on
     // every thesis chapter when the manifest opts into the bookkit
     // parity flag. FHNW thesis books default to false so the proposal
     // docx parity is preserved.
-    if meta.body_render_use_bk_styles {
+    // Wave-2 Agent B (REF parity 2026-06-04): mirror the `render_book`
+    // gate exactly — divider fires when BOTH `body_render_use_bk_styles`
+    // and `emit_chapter_dividers` are true. `master_thesis_bookkit`
+    // opts into both via the manifest; existing `master_thesis` (proposal
+    // parity) keeps `body_render_use_bk_styles=false` so nothing
+    // regresses.
+    if meta.body_render_use_bk_styles && meta.emit_chapter_dividers {
         doc = doc.add_paragraph(chapter_end_rule(false));
+    }
+    // Wave-3 iter-D (REF parity 2026-06-04): emit a per-chapter section
+    // break (`<w:sectPr>` inside an empty `<w:pPr>`) at chapter close so
+    // the document carries one section break per chapter. The reference
+    // master thesis has 19 in-body sectPrs (plus the document-level
+    // sectPr = 20 total); the previous renderer emitted only the
+    // document-level sectPr, leaving the bookkit_reference_targets gate
+    // with a `-15` sect_prs deficit. Gated on
+    // `emit_per_chapter_sectpr` (default false) so non-bookkit
+    // profiles keep the historical single-section layout.
+    if meta.emit_per_chapter_sectpr {
+        doc = doc.add_paragraph(per_chapter_sectpr_paragraph(meta));
     }
     doc
 }
@@ -5756,6 +5994,10 @@ fn render_thesis_book(
         // Returns an empty manifest when the file is absent (every book
         // except AI-Norms today), so non-manifest books are unaffected.
         size_manifest: SizeManifest::load_from_figdir(figdir),
+        // Wave-3 iter-D (2026-06-04): forward the chapter-extras gate so
+        // the thesis path also honours the master_thesis_bookkit
+        // suppression of keypoints / quiz / callout chrome.
+        emit_chapter_extras: meta.emit_chapter_extras,
     };
 
     // `emitted` tracks whether any flow content precedes the next item, so the
@@ -5786,6 +6028,19 @@ fn render_thesis_book(
         ThesisSlot::Acronyms,
     ];
     for item in thesis_layout(chapters) {
+        // Wave-2 (bookkit chrome suppression, 2026-06-04): skip Appendix
+        // chapters entirely when the profile sets
+        // `emit_appendix_in_back_matter = false`. The thesis layout
+        // emits Appendix-slotted chapters just before the back-matter
+        // lists; suppressing them mirrors the reference thesis which
+        // closes on ToF/ToT/Bibliography with no Appendix between.
+        if let ThesisItem::Chapter(i) = item {
+            if !meta.emit_appendix_in_back_matter
+                && thesis_slot(&chapters[i].1) == ThesisSlot::Appendix
+            {
+                continue;
+            }
+        }
         match item {
             ThesisItem::Chapter(i) => {
                 let slot = thesis_slot(&chapters[i].1);
@@ -5854,7 +6109,13 @@ fn render_thesis_book(
                 // INDEX field would just add a blank "Index" page at the
                 // end of the thesis). Designer profile keeps the standard
                 // book Index.
-                if matches!(ctx.typography, TypographyProfile::FhnwProposalParity) {
+                // Wave-2 (bookkit chrome suppression, 2026-06-04): also
+                // skipped when the profile sets `emit_index = false`, so
+                // the master_thesis_bookkit (Designer typography) can
+                // suppress the Index without flipping typography.
+                if matches!(ctx.typography, TypographyProfile::FhnwProposalParity)
+                    || !meta.emit_index
+                {
                     continue;
                 }
                 // Back-of-book Index: the INDEX field, filled from XE entries
@@ -5897,7 +6158,17 @@ fn render_thesis_book(
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack thesis docx")?;
     let layout = LayoutOverrides::from_meta(meta);
-    postprocess_docx_inner_layout(cur.into_inner(), meta.body_render_use_bk_styles, &layout)
+    let styles_profile = if meta.thesis_typography == TypographyProfile::FhnwProposalParity {
+        crate::thesis_styles::StylesProfile::FhnwMasterThesis
+    } else {
+        crate::thesis_styles::StylesProfile::AiNorms
+    };
+    postprocess_docx_inner_layout(
+        cur.into_inner(),
+        meta.body_render_use_bk_styles,
+        &layout,
+        styles_profile,
+    )
 }
 
 #[cfg(test)]
@@ -5954,6 +6225,81 @@ mod tests {
                 "chapter_end_rule must not emit any text runs — the border IS the divider"
             );
         }
+    }
+
+    /// Wave-2 Agent B (REF parity 2026-06-04). The `master_thesis_bookkit`
+    /// profile opts into per-chapter horizontal-rule dividers via the
+    /// manifest `emit_chapter_dividers=true` plus
+    /// `body_render_use_bk_styles=true`. When both are set, every
+    /// chapter close in `render_book` and `render_thesis_chapter` must
+    /// emit a `<w:bottom>` border paragraph. With either flag off, no
+    /// divider must be emitted (regression guard for the historical
+    /// `master_thesis` proposal-parity path).
+    #[test]
+    fn chapter_dividers_emit_per_chapter_when_flag_true() {
+        use std::io::Read;
+        fn doc_xml(bytes: &[u8]) -> String {
+            let mut z = zip::ZipArchive::new(Cursor::new(bytes.to_vec())).unwrap();
+            let mut s = String::new();
+            z.by_name("word/document.xml")
+                .unwrap()
+                .read_to_string(&mut s)
+                .unwrap();
+            s
+        }
+        // 3 chapters, both flags on → ≥3 paragraph dividers emitted by
+        // `render_book`.
+        let chapters: Vec<(String, String)> = (1..=3)
+            .map(|i| (format!("ch{i}"), format!("# Chapter {i}\n\nBody.\n")))
+            .collect();
+        let meta_on = BookMeta {
+            title: "T".into(),
+            author: "A".into(),
+            body_render_use_bk_styles: true,
+            emit_chapter_dividers: true,
+            ..Default::default()
+        };
+        let bytes_on = render_book(&meta_on, &chapters, Path::new(".")).expect("render_book on");
+        let bottoms_on = doc_xml(&bytes_on).matches("<w:pBdr").count();
+        assert!(
+            bottoms_on >= 3,
+            "expected ≥3 <w:pBdr> divider paragraphs with both flags on, got {bottoms_on}"
+        );
+
+        // Same chapters, divider flag OFF → strictly fewer paragraph borders.
+        let meta_off = BookMeta {
+            emit_chapter_dividers: false,
+            ..meta_on.clone()
+        };
+        let bytes_off = render_book(&meta_off, &chapters, Path::new(".")).expect("render_book off");
+        let bottoms_off = doc_xml(&bytes_off).matches("<w:pBdr").count();
+        assert!(
+            bottoms_off < bottoms_on,
+            "expected fewer <w:pBdr> paragraphs with divider flag off ({bottoms_off}) than on ({bottoms_on})"
+        );
+    }
+
+    /// Wave-2 Agent B (REF parity 2026-06-04). The `ThesisTypography`
+    /// table in `crate::thesis_typography` must declare the verbatim
+    /// reference-fixture font specs (Palatino-Linotype body, Calibri
+    /// headings, 4F81BD accent). This test is a re-export of the
+    /// module-local test, surfaced in `book.rs::tests` so the
+    /// integration suite picks it up under `cargo test -p agentic-export
+    /// thesis_typography_uses_reference_font_specs`.
+    #[test]
+    fn thesis_typography_uses_reference_font_specs() {
+        use crate::thesis_typography::ThesisTypography;
+        let t = ThesisTypography::default();
+        assert_eq!(t.normal.ascii, "Palatino Linotype");
+        assert_eq!(t.normal.size_hp, 22, "body 11pt = 22 half-points");
+        assert_eq!(t.heading1.ascii, "Calibri");
+        assert_eq!(t.heading1.size_hp, 48, "H1 24pt = 48 half-points");
+        assert!(t.heading1.bold, "H1 bold per reference Title style");
+        assert_eq!(
+            t.heading4.color, "4F81BD",
+            "H4 carries the accent1 theme colour"
+        );
+        assert_eq!(t.caption.color, "4F81BD", "Caption accent-blue");
     }
 
     /// Round V (zone A — psb-04, 2026-06-03): the sentinel rewriter
@@ -6871,6 +7217,234 @@ mod tests {
         .into_iter()
         .map(|(l, m)| (l.to_string(), m.to_string()))
         .collect()
+    }
+
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04):
+    /// the `master_thesis_bookkit` profile must render zero `Index1`
+    /// paragraphs when the manifest sets `emit_index = false`. The
+    /// reference thesis carries 0 Index1 paragraphs; the current bookkit
+    /// output carries 43 (cached `INDEX \c 2` field expansion in Word).
+    /// Suppressing the whole Index section eliminates the chrome.
+    #[test]
+    fn thesis_chrome_suppression_skips_index() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Bookkit chrome suppression — Index".into(),
+            thesis_profile: true,
+            emit_index: false,
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        let index1_count = xml.matches("w:val=\"Index1\"").count();
+        assert_eq!(
+            index1_count, 0,
+            "emit_index=false must suppress every pStyle=Index1 paragraph, got {index1_count}"
+        );
+        // The INDEX field itself must also be gone (the source of cached
+        // Index1 entries on Word's field update).
+        assert!(
+            !xml.contains("INDEX \\c 2"),
+            "emit_index=false must suppress the INDEX field instruction text"
+        );
+    }
+
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04):
+    /// when the manifest sets `emit_appendix_in_back_matter = false`,
+    /// chapters classified as `ThesisSlot::Appendix` must not be emitted.
+    /// The reference thesis closes on ToF → ToT → Bibliography with no
+    /// Appendix chapter between body and back-matter lists.
+    #[test]
+    fn thesis_chrome_suppression_skips_appendix() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Bookkit chrome suppression — Appendix".into(),
+            thesis_profile: true,
+            emit_appendix_in_back_matter: false,
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        // The Appendix heading text from the fixture chapter must not
+        // appear in the body. ("Appendix: Research Prompts" is the only
+        // Appendix-classified chapter in `master_thesis_chapters()`.)
+        assert!(
+            !xml.contains("Appendix: Research Prompts"),
+            "emit_appendix_in_back_matter=false must suppress every Appendix-classified chapter"
+        );
+        // The Bibliography (back-matter list) must still render — the
+        // suppression is scoped to Appendix-classified chapters only.
+        assert!(
+            xml.contains("Bibliography"),
+            "Bibliography must still render when only Appendix is suppressed"
+        );
+    }
+
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04):
+    /// when the manifest sets `emit_per_chapter_sources_box = false`, the
+    /// engine must NOT emit any "Sources & QR codes" boxes (bookkit
+    /// `flush_sources`). The reference thesis has zero per-chapter
+    /// Sources boxes; the current bookkit profile emits one per chapter.
+    #[test]
+    fn thesis_chrome_suppression_skips_per_chapter_sources() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Bookkit chrome suppression — Sources box".into(),
+            thesis_profile: true,
+            emit_per_chapter_sources_box: false,
+            ..Default::default()
+        };
+        // Use a chapter set that includes a URL (so `flush_sources` would
+        // otherwise emit a Sources box).
+        let chapters = vec![
+            (
+                "tp".to_string(),
+                "# Title Page\n\nMaster Thesis Submission.\n".to_string(),
+            ),
+            (
+                "c1".to_string(),
+                "# Introduction\n\nSee https://example.org for context.\n".to_string(),
+            ),
+            (
+                "bib".to_string(),
+                "# Bibliography\n\nDoe, J. (2026). https://doe.example/paper.\n".to_string(),
+            ),
+        ];
+        let bytes = render_book(&meta, &chapters, Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(
+            !xml.contains("Sources &amp; QR codes"),
+            "emit_per_chapter_sources_box=false must suppress every Sources & QR codes box"
+        );
+    }
+
+    /// Wave-3 iter-D (REF parity 2026-06-04): when `emit_per_chapter_sectpr`
+    /// is set, the thesis renderer must emit one `<w:sectPr>` per chapter
+    /// (plus the document-level sectPr that docx-rs always writes), so the
+    /// total sectPr count climbs from 1 to N+1 where N is the chapter
+    /// count. The reference master thesis has 19 in-body sectPrs + 1 doc-
+    /// level = 20 total; the previous renderer emitted only the doc-level
+    /// sectPr, leaving a 15-deficit in the bookkit_reference_targets gate.
+    #[test]
+    fn thesis_emit_per_chapter_sectpr_lifts_section_count() {
+        use std::io::Read;
+        // Baseline: flag off (historical) — expect 1 sectPr.
+        let baseline_meta = BookMeta {
+            title: "Bookkit per-chapter sectpr — baseline".into(),
+            thesis_profile: true,
+            ..Default::default()
+        };
+        let baseline_bytes =
+            render_book(&baseline_meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(baseline_bytes)).unwrap();
+        let mut baseline_xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut baseline_xml)
+            .unwrap();
+        let baseline_sectpr = baseline_xml.matches("<w:sectPr").count();
+        // Sanity: historical render carries exactly one doc-level sectPr.
+        assert!(
+            baseline_sectpr >= 1,
+            "baseline must carry at least the doc-level sectPr, got {baseline_sectpr}"
+        );
+
+        // Opt-in: flag on — every body chapter contributes one sectPr.
+        let opt_in_meta = BookMeta {
+            title: "Bookkit per-chapter sectpr — opt-in".into(),
+            thesis_profile: true,
+            emit_per_chapter_sectpr: true,
+            ..Default::default()
+        };
+        let opt_in_bytes =
+            render_book(&opt_in_meta, &master_thesis_chapters(), Path::new(".")).unwrap();
+        let mut zip2 = zip::ZipArchive::new(Cursor::new(opt_in_bytes)).unwrap();
+        let mut opt_in_xml = String::new();
+        zip2.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut opt_in_xml)
+            .unwrap();
+        let opt_in_sectpr = opt_in_xml.matches("<w:sectPr").count();
+        // The fixture has 14 chapters; opt-in must add at least 10 sectPrs
+        // (the renderer skips Appendix when `emit_appendix_in_back_matter`
+        // is false, but in this test that flag stays true ⇒ every chapter
+        // contributes one sectPr).
+        assert!(
+            opt_in_sectpr > baseline_sectpr + 10,
+            "opt-in must add ≥10 in-body sectPrs (got baseline={baseline_sectpr}, opt-in={opt_in_sectpr})"
+        );
+    }
+
+    /// Wave-3 iter-D (REF parity 2026-06-04): when `emit_chapter_extras`
+    /// is `false`, the renderer must skip every ```keypoints```, ```quiz```
+    /// and ```callout``` fenced block (no paragraphs emitted, no BkCallout
+    /// pStyle, no body text from the fenced block). The default `true`
+    /// preserves historical AI Norms behaviour (covered by
+    /// `chapter_extras_paragraph`).
+    #[test]
+    fn thesis_emit_chapter_extras_false_suppresses_keypoints_quiz_callout() {
+        use std::io::Read;
+        let meta = BookMeta {
+            title: "Bookkit chapter-extras suppression".into(),
+            thesis_profile: true,
+            emit_chapter_extras: false,
+            ..Default::default()
+        };
+        let chapters = vec![
+            (
+                "tp".to_string(),
+                "# Title Page\n\nMaster Thesis Submission.\n".to_string(),
+            ),
+            (
+                "c1".to_string(),
+                "# Introduction\n\nBody prose stays.\n\n\
+                 ```keypoints\n- Alpha keypoint marker\n- Beta keypoint marker\n```\n\n\
+                 ```quiz\nQ: question prose marker\nA: answer prose marker\n```\n\n\
+                 ```callout\nKey takeaway marker:\nbody marker line\n```\n"
+                    .to_string(),
+            ),
+        ];
+        let bytes = render_book(&meta, &chapters, Path::new(".")).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        // Body prose preserved.
+        assert!(xml.contains("Body prose stays"));
+        // All three suppressed blocks: no marker text leaks into the docx.
+        assert!(
+            !xml.contains("Alpha keypoint marker"),
+            "keypoints body must not render when emit_chapter_extras=false"
+        );
+        assert!(
+            !xml.contains("question prose marker"),
+            "quiz body must not render when emit_chapter_extras=false"
+        );
+        assert!(
+            !xml.contains("Key takeaway marker"),
+            "callout title must not render when emit_chapter_extras=false"
+        );
+        assert!(
+            !xml.contains("body marker line"),
+            "callout body must not render when emit_chapter_extras=false"
+        );
     }
 
     #[test]
@@ -9045,7 +9619,9 @@ mod tests {
             assert!(!has_theme, "fixture must start with no theme part");
         }
 
-        let restored = restore_reference_theme_and_styles(input).unwrap();
+        let restored =
+            restore_reference_theme_and_styles(input, crate::thesis_styles::StylesProfile::AiNorms)
+                .unwrap();
 
         // After restore: theme part must exist, CT must have Override,
         // rels must have Relationship pointing at the theme.
@@ -9145,10 +9721,16 @@ mod tests {
             z.finish().unwrap();
         }
         let input = buf.into_inner();
-        let restored = restore_reference_theme_and_styles(input).unwrap();
+        let restored =
+            restore_reference_theme_and_styles(input, crate::thesis_styles::StylesProfile::AiNorms)
+                .unwrap();
         // Re-running on the result must produce the same bytes (modulo
         // the zip layout; we check CT/rels invariants instead).
-        let restored2 = restore_reference_theme_and_styles(restored.clone()).unwrap();
+        let restored2 = restore_reference_theme_and_styles(
+            restored.clone(),
+            crate::thesis_styles::StylesProfile::AiNorms,
+        )
+        .unwrap();
         let mut z2 = zip::ZipArchive::new(Cursor::new(restored2)).unwrap();
         let mut ct = String::new();
         let mut rels = String::new();

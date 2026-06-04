@@ -147,7 +147,45 @@ struct BookSpec {
     tot_heading: Option<String>,
     #[serde(default)]
     inscription_page_enabled: bool,
+    /// Wave-2 (Bookkit profile chrome suppression, REF parity 2026-06-04).
+    /// Four boolean knobs the engine reads to suppress book chrome on a
+    /// per-profile basis. Each defaults to `true` so historical books
+    /// are unaffected; `master_thesis_bookkit` opts three of them out
+    /// (`emit_index`, `emit_appendix_in_back_matter`,
+    /// `emit_per_chapter_sources_box`) to match the reference thesis.
+    /// `emit_chapter_dividers` stays `true` because the reference book
+    /// carries ≥40 horizontal rules. See `BookMeta` for engine semantics.
+    #[serde(default = "default_true")]
+    emit_index: bool,
+    #[serde(default = "default_true")]
+    emit_appendix_in_back_matter: bool,
+    #[serde(default = "default_true")]
+    emit_per_chapter_sources_box: bool,
+    #[serde(default = "default_true")]
+    emit_chapter_dividers: bool,
+    /// Wave-3 iter-D (REF parity 2026-06-04). When `true`, the bookkit
+    /// thesis renderer emits a `<w:sectPr>` paragraph at every chapter
+    /// close so the document carries one section break per chapter
+    /// (reference master thesis: 19 in-body sectPrs + 1 doc-level = 20
+    /// total). Defaults to `false` so non-bookkit profiles keep the
+    /// historical single document-level sectPr layout.
+    #[serde(default)]
+    emit_per_chapter_sectpr: bool,
+    /// Wave-3 iter-D (REF parity 2026-06-04). When `true` (historical
+    /// default) the engine renders ```keypoints```, ```quiz``` and
+    /// ```callout``` fenced blocks as the bookkit `chapter_extras`
+    /// chrome. The `master_thesis_bookkit` manifest sets this to `false`
+    /// so the FHNW reference-thesis output has no per-chapter
+    /// key-topic / review-question / callout chrome.
+    #[serde(default = "default_true")]
+    emit_chapter_extras: bool,
     chapters: Vec<String>,
+}
+
+/// Serde helper for the Wave-2 chrome-suppression flags whose historical
+/// default is `true` (engine emits the chrome) rather than `false`.
+fn default_true() -> bool {
+    true
 }
 
 fn sanitize(s: &str) -> String {
@@ -542,6 +580,90 @@ mod strip_tests {
         assert!(
             ct.contains("/word/theme/theme1.xml"),
             "Content_Types must reference the synthesised theme part: {ct}"
+        );
+    }
+
+    /// Wave-3 iter-E (REF parity 2026-06-04, master_thesis_bookkit sectPr
+    /// wiring regression). Pins the END-TO-END flag flow that iter-D added
+    /// but a stale cascade snapshot did not exhibit:
+    ///   manifest JSON  →  `BookSpec` (serde, `#[serde(default)]`)
+    ///                  →  `BookMeta` (`emit_per_chapter_sectpr` field)
+    ///                  →  `render_book` (thesis branch, `render_thesis_chapter`)
+    ///                  →  `per_chapter_sectpr_paragraph` at chapter close.
+    ///
+    /// The iter-D engine-level test (`thesis_emit_per_chapter_sectpr_lifts_
+    /// section_count`) constructs `BookMeta` directly and so does not cover
+    /// the serde + translation legs. This test wires the *manifest* leg —
+    /// if a future refactor renames the field or forgets to forward it from
+    /// `BookSpec` to `BookMeta`, this test fails before any cascade runs.
+    ///
+    /// Expectation: ≥10 `<w:sectPr` matches in `word/document.xml` (1 doc-
+    /// level + N body chapters, N>9 for the 14-chapter fixture). Word-COM
+    /// finalize is out of scope for a `cargo test` job; the cascade output
+    /// is verified separately by the bookkit_reference_targets gate.
+    #[test]
+    fn manifest_emit_per_chapter_sectpr_flows_into_render_book() {
+        use std::io::Read;
+        // Minimal JSON modelled on the `master_thesis_bookkit` manifest
+        // entry: just the structural fields the serde plumbing must carry.
+        let json = r#"{
+            "key": "manifest_wiring_probe",
+            "title": "Per-chapter sectPr — manifest wiring probe",
+            "chapters": [],
+            "thesis_profile": true,
+            "emit_per_chapter_sectpr": true
+        }"#;
+        let spec: super::BookSpec =
+            serde_json::from_str(json).expect("BookSpec must deserialise the bookkit fields");
+        assert!(
+            spec.thesis_profile,
+            "thesis_profile must round-trip from JSON"
+        );
+        assert!(
+            spec.emit_per_chapter_sectpr,
+            "emit_per_chapter_sectpr must round-trip from JSON (regression of iter-D's serde plumbing)"
+        );
+
+        // Mirror the BookSpec→BookMeta translation that `build_one` performs.
+        // We only set the fields the renderer needs for the sectPr count
+        // assertion; everything else inherits BookMeta::Default.
+        let meta = agentic_export::book::BookMeta {
+            title: spec.title.clone(),
+            thesis_profile: spec.thesis_profile,
+            emit_per_chapter_sectpr: spec.emit_per_chapter_sectpr,
+            ..Default::default()
+        };
+        assert!(
+            meta.emit_per_chapter_sectpr,
+            "BookMeta must carry the spec's emit_per_chapter_sectpr=true (translation regression)"
+        );
+
+        // 14-chapter fixture mirroring the bookkit chapter shape; each
+        // chapter is one paragraph long so the renderer's chapter loop
+        // fires `per_chapter_sectpr_paragraph` once per chapter.
+        let chapters: Vec<(String, String)> = (1..=14)
+            .map(|i| {
+                (
+                    format!("ch{i}"),
+                    format!("# Chapter {i}\n\nBody prose for chapter {i}.\n"),
+                )
+            })
+            .collect();
+        let bytes = agentic_export::book::render_book(&meta, &chapters, std::path::Path::new("."))
+            .expect("render_book must succeed for the thesis profile");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        let sect_prs = xml.matches("<w:sectPr").count();
+        assert!(
+            sect_prs >= 10,
+            "manifest-driven render must emit ≥10 <w:sectPr (1 doc-level + N body); got {sect_prs}. \
+             If this fails, check (1) BookSpec.emit_per_chapter_sectpr deserialisation, \
+             (2) the BookSpec→BookMeta translation in build_one, \
+             (3) render_book's thesis-profile branch reaching render_thesis_chapter."
         );
     }
 }
@@ -982,12 +1104,24 @@ fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result
         .with_context(|| format!("read {} for collapse pass", path.display()))?;
     let collapsed = agentic_export::book::collapse_empty_header_footer_parts(bytes)
         .with_context(|| format!("collapse pass for {}", path.display()))?;
+    // Wave-2-D bookkit routing: choose the styles fixture by docx basename. The
+    // master_thesis_bookkit profile ships a 178-style FHNW thesis reference;
+    // all other books (AI Norms, campaigns, master_thesis, etc.) use the 186-
+    // style AI-Norms verbatim port. Decision is per-file because the cascade
+    // loops over rendered docs after finalize_docs returns.
+    let styles_profile = match path.file_name().and_then(|s| s.to_str()) {
+        Some("master_thesis_bookkit.docx") => {
+            agentic_export::thesis_styles::StylesProfile::FhnwMasterThesis
+        }
+        _ => agentic_export::thesis_styles::StylesProfile::AiNorms,
+    };
     let final_bytes = if restore_theme_and_styles {
         // Round V zone B: re-inject theme1.xml + styles.xml AFTER Word COM
-        // finalize so the Office-2010 Calibri/Cambria pair + the 186-style
-        // fixture survive the round-trip. Without this step Word's save
-        // silently overwrites both with its modern Office-2016 defaults.
-        agentic_export::book::restore_reference_theme_and_styles(collapsed)
+        // finalize so the Office-2010 Calibri/Cambria pair + the right styles
+        // fixture (per profile) survive the round-trip. Without this step
+        // Word's save silently overwrites both with its modern Office-2016
+        // defaults.
+        agentic_export::book::restore_reference_theme_and_styles(collapsed, styles_profile)
             .with_context(|| format!("theme/styles restore for {}", path.display()))?
     } else {
         collapsed
@@ -1402,6 +1536,19 @@ fn build_one(
         tof_heading: spec.tof_heading.clone(),
         tot_heading: spec.tot_heading.clone(),
         inscription_page_enabled: spec.inscription_page_enabled,
+        // Wave-2 (bookkit chrome suppression, 2026-06-04): forward each
+        // flag straight to the engine. Defaults are `true` via
+        // `default_true()`, so books that don't declare these stay
+        // identical to the historical Designer output.
+        emit_index: spec.emit_index,
+        emit_appendix_in_back_matter: spec.emit_appendix_in_back_matter,
+        emit_per_chapter_sources_box: spec.emit_per_chapter_sources_box,
+        emit_chapter_dividers: spec.emit_chapter_dividers,
+        // Wave-3 iter-D (2026-06-04): forward the two new
+        // structural-parity flags. Defaults preserve historical
+        // behaviour for every existing book.
+        emit_per_chapter_sectpr: spec.emit_per_chapter_sectpr,
+        emit_chapter_extras: spec.emit_chapter_extras,
     };
     let bytes = render_book(&meta, &chapters, work)?;
     let path = out.join(format!("{}.docx", spec.key));
