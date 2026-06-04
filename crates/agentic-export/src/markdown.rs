@@ -180,11 +180,15 @@ impl DocxRun {
 ///
 /// A bare URL is a contiguous run starting with `http://` or `https://`, ending
 /// at the first ASCII whitespace OR at one of the common trailing punctuation
-/// characters `,;:.!?` when followed by whitespace / end-of-string. We do NOT
-/// strip a trailing `)` because URLs frequently contain balanced parens (e.g.
-/// Wikipedia article titles). This matches bookkit `_autolink` behaviour
-/// closely enough to reproduce the reference book's QR-code count without
-/// false-positives on prose punctuation.
+/// characters `,;:.!?` when followed by whitespace / end-of-string.
+///
+/// Trailing `)` is handled by the GFM-autolink balanced-paren rule: it is
+/// preserved when the URL contains balanced parens (e.g. Wikipedia titles like
+/// `…/Foo_(disambiguation)`) and stripped when unbalanced (more `)` than `(`),
+/// where the closing paren belongs to the surrounding prose — e.g. URLs sitting
+/// inside a parenthetical clause `(see https://example.org/x)`. Without this,
+/// the rendered hyperlink and its end-of-chapter QR code both encode the stray
+/// `)` and fail to resolve.
 pub fn split_bare_urls(s: &str) -> Vec<(String, Option<String>)> {
     let mut out: Vec<(String, Option<String>)> = Vec::new();
     let mut rest = s;
@@ -241,13 +245,28 @@ fn url_end(s: &str) -> usize {
         }
         i += 1;
     }
-    // Strip a trailing run of sentence punctuation. URLs rarely end with
-    // `,;:.!?` — readers expect these to belong to the surrounding prose.
-    while i > 0 {
-        let last = bytes[i - 1];
-        if matches!(last, b',' | b';' | b':' | b'.' | b'!' | b'?') {
+    // Repeatedly strip trailing characters that belong to the surrounding
+    // prose, not the URL:
+    //   1. sentence-end punctuation `,;:.!?` — never legal at URL end.
+    //   2. a closing `)` IFF the URL substring [0..i) holds more `)` than `(`
+    //      (GFM autolink balanced-paren rule: preserve Wikipedia-style
+    //      `…/Foo_(disambiguation)` but strip the prose `)` that closes a
+    //      parenthetical like `(available at https://example.org/x)`).
+    // Loop because the two rules interact — a URL can end with `).`, where
+    // the `.` must be stripped first before the balanced-paren check sees `)`.
+    loop {
+        let before = i;
+        while i > 0 && matches!(bytes[i - 1], b',' | b';' | b':' | b'.' | b'!' | b'?') {
             i -= 1;
-        } else {
+        }
+        if i > 0 && bytes[i - 1] == b')' {
+            let opens = bytes[..i].iter().filter(|&&c| c == b'(').count();
+            let closes = bytes[..i].iter().filter(|&&c| c == b')').count();
+            if closes > opens {
+                i -= 1;
+            }
+        }
+        if i == before {
             break;
         }
     }
@@ -634,6 +653,55 @@ mod tests {
                 "https://b.example".to_string()
             ],
             "unexpected URL split: {segs:?}",
+        );
+    }
+
+    #[test]
+    fn split_bare_urls_strips_unbalanced_trailing_paren() {
+        // Photon OS compliance declaration shape: URL sitting inside a
+        // parenthetical clause. The trailing `)` belongs to the prose, not
+        // the URL — leaving it in breaks both the clickable hyperlink and
+        // the end-of-chapter QR code.
+        let segs = split_bare_urls(
+            "available at https://docs.broadcom.com/doc/end-user-agreement-english), including",
+        );
+        let urls: Vec<_> = segs.iter().filter_map(|(_, u)| u.clone()).collect();
+        assert_eq!(
+            urls,
+            vec!["https://docs.broadcom.com/doc/end-user-agreement-english".to_string()],
+            "expected trailing `)` stripped: {segs:?}",
+        );
+    }
+
+    #[test]
+    fn split_bare_urls_strips_paren_after_semicolon() {
+        // Appendix-B shape: URL followed by `);` — the `;` strip must fire
+        // first so the balanced-paren check then sees the unbalanced `)`.
+        let segs = split_bare_urls(
+            "(https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md); rest",
+        );
+        let urls: Vec<_> = segs.iter().filter_map(|(_, u)| u.clone()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md".to_string()
+            ],
+            "expected `);` fully stripped: {segs:?}",
+        );
+    }
+
+    #[test]
+    fn split_bare_urls_keeps_balanced_internal_parens() {
+        // Wikipedia-style URL with balanced parens — the closing `)` is
+        // legitimately part of the URL and must NOT be stripped. Counter-
+        // example to the unbalanced-paren strip rule above.
+        let segs =
+            split_bare_urls("see https://en.wikipedia.org/wiki/Foo_(disambiguation) for details");
+        let urls: Vec<_> = segs.iter().filter_map(|(_, u)| u.clone()).collect();
+        assert_eq!(
+            urls,
+            vec!["https://en.wikipedia.org/wiki/Foo_(disambiguation)".to_string()],
+            "expected balanced `(...)` preserved: {segs:?}",
         );
     }
 
