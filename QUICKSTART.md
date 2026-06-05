@@ -39,6 +39,26 @@ env vars — e.g. `$env:ANTHROPIC_API_KEY` or `AGENTIC_<PROVIDER>_KEY`:
 & $agx provider set-key anthropic        # stores in OS keychain (short API keys only)
 ```
 
+**Force a specific provider per task.** The router defaults to the provider
+matching the detected CLI context (e.g. Claude Code → Anthropic for chat).
+To override — e.g. if your Anthropic billing is exhausted and you want chat
+traffic on xAI Grok instead — set `AGENTIC_<TASK>_PROVIDER` (per-task) or
+`AGENTIC_DEFAULT_PROVIDER` (global). Explicit env overrides win over the
+CLI-context default; an unsupported pairing (e.g. `Voyage` for `Chat`,
+which it can't serve) silently falls through to the next rung.
+
+```powershell
+$env:AGENTIC_CHAT_PROVIDER      = "grok"          # only chat-tasks (Task::Chat)
+$env:AGENTIC_CLASSIFY_PROVIDER  = "grok"          # only inbox-classify (Task::Classify)
+$env:AGENTIC_DEFAULT_PROVIDER   = "grok"          # any task Grok supports (everything except embed)
+```
+
+Embedding tasks (`Task::Embed`) cannot be served by Anthropic or Grok; if
+no embed-capable provider key is configured the embed gate cleanly SKIPs
+per ADR-0051 §3.3 rather than failing. To enable Ollama as a last-resort
+local embed fallback, set `AGENTIC_OLLAMA_ENABLE=1` *and* keep the Ollama
+daemon reachable on the default port (`http://localhost:11434`).
+
 ## 3 Make the database the source of truth
 
 Ingest exactly the git-tracked files (the authored sources) in one commit, then

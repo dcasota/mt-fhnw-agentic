@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **Documentation gap (2026-06-04 audit):** detailed entries for releases
+> `0.1.18` (AI Norms parity baseline, 4 new gates, 7 figure renderers,
+> 186-style raw-XML port; tag `30a0c8c`), `0.1.19` (AI Norms visual parity
+> PASS, 5 new gates, 8 figspec renderers across Round V; tag `868e9fe`)
+> and `0.1.20` (MasterThesis-Bookkit profile, per-book parity gate routing,
+> Wave-1/2/3 close-out; tag `54676fc`) are not yet backfilled below; refer
+> to the release commits and to `specs/adr/0061-master-thesis-bookkit-parity-gate.md`
+> in the thesis repo for the canonical narrative until this gap is closed.
+
+## [Unreleased]
+
+### Fixed
+
+- **Router — explicit env overrides win over CLI-context defaults**
+  (`crates/agentic-providers/src/router.rs`). The Lookup order in `route()`
+  was: (1) CLI context → (2) `AGENTIC_<TASK>_PROVIDER` env → (3)
+  `AGENTIC_DEFAULT_PROVIDER` env → (4) available-key scan → (5) hard
+  fallback. Under a known CLI context (e.g. Claude Code → Anthropic) the
+  early return short-circuited before the env-var rungs were consulted, so a
+  user inside Claude Code who explicitly set `AGENTIC_CHAT_PROVIDER=grok` was
+  silently routed back to Anthropic. When their Anthropic billing was
+  exhausted the call then failed at the vendor with `credit balance too low`
+  even though they had a valid `XAI_API_KEY` in env. **Reordered to:**
+  (1) `AGENTIC_<TASK>_PROVIDER` → (2) `AGENTIC_DEFAULT_PROVIDER` → (3) CLI
+  context → (4) available-key scan → (5) hard fallback. Explicit user intent
+  now always wins over implicit context inference. Extracted the first three
+  rungs into `route_from_explicit_overrides(task, env_lookup, ctx)` — a pure
+  function with injectable env-lookup so the ordering invariant can be tested
+  without env mutation (which `deny(unsafe_code)` would forbid via
+  `std::env::set_var` in edition 2024). 6 new tests lock the order:
+  per-task-env wins over CLI context, default-env wins over CLI context,
+  per-task-env beats default-env, CLI context default still used when no env
+  override is set, unsupported env override falls through (e.g. `Voyage` for
+  `Chat`), and `Unknown` context with no overrides returns `None` (caller
+  continues to the available-key scan).
+
+- **Bare-URL extractor strips unbalanced trailing `)` (GFM autolink rule)**
+  (`crates/agentic-export/src/markdown.rs::url_end`, commit `444de07`).
+  The extractor previously stripped trailing sentence punctuation `,;:.!?`
+  but deliberately preserved trailing `)` to keep Wikipedia-style URLs like
+  `.../Foo_(disambiguation)` intact. That intuition is correct for balanced
+  parens but breaks for URLs sitting inside a parenthetical clause: the
+  closing `)` belongs to the prose, not the URL, yet was absorbed into both
+  the rendered hyperlink target and the per-chapter Sources & QR-codes box
+  PNG — leaving the URL unresolvable and the QR unscannable. **Adopted the
+  GFM-autolink balanced-paren rule:** strip a trailing `)` iff the URL
+  substring has more `)` than `(`. The two strip passes (sentence
+  punctuation and unbalanced `)`) loop so URLs ending with `).` or `);`
+  normalise correctly (strip the punct first, then re-check `)`). 3 new
+  tests cover the Photon-OS-compliance shape (`.../english),`), the
+  appendix-B shape (`.../statement.md);`), and the Wikipedia counter-case
+  (balanced `(disambiguation)` preserved). End-to-end verification: rebuilt
+  `master_thesis.docx`, all 3 affected URLs (`docs.broadcom.com/.../end-user-
+  agreement-english`, `slsa.dev/spec/v1.0/provenance`, `github.com/in-toto/
+  attestation/.../statement.md`) now appear clean in
+  `word/_rels/document.xml.rels`, with the prose `)` correctly emitted as a
+  separate text run after `</w:hyperlink>`.
+
+- **CI — `horizontal_rule_check_warns_when_close_to_threshold` test fixture
+  updated for live-derived target** (`crates/agentic-checks/src/parity_icons.rs`,
+  commit `00c3535`). Wave-3 rewrote `check_horizontal_rule_count` to derive
+  the reference target live (replacing the hardcoded
+  `REF_HORIZONTAL_RULE_MIN=40` floor with a ±20 % band, minimum 5). With the
+  unreadable-`"ref"`-path fallback target of 40 and band of 8, the old
+  fixture (35 horizontal rules, `|delta|=5`) now sits inside the Info band
+  instead of the Warn band. Fixture updated to 30 rules (`|delta|=10`, just
+  outside Info, inside Warn), comment documents the band arithmetic. Closes
+  the all-3-OS CI failure that landed alongside the v0.1.20 release tag.
+
 ## [0.1.17] — 2026-05-30
 
 ### Added

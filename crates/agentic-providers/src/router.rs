@@ -99,46 +99,76 @@ pub fn default_model(kind: ProviderKind, task: Task) -> &'static str {
     }
 }
 
-/// Resolve which provider + model to use for a given [`Task`].
+/// Pure resolver for the first three rungs of the lookup chain (env-var
+/// overrides + CLI context). Extracted so the ordering invariant can be
+/// tested without env-mutation (which the `agentic-providers` crate's
+/// `deny(unsafe_code)` would forbid via `std::env::set_var` in edition 2024).
+/// Returns `None` when none of the three rungs produced a viable route — the
+/// caller then continues with the available-key scan + hard fallback.
 #[must_use]
-pub fn route(task: Task) -> Route {
-    let ctx = detect_cli_context();
-    if ctx != CliContext::Unknown {
-        let kind = provider_for_context(ctx);
-        if supports_task(kind, task) {
-            return Route {
-                kind,
-                model: model_or_default(kind, task),
-                reason: format!("cli-context:{}", ctx_label(ctx)),
-            };
-        }
-        // CLI context can't serve this task (e.g. embed under Anthropic);
-        // fall through to env-var / default chain.
-    }
-
+pub fn route_from_explicit_overrides<F>(task: Task, env_lookup: F, ctx: CliContext) -> Option<Route>
+where
+    F: Fn(&str) -> Option<String>,
+{
     let task_env = format!("AGENTIC_{}_PROVIDER", task.as_str().to_uppercase());
-    if let Ok(name) = env::var(&task_env) {
+    if let Some(name) = env_lookup(&task_env) {
         if let Ok(kind) = name.parse::<ProviderKind>() {
             if supports_task(kind, task) {
-                return Route {
+                return Some(Route {
                     kind,
                     model: model_or_default(kind, task),
                     reason: format!("env:{task_env}"),
-                };
+                });
             }
         }
     }
-
-    if let Ok(name) = env::var("AGENTIC_DEFAULT_PROVIDER") {
+    if let Some(name) = env_lookup("AGENTIC_DEFAULT_PROVIDER") {
         if let Ok(kind) = name.parse::<ProviderKind>() {
             if supports_task(kind, task) {
-                return Route {
+                return Some(Route {
                     kind,
                     model: model_or_default(kind, task),
                     reason: "env:AGENTIC_DEFAULT_PROVIDER".into(),
-                };
+                });
             }
         }
+    }
+    if ctx != CliContext::Unknown {
+        let kind = provider_for_context(ctx);
+        if supports_task(kind, task) {
+            return Some(Route {
+                kind,
+                model: model_or_default(kind, task),
+                reason: format!("cli-context:{}", ctx_label(ctx)),
+            });
+        }
+        // CLI context can't serve this task (e.g. embed under Anthropic);
+        // caller falls through to the available-key scan.
+    }
+    None
+}
+
+/// Resolve which provider + model to use for a given [`Task`].
+///
+/// Lookup order:
+///   1. `AGENTIC_<TASK>_PROVIDER` env var (per-task explicit override)
+///   2. `AGENTIC_DEFAULT_PROVIDER` env var (global explicit override)
+///   3. CLI context default (Claude Code → Anthropic, Gemini CLI → Google, …)
+///   4. Available-key scan (ADR-0051 §3.2 — pick any provider that has a key)
+///   5. Hard fallback (Voyage for Embed, Anthropic for Chat) — gate may SKIP
+///
+/// **2026-06-04 ordering fix:** the env-var overrides now precede the CLI
+/// context default. The historical order had context (Claude Code → Anthropic)
+/// take precedence over `AGENTIC_CHAT_PROVIDER=grok`, so a user inside Claude
+/// Code who explicitly redirected chat traffic to Grok (e.g. because their
+/// Anthropic billing was exhausted) was silently routed back to Anthropic and
+/// the call failed at the vendor with `credit balance too low`. Explicit user
+/// intent should always win over implicit context inference.
+#[must_use]
+pub fn route(task: Task) -> Route {
+    if let Some(r) = route_from_explicit_overrides(task, |k| env::var(k).ok(), detect_cli_context())
+    {
+        return r;
     }
 
     // ADR-0051 §3.2 (2026-05-30) — available-key scan BEFORE the hard
@@ -398,6 +428,79 @@ mod tests {
                 "{k:?} in chat order but doesn't support chat"
             );
         }
+    }
+
+    /// 2026-06-04 ordering invariant: `AGENTIC_CHAT_PROVIDER=grok` MUST win
+    /// over the Claude Code CLI context default (Anthropic). Prevents the
+    /// silent-routing regression where a user inside Claude Code who
+    /// explicitly redirected chat to Grok (because Anthropic billing was
+    /// exhausted) was routed back to Anthropic anyway. Tested via the pure
+    /// `route_from_explicit_overrides` helper so no env mutation is needed.
+    #[test]
+    fn explicit_task_env_var_wins_over_cli_context() {
+        let env_lookup = |k: &str| match k {
+            "AGENTIC_CHAT_PROVIDER" => Some("grok".into()),
+            _ => None,
+        };
+        let route = route_from_explicit_overrides(Task::Chat, env_lookup, CliContext::ClaudeCode)
+            .expect("explicit env override must resolve");
+        assert_eq!(route.kind, ProviderKind::Grok);
+        assert!(
+            route.reason.starts_with("env:AGENTIC_CHAT_PROVIDER"),
+            "reason should attribute env override, got {:?}",
+            route.reason
+        );
+    }
+
+    #[test]
+    fn explicit_default_env_var_wins_over_cli_context() {
+        let env_lookup = |k: &str| match k {
+            "AGENTIC_DEFAULT_PROVIDER" => Some("grok".into()),
+            _ => None,
+        };
+        let route = route_from_explicit_overrides(Task::Chat, env_lookup, CliContext::ClaudeCode)
+            .expect("explicit default env override must resolve");
+        assert_eq!(route.kind, ProviderKind::Grok);
+        assert_eq!(route.reason, "env:AGENTIC_DEFAULT_PROVIDER");
+    }
+
+    #[test]
+    fn task_env_takes_precedence_over_default_env() {
+        let env_lookup = |k: &str| match k {
+            "AGENTIC_CHAT_PROVIDER" => Some("grok".into()),
+            "AGENTIC_DEFAULT_PROVIDER" => Some("openai".into()),
+            _ => None,
+        };
+        let route = route_from_explicit_overrides(Task::Chat, env_lookup, CliContext::Unknown)
+            .expect("must resolve");
+        assert_eq!(route.kind, ProviderKind::Grok, "per-task env beats default");
+    }
+
+    #[test]
+    fn cli_context_default_used_when_no_env_override() {
+        let env_lookup = |_: &str| None;
+        let route = route_from_explicit_overrides(Task::Chat, env_lookup, CliContext::ClaudeCode)
+            .expect("CliContext default must resolve");
+        assert_eq!(route.kind, ProviderKind::Anthropic);
+        assert!(route.reason.starts_with("cli-context:"));
+    }
+
+    #[test]
+    fn unsupported_env_override_falls_through() {
+        // Voyage can't serve Chat → env override must be ignored, CliContext default kicks in.
+        let env_lookup = |k: &str| match k {
+            "AGENTIC_CHAT_PROVIDER" => Some("voyage".into()),
+            _ => None,
+        };
+        let route = route_from_explicit_overrides(Task::Chat, env_lookup, CliContext::ClaudeCode)
+            .expect("must fall through to context");
+        assert_eq!(route.kind, ProviderKind::Anthropic);
+    }
+
+    #[test]
+    fn no_overrides_returns_none_under_unknown_context() {
+        // None means: caller continues to the available-key scan + hard fallback.
+        assert!(route_from_explicit_overrides(Task::Chat, |_| None, CliContext::Unknown).is_none());
     }
 
     /// ADR-0051 Ollama-policy gate: parse_ollama_enable_flag — env-free
