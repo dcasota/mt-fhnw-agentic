@@ -246,8 +246,34 @@ pub fn line_findings(text: &str, path: &str) -> Vec<Finding> {
 /// `text`. Markdown table rows (a segment starting with `|`, e.g. a `| --- |`
 /// separator) are structural, not prose, and are skipped; a segment must carry
 /// ≥6 *alphabetic* words (so pipe/dash runs are not mistaken for a sentence).
+///
+/// Single-line markdown dumps (whole file rendered as one giant line, no
+/// paragraph breaks — e.g. `StudentNotes_Campaigns_EN.md`,
+/// `Dimensions_bibliography_EN.md`) skip frame-lock entirely: the sentence-
+/// splitter on `.!?` treats per-section template repetition (section labels,
+/// per-campaign intro boilerplate, per-author bibliography rows) as repeated
+/// prose, but those are *structural* by design. We can't tell author frame-
+/// lock from intentional template parallelism without paragraph context.
 #[must_use]
 pub fn frame_lock_repeats(text: &str) -> Vec<(String, usize)> {
+    // Single-line markdown dump → no paragraph context → skip frame-lock.
+    // A 1-line file with >5000 chars is a concatenated template document, not
+    // a normal-paragraph deliverable (gate cannot localise repetitions or
+    // distinguish template from author repetition).
+    let mut line_count = 0usize;
+    let mut first_line_len = 0usize;
+    for ln in text.lines() {
+        if line_count == 0 {
+            first_line_len = ln.len();
+        }
+        line_count += 1;
+        if line_count > 1 {
+            break;
+        }
+    }
+    if line_count <= 1 && first_line_len > 5000 {
+        return Vec::new();
+    }
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut in_fence = false;
     for ln in text.lines() {
@@ -435,6 +461,28 @@ mod tests {
         // A genuine author-voice overclaim IS still flagged.
         assert!(has_genuine_overclaim("the dashboard proves the value."));
         assert!(has_genuine_overclaim("this guarantees zero downtime."));
+    }
+
+    #[test]
+    fn single_line_markdown_dump_skips_frame_lock() {
+        // A whole-file single-line markdown render (e.g. StudentNotes_
+        // Campaigns_EN.md is one >5KB line concatenating 9 campaign
+        // sections) has its sentence boundaries fall on `.?!` inside the
+        // line. The "repeated" structural prose (section labels, per-
+        // campaign intro boilerplate) is template-driven, not frame-lock.
+        // The gate cannot distinguish without paragraph context, so it
+        // skips frame-lock on single-line dumps.
+        let big = ("the quick brown fox jumps high. ".repeat(3)
+            + "this is repeated structural prose across all sections. ")
+            .repeat(60);
+        assert!(big.len() > 5000 && big.lines().count() == 1);
+        assert!(
+            frame_lock_repeats(&big).is_empty(),
+            "single-line >5KB markdown dump must NOT report frame-lock"
+        );
+        // Multi-line repetition still flags (frame_lock_counts_repeats lock).
+        let multi_line = "the quick brown fox jumps high.\n".repeat(3);
+        assert!(!frame_lock_repeats(&multi_line).is_empty());
     }
 
     #[test]

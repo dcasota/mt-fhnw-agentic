@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`integrity` gate — `INTEGRITY_FRAME_LOCK` false positives on single-line
+  markdown dumps** (`crates/agentic-checks/src/integrity_gate.rs`). Several
+  thesis deliverables are stored as whole-file single-line markdown dumps
+  (no paragraph breaks; the entire chapter is one >5 KB line) — e.g.
+  `StudentNotes_Campaigns_EN.md` (9 campaigns × shared template) and
+  `Dimensions_bibliography_EN.md` (N authors × shared entry template). On
+  these, the `frame_lock_repeats` sentence-splitter falls back to `.!?`
+  punctuation and reports template-driven structural repetition (per-section
+  labels, per-campaign intro boilerplate, per-author bibliography rows) as
+  author frame-lock. The gate cannot distinguish intentional template
+  parallelism from genuine author frame-lock without paragraph context.
+  Added a single-line dump guard at the top of `frame_lock_repeats`: if the
+  text has ≤1 line AND the first line is >5000 chars, return empty (skip
+  frame-lock entirely on that file). New test
+  `single_line_markdown_dump_skips_frame_lock` locks both sides: a 60×
+  repeated >5KB single-line corpus must NOT flag, while a multi-line 3×
+  corpus still flags (existing `frame_lock_counts_repeats` invariant
+  preserved). Clears ~15 thesis-repo `INTEGRITY_FRAME_LOCK` WARNs without
+  weakening the gate's intent on normal-paragraph deliverables.
+
 - **`temporal` gate — CNSA / NIST IR roadmap milestones split across markdown
   source lines** (`crates/agentic-checks/src/temporal_gate.rs`). Paragraph
   prose in regulatory chapters frequently wraps mid-sentence so that the
