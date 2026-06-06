@@ -18,6 +18,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`integrity` gate — three single-line / discursive / structured-template
+  false-positive families** (`crates/agentic-checks/src/integrity_gate.rs`):
+  - **`INTEGRITY_HALLUCINATED_RESULT`**: `RESULT_ASSERT` was matching
+    `accuracy of` / `precision of` / `recall of` / `f1 of` as a frame for
+    benchmark figures even when followed by an abstract noun ("precision of
+    blast radius" — the precision of the scope, not a number). Tightened
+    each `<metric> of` clause to require an immediate digit. Locks via
+    `precision_of_noun_not_flagged_as_hallucinated_result` (4 must-pass
+    noun-sense lines × 1 must-flag benchmark line). Clears 1 thesis-repo
+    WARN at `PT-C01-7_upstream_dependency_scanner_yml_EN.md:1`.
+  - **`INTEGRITY_IMPL_BUG`**: `does not work that way` is a *discursive*
+    clarifier ("the implementation does not work that way; the eleven
+    dimensions are pre-declared") — explaining what a system does NOT do,
+    not admitting a bug. Added a post-match qualifier guard in
+    `has_genuine_impl_bug` for `that way` / `like that` / `in that
+    manner`. Locks via `impl_bug_does_not_work_that_way_discursive_not_flagged`
+    (4 must-pass discursive lines × 1 must-flag genuine admission). Clears
+    1 thesis-repo WARN at `gov_perception_audit/01_audit.md:1`.
+  - **`INTEGRITY_FRAME_LOCK`**: `Dimensions_bibliography_EN.md` is a
+    deterministic render-side concatenation of N APA-7 author entries; each
+    carries the same `(project input: agentic journal + material passport)`
+    annotation by emitter design — render artefact, not author frame-lock.
+    Added a `FRAME_LOCK_STRUCTURAL_PATHS` allowlist (`bibliography`,
+    `references_`) matched case-insensitively as a path substring; matching
+    files skip frame-lock entirely. `frame_lock_repeats(text, path)` now
+    takes the path so the gate can decide. Locks via
+    `frame_lock_skips_known_structural_paths` (2 must-pass structural paths
+    × 1 must-flag non-structural path with same repetition). Clears 1
+    thesis-repo WARN (9× verbatim "project input ...") in
+    `Dimensions_bibliography_EN.md`.
+
+- **`temporal` gate — `TEMPORAL_ARITHMETIC` cross-match false positive on
+  single-line dumps** (`crates/agentic-checks/src/temporal_gate.rs`). On
+  single-line markdown files (>5KB, ≤1 line — same shape that integrity's
+  frame_lock skip handles), `SPAN` (`from YYYY to YYYY`) and `SPAN_YEARS`
+  (`N year`) would both find matches anywhere in the giant "line" and report
+  a `stated N years ≠ M` mismatch even when the spans came from unrelated
+  sentences ("trends from 2014 to 2023, …, the 27-year horizon" produces
+  `27 ≠ 9` though those numbers come from different statements). Added an
+  `is_single_line_dump` guard at the top of `extra_passes` that skips the
+  retrospective-arithmetic pass on these files. Other passes (comparator,
+  causal, deictic) remain unchanged — they're per-match, not cross-match.
+  Locks via `single_line_dump_skips_retrospective_arithmetic` (must-pass
+  single-line dump × must-flag multi-line genuine arithmetic). Clears 1
+  thesis-repo `TEMPORAL_ARITHMETIC` WARN at `norms/23_organizations_EN.md:1`.
+
 - **`integrity` gate — `INTEGRITY_SHORTCUT` false positives on `WORD-<digits>`
   identifiers** (`crates/agentic-checks/src/integrity_gate.rs`). The
   `SHORTCUT_STRONG` regex `\b(todo|fixme|xxx|lorem ipsum|tbd)\b` matched

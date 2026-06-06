@@ -132,6 +132,25 @@ pub fn genuine_comparator(ln: &str) -> Option<String> {
     None
 }
 
+/// Is `text` a single-line markdown dump (>5KB, ≤1 line)? Per-line gate
+/// heuristics cannot reliably localise cross-match findings on these — see
+/// `extra_passes` for the retrospective-arithmetic skip rationale.
+#[must_use]
+pub fn is_single_line_dump(text: &str) -> bool {
+    let mut line_count = 0usize;
+    let mut first_line_len = 0usize;
+    for ln in text.lines() {
+        if line_count == 0 {
+            first_line_len = ln.len();
+        }
+        line_count += 1;
+        if line_count > 1 {
+            break;
+        }
+    }
+    line_count <= 1 && first_line_len > 5000
+}
+
 /// Case-insensitive `.md` extension test (avoids a locale-sensitive compare).
 fn is_markdown(path: &str) -> bool {
     std::path::Path::new(path)
@@ -186,10 +205,17 @@ pub fn future_years(text: &str, max_year: u32) -> Vec<(usize, u32)> {
 
 /// Passes 2–5 over `text`. Returns `(line, category, severity, message)`.
 /// Fence- and URL/DOI-aware; advisory by design (causal/deictic are INFO).
+///
+/// Single-line markdown dumps (>5KB, ≤1 line) skip the retrospective-
+/// arithmetic pass: SPAN and SPAN_YEARS would both find a match anywhere in
+/// the giant "line" and report a misleading `stated span N ≠ M` finding
+/// across unrelated sentences. Other passes (comparator, causal, deictic)
+/// remain safe — they're per-match, not cross-match.
 #[must_use]
 pub fn extra_passes(text: &str) -> Vec<(usize, &'static str, Severity, String)> {
     let mut out = Vec::new();
     let mut in_fence = false;
+    let single_line_dump = is_single_line_dump(text);
     for (idx, ln) in text.lines().enumerate() {
         let i = idx + 1;
         if ln.trim_start().starts_with("```") {
@@ -200,20 +226,23 @@ pub fn extra_passes(text: &str) -> Vec<(usize, &'static str, Severity, String)> 
             continue;
         }
         // Pass 2 — retrospective arithmetic: stated span vs. year difference.
-        if let Some(c) = SPAN.captures(ln) {
-            if let (Ok(a), Ok(b)) = (c[1].parse::<i64>(), c[2].parse::<i64>()) {
-                let diff = (b - a).abs();
-                if let Some(s) = SPAN_YEARS.captures(ln) {
-                    if let Ok(stated) = s[1].parse::<i64>() {
-                        if stated != diff {
-                            out.push((
-                                i,
-                                "TEMPORAL_ARITHMETIC",
-                                Severity::Warn,
-                                format!(
-                                    "stated span {stated} year(s) ≠ {diff} ({a}→{b}) — recompute"
-                                ),
-                            ));
+        // Skipped on single-line dumps (cross-match would be unreliable).
+        if !single_line_dump {
+            if let Some(c) = SPAN.captures(ln) {
+                if let (Ok(a), Ok(b)) = (c[1].parse::<i64>(), c[2].parse::<i64>()) {
+                    let diff = (b - a).abs();
+                    if let Some(s) = SPAN_YEARS.captures(ln) {
+                        if let Ok(stated) = s[1].parse::<i64>() {
+                            if stated != diff {
+                                out.push((
+                                    i,
+                                    "TEMPORAL_ARITHMETIC",
+                                    Severity::Warn,
+                                    format!(
+                                        "stated span {stated} year(s) ≠ {diff} ({a}→{b}) — recompute"
+                                    ),
+                                ));
+                            }
                         }
                     }
                 }
@@ -446,6 +475,30 @@ mod tests {
         // A bare predicative performance claim still flags.
         assert!(genuine_comparator("our method is 10x faster than the baseline").is_some());
         assert!(genuine_comparator("the system outperforms every competitor").is_some());
+    }
+
+    #[test]
+    fn single_line_dump_skips_retrospective_arithmetic() {
+        // A 24KB single-line file mixing unrelated date spans and
+        // unrelated `N year(s)` tokens would cross-match and report a
+        // misleading `stated N years ≠ M` finding (false positive surfaced
+        // on `norms/23_organizations_EN.md` where "trends from 2014 to
+        // 2023" sits in the same single-line dump as a "27-year horizon"
+        // sentence). On single-line dumps the SPAN/SPAN_YEARS comparison
+        // is skipped.
+        let dump = "trends in generative AI from 2014 to 2023, charting the surge".to_owned()
+            + &" since 2017 driven by compute, big data and algorithmic advances.".repeat(80)
+            + " The 27-year horizon is unrelated to the trend window above.";
+        assert!(is_single_line_dump(&dump));
+        let f = extra_passes(&dump);
+        assert!(
+            !f.iter().any(|(_, c, _, _)| *c == "TEMPORAL_ARITHMETIC"),
+            "single-line dump must NOT report TEMPORAL_ARITHMETIC"
+        );
+        // Multi-line retrospective-arithmetic still flags.
+        let multi = "Growth from 2019 to 2025, a span of 4 years, was steep.\n";
+        let f2 = extra_passes(multi);
+        assert!(f2.iter().any(|(_, c, _, _)| *c == "TEMPORAL_ARITHMETIC"));
     }
 
     #[test]

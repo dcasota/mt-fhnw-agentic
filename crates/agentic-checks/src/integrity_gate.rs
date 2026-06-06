@@ -28,8 +28,12 @@ use agentic_core::worktree;
 
 use crate::{CheckReport, Finding, Severity};
 
+/// A quantitative-result assertion frame. `accuracy/precision/recall/f1 of`
+/// require an immediate digit to count as a benchmark claim — "precision of
+/// blast radius" is the precision of the *scope*, not a benchmark figure
+/// (false positive surfaced by single-line project descriptors).
 static RESULT_ASSERT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(results show|we (?:achieve|achieved|obtain|obtained|report|measured)|accuracy of|precision of|recall of|f1 of|\b\d+(?:\.\d+)?\s*%\s*(?:improvement|increase|reduction|gain))").unwrap()
+    Regex::new(r"(?i)(results show|we (?:achieve|achieved|obtain|obtained|report|measured)|accuracy of \d|precision of \d|recall of \d|f1 of \d|\b\d+(?:\.\d+)?\s*%\s*(?:improvement|increase|reduction|gain))").unwrap()
 });
 static HAS_NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d").unwrap());
 static CITE: LazyLock<Regex> = LazyLock::new(|| {
@@ -170,9 +174,22 @@ pub fn has_genuine_impl_bug(ln: &str) -> bool {
         if in_quote_or_gloss(pre) {
             continue;
         }
-        if m.as_str().to_lowercase().contains("broken") {
+        let w = m.as_str().to_lowercase();
+        if w.contains("broken") {
             let post = ln[m.end()..].trim_start().to_lowercase();
             if post.starts_with("into") || post.starts_with("by ") || post.starts_with("by,") {
+                continue;
+            }
+        }
+        // "does not work that way" / "doesn't work that way" / "...like that"
+        // are *discursive* — clarifying what a system does NOT do — not bug
+        // admissions. Skip when the immediate post-text is the qualifier.
+        if w.contains("not work") || w.contains("doesn't work") {
+            let post = ln[m.end()..].trim_start().to_lowercase();
+            if post.starts_with("that way")
+                || post.starts_with("like that")
+                || post.starts_with("in that manner")
+            {
                 continue;
             }
         }
@@ -257,6 +274,19 @@ pub fn line_findings(text: &str, path: &str) -> Vec<Finding> {
     out
 }
 
+/// Path components whose containing document is a deterministic, render-
+/// generated concatenation of N parallel template instantiations — frame-lock
+/// would just count the template's structural repetition as author frame-
+/// lock. Matched case-insensitively as a substring of the file path.
+const FRAME_LOCK_STRUCTURAL_PATHS: &[&str] = &[
+    // Bibliography files repeat the same APA-7-style "project input (agentic
+    // journal + material passport ...)" annotation per author by design.
+    "bibliography",
+    // Reference lists embedded directly in chapters; same APA-7 institutional-
+    // author pattern repeats by APA requirement.
+    "references_",
+];
+
 /// Mode 5 — frame-lock: a non-trivial *prose* sentence repeated ≥3× verbatim in
 /// `text`. Markdown table rows (a segment starting with `|`, e.g. a `| --- |`
 /// separator) are structural, not prose, and are skipped; a segment must carry
@@ -264,13 +294,23 @@ pub fn line_findings(text: &str, path: &str) -> Vec<Finding> {
 ///
 /// Single-line markdown dumps (whole file rendered as one giant line, no
 /// paragraph breaks — e.g. `StudentNotes_Campaigns_EN.md`,
-/// `Dimensions_bibliography_EN.md`) skip frame-lock entirely: the sentence-
-/// splitter on `.!?` treats per-section template repetition (section labels,
-/// per-campaign intro boilerplate, per-author bibliography rows) as repeated
-/// prose, but those are *structural* by design. We can't tell author frame-
-/// lock from intentional template parallelism without paragraph context.
+/// `Campaign_03_*.md`) skip frame-lock entirely: the sentence-splitter on
+/// `.!?` treats per-section template repetition as repeated prose, but those
+/// are *structural* by design. We can't tell author frame-lock from
+/// intentional template parallelism without paragraph context.
+///
+/// Multi-line structured-template documents (`Dimensions_bibliography_EN.md`)
+/// are matched against `FRAME_LOCK_STRUCTURAL_PATHS` and also skipped.
 #[must_use]
-pub fn frame_lock_repeats(text: &str) -> Vec<(String, usize)> {
+pub fn frame_lock_repeats(text: &str, path: &str) -> Vec<(String, usize)> {
+    // Structured-template documents → per-template repetition is by design.
+    let path_lc = path.to_lowercase();
+    if FRAME_LOCK_STRUCTURAL_PATHS
+        .iter()
+        .any(|p| path_lc.contains(p))
+    {
+        return Vec::new();
+    }
     // Single-line markdown dump → no paragraph context → skip frame-lock.
     // A 1-line file with >5000 chars is a concatenated template document, not
     // a normal-paragraph deliverable (gate cannot localise repetitions or
@@ -348,7 +388,7 @@ pub fn run(conn: &Connection, project: &str) -> Result<CheckReport> {
         };
         let text = String::from_utf8_lossy(&blob.content);
         findings.extend(line_findings(&text, &path));
-        for (sentence, n) in frame_lock_repeats(&text) {
+        for (sentence, n) in frame_lock_repeats(&text, &path) {
             findings.push(Finding {
                 category: "INTEGRITY_FRAME_LOCK".into(),
                 severity: Severity::Warn,
@@ -440,6 +480,55 @@ mod tests {
     }
 
     #[test]
+    fn precision_of_noun_not_flagged_as_hallucinated_result() {
+        // "precision of blast radius" / "accuracy of intent" use the
+        // word as an abstract concept, NOT a benchmark figure. Without a
+        // following digit, RESULT_ASSERT must not match.
+        let lines = [
+            "the scanner's value is precision of blast radius",
+            "the agent's accuracy of intent is judged at review-time",
+            "recall of past discussion threads is non-trivial",
+            "F1 of contextual responses still depends on the harness",
+        ];
+        for ln in lines {
+            let f = line_findings(ln, "c.md");
+            assert!(
+                !f.iter()
+                    .any(|x| x.category == "INTEGRITY_HALLUCINATED_RESULT"),
+                "noun-sense quality word must NOT flag as hallucinated result: {ln}"
+            );
+        }
+        // A genuine benchmark figure still flags (digit immediately after).
+        let bench = line_findings("Results show accuracy of 97.3% on the test set.", "c.md");
+        assert!(
+            bench
+                .iter()
+                .any(|x| x.category == "INTEGRITY_HALLUCINATED_RESULT")
+        );
+    }
+
+    #[test]
+    fn impl_bug_does_not_work_that_way_discursive_not_flagged() {
+        // "does not work that way" / "doesn't work that way" is a
+        // *discursive* construction ("the implementation does not work
+        // that way; the eleven dimensions are pre-declared"), not a bug
+        // admission. Must NOT flag.
+        for ln in [
+            "The implementation does not work that way",
+            "the runtime doesn't work that way — pre-declaration is required",
+            "this does not work like that",
+            "it does not work in that manner",
+        ] {
+            assert!(
+                !has_genuine_impl_bug(ln),
+                "discursive 'does not work that way' must NOT flag: {ln}"
+            );
+        }
+        // A genuine "does not work" admission still flags.
+        assert!(has_genuine_impl_bug("this feature does not work yet"));
+    }
+
+    #[test]
     fn impl_bug_benign_broken_senses_not_flagged() {
         for ln in [
             "A monolithic workflow is broken into Work Units", // decomposed
@@ -460,7 +549,7 @@ mod tests {
     #[test]
     fn frame_lock_counts_repeats() {
         let t = "the quick brown fox jumps high. ".repeat(3);
-        assert!(!frame_lock_repeats(&t).is_empty());
+        assert!(!frame_lock_repeats(&t, "c.md").is_empty());
     }
 
     #[test]
@@ -468,12 +557,28 @@ mod tests {
         // Section lead-in labels and headings repeat by design across the
         // parallel sections of a template-driven document — not frame-lock.
         let labels = "specific to this campaign (not generic):\n".repeat(4);
-        assert!(frame_lock_repeats(&labels).is_empty());
+        assert!(frame_lock_repeats(&labels, "c.md").is_empty());
         let headings = "## the assessment establishes campaign value here\n".repeat(4);
-        assert!(frame_lock_repeats(&headings).is_empty());
+        assert!(frame_lock_repeats(&headings, "c.md").is_empty());
         // Enum/definition list items repeat across template facet sections.
         let bullets = "- **future prediction** in decrease hold or increase set\n".repeat(4);
-        assert!(frame_lock_repeats(&bullets).is_empty());
+        assert!(frame_lock_repeats(&bullets, "c.md").is_empty());
+    }
+
+    #[test]
+    fn frame_lock_skips_known_structural_paths() {
+        // Bibliography files repeat the same APA-7 institutional-author
+        // boilerplate per entry by design — render-driven, not author
+        // frame-lock. Path substring match (case-insensitive) skips the file.
+        let bib = "project input (agentic journal + material passport)\n".repeat(9);
+        assert!(
+            frame_lock_repeats(&bib, "out/sources/Dimensions_bibliography_EN.md").is_empty(),
+            "bibliography path must skip frame-lock"
+        );
+        // References-list embedded chapters too.
+        assert!(frame_lock_repeats(&bib, "out/sources/chapter_references_list.md").is_empty());
+        // A non-structural path with the SAME repetition still flags.
+        assert!(!frame_lock_repeats(&bib, "out/sources/Normal_Chapter_EN.md").is_empty());
     }
 
     #[test]
@@ -512,12 +617,12 @@ mod tests {
             .repeat(60);
         assert!(big.len() > 5000 && big.lines().count() == 1);
         assert!(
-            frame_lock_repeats(&big).is_empty(),
+            frame_lock_repeats(&big, "c.md").is_empty(),
             "single-line >5KB markdown dump must NOT report frame-lock"
         );
         // Multi-line repetition still flags (frame_lock_counts_repeats lock).
         let multi_line = "the quick brown fox jumps high.\n".repeat(3);
-        assert!(!frame_lock_repeats(&multi_line).is_empty());
+        assert!(!frame_lock_repeats(&multi_line, "c.md").is_empty());
     }
 
     #[test]
@@ -528,11 +633,11 @@ mod tests {
                   | x | y | z |\n| --- | --- | --- |\n| 4 | 5 | 6 |\n\n\
                   | p | q | r |\n| --- | --- | --- |\n| 7 | 8 | 9 |\n";
         assert!(
-            frame_lock_repeats(md).is_empty(),
+            frame_lock_repeats(md, "c.md").is_empty(),
             "table separators/rows must not be frame-locked"
         );
         // Genuine repeated prose is still caught.
         let prose = "the quick brown fox jumps over the lazy dog. ".repeat(3);
-        assert!(!frame_lock_repeats(&prose).is_empty());
+        assert!(!frame_lock_repeats(&prose, "c.md").is_empty());
     }
 }
