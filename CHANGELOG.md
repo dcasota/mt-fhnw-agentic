@@ -18,6 +18,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`deliverable` gate — `FIGURE_NOT_GRAPHICAL` allowlist + `INTERNAL_MARKER`
+  regex precision** (`crates/agentic-checks/src/deliverable_gate.rs`). Two
+  gate-precision corrections that together clear ~272 of 289 advisory
+  findings on the thesis-repo cascade without any content edit. First, the
+  `GRAPHICAL` constant (the figspec-type allowlist) was missing
+  `"image-embed"` and `"table"` even though `crates/agentic-figures` ships
+  production renderers for both (`render_image_embed.rs` for the ~109
+  sourced rasters in the AI Norms book; `render_table.rs` for the
+  regulatory matrices that need a Word-table equivalent). Every figspec
+  using either type fired `FIGURE_NOT_GRAPHICAL` despite being fully
+  rendered. Added both to the const with comments tying each to its
+  renderer module. Second, the `MARKER` regex was a blanket `<!--.*?-->`
+  that flagged *every* HTML comment, including legitimate
+  `<!-- source: book_build/chapter_extras.py :: africa -->` (audit-trail
+  source attribution per ADR-0023), `<!-- ai_norms-figures-wave5 -->`
+  (renderer state delimiters used by the bookkit) and
+  `<!-- wave3-table-figspec begin -->` (structural figure-organization
+  markers). ADR-0038's intent is to forbid idempotency / iteration /
+  workflow-state markers (`<!-- gap-ranked-iter9 -->`,
+  `<!-- condensed-iter9 -->`, `<!-- iter12 -->`, `<!-- transition -->`,
+  `<!-- TODO -->` / `<!-- FIXME -->`), not all metadata comments. Refined
+  the regex to match only HTML comments whose body contains a recognised
+  forbidden keyword (`iter\d+|condensed|gap-ranked|ranked-iter|transition|in-progress|TODO|FIXME|XXX`).
+  Updated `catches_german_crossref_marker_code` to use the now-canonical
+  forbidden form `<!-- gap-ranked-iter9 -->` instead of the plain
+  `<!-- note -->`. Two new tests lock the refined behaviour:
+  `internal_marker_fires_only_on_forbidden_idempotency_keywords` (8 must-
+  flag patterns × 7 must-pass patterns) and
+  `figure_not_graphical_accepts_image_embed_and_table_types` (positive
+  for both new types, negative for a deliberately-unknown `"banana"` type
+  to guard against accidental allow-all).
+
 - **Router — explicit env overrides win over CLI-context defaults**
   (`crates/agentic-providers/src/router.rs`). The Lookup order in `route()`
   was: (1) CLI context → (2) `AGENTIC_<TASK>_PROVIDER` env → (3)

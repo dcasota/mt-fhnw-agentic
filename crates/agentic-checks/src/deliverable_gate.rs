@@ -30,7 +30,22 @@ static DE_ABBREV: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 static CROSSREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"out/[\w./-]+\.docx").unwrap());
-static MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<!--.*?-->").unwrap());
+// ADR-0038 forbids idempotency/workflow-state HTML-comment markers in
+// deliverables (e.g. `<!-- gap-ranked-iter9 -->`, `<!-- condensed-iter9 -->`,
+// `<!-- iter12 -->`, `<!-- transition -->`). It does NOT forbid build-pipeline
+// audit-trail comments (source attribution per ADR-0023, structural
+// delimiters used by the bookkit renderer, figure-organization markers),
+// which are legitimate metadata the audit-trail relies on. The earlier
+// blanket regex `<!--.*?-->` over-enforced ADR-0038, flagging every HTML
+// comment indiscriminately. Refined to match only HTML comments whose body
+// contains a recognised forbidden idempotency / iteration / workflow-state
+// keyword.
+static MARKER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"<!--[^>]*\b(?:iter\d+|condensed|gap-ranked|ranked-iter|transition|in-progress|TODO|FIXME|XXX)\b[^>]*-->",
+    )
+    .unwrap()
+});
 static CELLCODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[DHI][-·.][NEC]\b").unwrap());
 static NUM: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -53,9 +68,20 @@ static FIGSPEC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```figspec\s*\n(.*?)\n```").unwrap());
 
 const GRAPHICAL: &[&str] = &[
-    "bar", "hbar", "line", "matrix", "flow", "quadrant", // base chart types
-    "icon", "heatmap", "regstack", "govmap", // book-figure types (AI-Norms generator ports)
-    "treemap", "procmap", // population treemap + ISO-5338-style process map
+    "bar",
+    "hbar",
+    "line",
+    "matrix",
+    "flow",
+    "quadrant", // base chart types
+    "icon",
+    "heatmap",
+    "regstack",
+    "govmap", // book-figure types (AI-Norms generator ports)
+    "treemap",
+    "procmap",     // population treemap + ISO-5338-style process map
+    "image-embed", // Wave-1 raster embed (render_image_embed.rs; sourced rasters in AI Norms book)
+    "table",       // data-table-to-Word-table renderer (render_table.rs; regulatory matrices)
 ];
 
 /// All gate findings for one markdown document. `label` prefixes locations.
@@ -273,13 +299,81 @@ mod tests {
 
     #[test]
     fn catches_german_crossref_marker_code() {
-        let md = "## Schlussbetrachtung\nSee out/dimensions/D_07.docx for more.\n<!-- note -->\nThe D-N cell wins.\n";
+        let md = "## Schlussbetrachtung\nSee out/dimensions/D_07.docx for more.\n<!-- gap-ranked-iter9 -->\nThe D-N cell wins.\n";
         let fs = findings_for("x.md", md);
         let cats: Vec<&str> = fs.iter().map(|f| f.category.as_str()).collect();
         assert!(cats.contains(&"NON_ENGLISH_TEXT"));
         assert!(cats.contains(&"CROSS_REFERENCE"));
         assert!(cats.contains(&"INTERNAL_MARKER"));
         assert!(cats.contains(&"CRYPTIC_LABEL"));
+    }
+
+    #[test]
+    fn internal_marker_fires_only_on_forbidden_idempotency_keywords() {
+        // ADR-0038 forbids idempotency / workflow-state markers in
+        // deliverables, NOT build-pipeline audit-trail comments. The earlier
+        // blanket regex flagged every HTML comment; this guard locks the
+        // refined behaviour.
+        let must_flag = [
+            "<!-- iter9 -->",
+            "<!-- gap-ranked-iter9 -->",
+            "<!-- condensed-iter9 -->",
+            "<!-- ranked-iter12 -->",
+            "<!-- transition -->",
+            "<!-- in-progress -->",
+            "<!-- TODO: backfill -->",
+            "<!-- FIXME: line wrap -->",
+        ];
+        for s in must_flag {
+            let fs = findings_for("x.md", s);
+            assert!(
+                fs.iter().any(|f| f.category == "INTERNAL_MARKER"),
+                "expected INTERNAL_MARKER on {s:?}, got {fs:?}"
+            );
+        }
+        let must_pass = [
+            "<!-- source: book_build/chapter_extras.py :: africa -->",
+            "<!-- ai_norms-figures-wave5 -->",
+            "<!-- wave3-table-figspec begin -->",
+            "<!-- wave3-table-figspec end -->",
+            "<!-- ai_norms-numbered-roundh begin -->",
+            "<!-- note -->", // a plain note is metadata, not workflow state
+            "<!-- caption-key: foo -->",
+        ];
+        for s in must_pass {
+            let fs = findings_for("x.md", s);
+            assert!(
+                !fs.iter().any(|f| f.category == "INTERNAL_MARKER"),
+                "INTERNAL_MARKER must NOT fire on legitimate build-pipeline metadata {s:?}, got {fs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn figure_not_graphical_accepts_image_embed_and_table_types() {
+        // ADR-0030 figure-type list must follow the figspec renderer catalogue
+        // in agentic-figures. `image-embed` (Wave-1 raster embed) and `table`
+        // (Word-table renderer) ship as production renderers; the gate's
+        // GRAPHICAL allowlist must include them, otherwise every sourced
+        // raster and every regulatory matrix flags as FIGURE_NOT_GRAPHICAL.
+        let ok = [
+            "```figspec\n{\"id\":\"f1\",\"type\":\"image-embed\",\"caption\":\"x\"}\n```",
+            "```figspec\n{\"id\":\"f2\",\"type\":\"table\",\"caption\":\"x\"}\n```",
+        ];
+        for s in ok {
+            let fs = findings_for("x.md", s);
+            assert!(
+                !fs.iter().any(|f| f.category == "FIGURE_NOT_GRAPHICAL"),
+                "FIGURE_NOT_GRAPHICAL must NOT fire on supported type {s:?}, got {fs:?}"
+            );
+        }
+        // Unknown types still flag — guard against accidental allow-all.
+        let bad = "```figspec\n{\"id\":\"f3\",\"type\":\"banana\",\"caption\":\"x\"}\n```";
+        let fs = findings_for("x.md", bad);
+        assert!(
+            fs.iter().any(|f| f.category == "FIGURE_NOT_GRAPHICAL"),
+            "FIGURE_NOT_GRAPHICAL must still fire on unknown type, got {fs:?}"
+        );
     }
 
     #[test]
