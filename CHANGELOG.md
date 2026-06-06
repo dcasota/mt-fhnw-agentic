@@ -18,6 +18,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`temporal` gate — CNSA / NIST IR roadmap milestones split across markdown
+  source lines** (`crates/agentic-checks/src/temporal_gate.rs`). Paragraph
+  prose in regulatory chapters frequently wraps mid-sentence so that the
+  year-bearing parenthetical (`(support 2027 / exclusive 2033)`) sits on a
+  different source line than the regulatory citation (`CNSA 2.0`,
+  `NIST IR 8547`) — and `FORECAST` is a per-line guard, so the year-bearing
+  line tripped `TEMPORAL_FUTURE` even though the same sentence carries
+  explicit roadmap framing. Extended `FORECAST` with three milestone-cue
+  tokens that almost always appear *on* the year-bearing line itself in
+  regulatory roadmap prose: `\bmilestone\w*` (covers
+  "...as build-gate milestones"), `\bexclusive\b` (covers
+  "CNSA exclusive 2033"), and `\bbuild-gate\b` (covers
+  "...build-gate cutoff"). The cues are deliberately narrow — "milestone" /
+  "exclusive" / "build-gate" are roadmap vocabulary, not general English,
+  so adding them rescues regulatory phase-ins without weakening typo
+  detection in non-regulatory prose. New test
+  `cnsa_phased_milestones_split_across_lines_are_intentional` locks the
+  three patterns. Clears the last 2 thesis-repo `TEMPORAL_FUTURE` WARNs
+  (`Dimension_07_regulations_EN.md:653` — CNSA 2.0 2027 / 2033) and takes
+  the `temporal` gate's WARN-level finding count to 0 (~50 remaining
+  findings are INFO-level line-1 deictic boilerplate, standing baseline
+  per ADR-0042).
+
 - **`temporal` gate — `TEMPORAL_FUTURE` false positives on algorithm key
   lengths + CVE-temporal-reasoning context**
   (`crates/agentic-checks/src/temporal_gate.rs`). The `YEAR` regex

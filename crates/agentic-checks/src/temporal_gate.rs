@@ -38,7 +38,7 @@ static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(20\d\d)\b").unwr
 /// market projections), not the typo `future_years` is meant to catch. Without
 /// such a cue a bare future date ("the survey ran in 2031") is still flagged.
 static FORECAST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bbetween\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bobligation\b|\bbinding\b|\bmandat\w*|\bregulat\w*|\bdirective\b|\bcompliance\b|\beffective\b|\bin force\b|\banchor\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b|\btoday\b|\bforward\b|\bpost-quantum\b|\bquantum-safe\b|\bpqc\b|\bnist\b|\bcnsa\b|\bnis2\b|\bcra\b|\bfips\b|\bcert-in\b|\bir\s*8547\b|\betsi\b|\benisa\b|\bdisallow\w*|\bpermit\w*|\ballow\w*|\bdisclos\w*|\bvulnerab\w*|\bCVE\b|\bstandpoint\b|\baffect\w*|\binstance\b|\bSBOM\b|\bVEX\b|\bupdat\w*|\bfeed\b|\blearn\w*)").unwrap()
+    Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bbetween\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bobligation\b|\bbinding\b|\bmandat\w*|\bregulat\w*|\bdirective\b|\bcompliance\b|\beffective\b|\bin force\b|\banchor\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b|\btoday\b|\bforward\b|\bpost-quantum\b|\bquantum-safe\b|\bpqc\b|\bnist\b|\bcnsa\b|\bnis2\b|\bcra\b|\bfips\b|\bcert-in\b|\bir\s*8547\b|\betsi\b|\benisa\b|\bdisallow\w*|\bpermit\w*|\ballow\w*|\bdisclos\w*|\bvulnerab\w*|\bCVE\b|\bstandpoint\b|\baffect\w*|\binstance\b|\bSBOM\b|\bVEX\b|\bupdat\w*|\bfeed\b|\blearn\w*|\bmilestone\w*|\bexclusive\b|\bbuild-gate\b)").unwrap()
 });
 /// Cryptographic-algorithm-name prefixes that take a numeric size suffix
 /// shaped like a future year. `RSA-2048`, `AES-3072`, `SHA-3-2048`, etc.
@@ -383,6 +383,27 @@ mod tests {
         // A bare future year on the same line as an algorithm name (but not
         // hyphen-attached) still flags. `RSA used in 2048` is a real future date.
         assert!(!future_years("RSA used in 2048 is broken\n", 2026).is_empty());
+    }
+
+    #[test]
+    fn cnsa_phased_milestones_split_across_lines_are_intentional() {
+        // CNSA / NIST roadmap text often wraps in markdown source so the
+        // year-bearing line carries only the parenthetical
+        // "(support 2027 / exclusive 2033)" — the regulatory name sits on the
+        // previous line. The "milestone(s)" / "exclusive" / "build-gate"
+        // cues on the year-bearing line itself rescue these as intentional
+        // roadmap horizons.
+        let cases = [
+            "2.0 (support 2027 / exclusive 2033) dates as build-gate milestones",
+            "(deprecate 2030 / disallow 2035) — milestone-anchored release gates",
+            "the CNSA exclusive 2033 milestone is a hard build-gate cutoff",
+        ];
+        for s in cases {
+            assert!(
+                future_years(s, 2026).is_empty(),
+                "{s:?} must NOT report a future year (CNSA roadmap milestone)"
+            );
+        }
     }
 
     #[test]
