@@ -282,7 +282,10 @@ pub fn run_parity_for_book(
     if !reference.is_file() {
         let finding = ParityFinding {
             scope: "fixture".into(),
-            name: "PARITY_FIXTURE_ABSENT".into(),
+            // `into_check_report` prepends `PARITY_` to the uppercased name
+            // so the surfaced category becomes `PARITY_FIXTURE_ABSENT` — do
+            // NOT prefix it here or the display double-prefixes.
+            name: "FIXTURE_ABSENT".into(),
             severity: Severity::Info,
             expected: format!("reference docx at {}", reference.display()),
             actual: "absent".into(),
@@ -2158,10 +2161,19 @@ mod tests {
             .expect("graceful PASS on missing fixture, not Err");
         assert_eq!(report.findings.len(), 1);
         let f = &report.findings[0];
-        assert_eq!(f.name, "PARITY_FIXTURE_ABSENT");
+        // `into_check_report` prepends `PARITY_` so the surfaced category is
+        // `PARITY_FIXTURE_ABSENT`; the internal `name` field is just the
+        // suffix to avoid double-prefixing.
+        assert_eq!(f.name, "FIXTURE_ABSENT");
         assert!(matches!(f.severity, Severity::Info));
         assert_eq!(f.scope, "fixture");
         assert_eq!(report.parity_pct, 100.0);
+
+        // Verify the CheckReport envelope carries the correctly-prefixed
+        // category (single PARITY_ prefix, no double-PARITY).
+        let envelope = into_check_report(&report);
+        assert_eq!(envelope.findings.len(), 1);
+        assert_eq!(envelope.findings[0].category, "PARITY_FIXTURE_ABSENT");
     }
 
     #[test]
