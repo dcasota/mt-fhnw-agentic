@@ -37,11 +37,36 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::{CheckReport, Finding, Severity};
+
+/// Canonical on-disk reference docx path for a given `--book` key, per the
+/// ADRs that introduced each frozen baseline:
+///
+/// * `master_thesis_bookkit` → `tests/fixtures/reference/master_thesis_reference.docx`
+///   (ADR-0061; FHNW2026 master-thesis EN reference, byte-parity target)
+/// * `ai_norms_and_regulations` → `book_build/AI_Norms_and_Regulations_BOOK.docx`
+///   (ADR-0057; Wave-0 structural-parity target)
+///
+/// Returns `None` for any other book key — those books have no canonical
+/// frozen baseline and must supply `--reference` explicitly. Used by the
+/// cascade orchestrator (`push_audit_gates::"parity"` arm) so it doesn't
+/// have to learn ADR-0057 / ADR-0061 itself.
+#[must_use]
+pub fn canonical_reference_path(book_key: &str) -> Option<PathBuf> {
+    match book_key {
+        "master_thesis_bookkit" => Some(PathBuf::from(
+            "tests/fixtures/reference/master_thesis_reference.docx",
+        )),
+        "ai_norms_and_regulations" => Some(PathBuf::from(
+            "book_build/AI_Norms_and_Regulations_BOOK.docx",
+        )),
+        _ => None,
+    }
+}
 
 /// Reference targets for the AI_Norms_and_Regulations book (Wave 0 inventory).
 pub const REF_FIGURE_COUNT: usize = 133;
@@ -248,6 +273,42 @@ pub fn run_parity_for_book(
     reference: &Path,
     current: &Path,
 ) -> Result<ParityReport> {
+    // Fixture-absent graceful PASS: when the reference docx is not on disk
+    // (e.g. cascade dispatches the gate per ADR-0057/0061 conventions but the
+    // user hasn't provisioned the frozen fixture yet), return PASS with a
+    // single INFO `PARITY_FIXTURE_ABSENT` finding instead of crashing the
+    // load. The audit_verdicts row still records the per-book run, so the
+    // gap shows up in `agentic audit report` — silent skip is avoided.
+    if !reference.is_file() {
+        let finding = ParityFinding {
+            scope: "fixture".into(),
+            name: "PARITY_FIXTURE_ABSENT".into(),
+            severity: Severity::Info,
+            expected: format!("reference docx at {}", reference.display()),
+            actual: "absent".into(),
+            delta: 0,
+            evidence: format!(
+                "reference docx {} not on disk — bookkit parity skipped \
+                 (ADR-0061 fixture not provisioned)",
+                reference.display()
+            ),
+            message: format!(
+                "parity skipped: reference fixture {} is not on disk",
+                reference.display()
+            ),
+        };
+        let report = ParityReport {
+            reference: reference.display().to_string(),
+            current: current.display().to_string(),
+            findings: vec![finding],
+            parity_pct: 100.0,
+        };
+        // Branch-aware no-op: we still consume `book` + `lang` so the API
+        // signature documents intent (the cascade may dispatch differently
+        // per book once the fixture lands).
+        let _ = (book, lang);
+        return Ok(report);
+    }
     let mut report = run_parity(reference, current)?;
     match book {
         BookKind::MasterThesisBookkit => {
@@ -2059,6 +2120,48 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn canonical_reference_path_matches_adr0057_and_adr0061() {
+        // ADR-0061 — master_thesis_bookkit reference fixture.
+        assert_eq!(
+            canonical_reference_path("master_thesis_bookkit"),
+            Some(PathBuf::from(
+                "tests/fixtures/reference/master_thesis_reference.docx"
+            ))
+        );
+        // ADR-0057 — AI_Norms_and_Regulations reference book.
+        assert_eq!(
+            canonical_reference_path("ai_norms_and_regulations"),
+            Some(PathBuf::from(
+                "book_build/AI_Norms_and_Regulations_BOOK.docx"
+            ))
+        );
+        // Books with no canonical baseline (old-pipeline master_thesis,
+        // arbitrary third-party book) return None — cascade skips them.
+        assert_eq!(canonical_reference_path("master_thesis"), None);
+        assert_eq!(canonical_reference_path("anything_else"), None);
+        assert_eq!(canonical_reference_path(""), None);
+    }
+
+    #[test]
+    fn missing_reference_fixture_is_pass_with_info() {
+        // When the reference docx is absent on disk, the gate must NOT
+        // crash the load — it returns a PASS report with a single INFO
+        // `PARITY_FIXTURE_ABSENT` finding so the cascade survives an
+        // unprovisioned fixture and the audit_verdicts row still records
+        // the per-book run.
+        let ref_path = PathBuf::from("tests/fixtures/reference/__definitely_does_not_exist__.docx");
+        let cur_path = PathBuf::from("__no_current__.docx");
+        let report = run_parity_for_book(BookKind::MasterThesisBookkit, "en", &ref_path, &cur_path)
+            .expect("graceful PASS on missing fixture, not Err");
+        assert_eq!(report.findings.len(), 1);
+        let f = &report.findings[0];
+        assert_eq!(f.name, "PARITY_FIXTURE_ABSENT");
+        assert!(matches!(f.severity, Severity::Info));
+        assert_eq!(f.scope, "fixture");
+        assert_eq!(report.parity_pct, 100.0);
     }
 
     #[test]

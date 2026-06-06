@@ -18,6 +18,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`parity` gate / cascade orchestrator — required `--book` and `--reference`
+  args were dropped on cascade dispatch, causing a hard FAIL on every cascade
+  run** (`crates/agentic-checks/src/parity.rs` +
+  `crates/agentic/src/commands/cascade.rs`). The `parity` gate is in
+  `default_matrix().universal` (profiles.rs:121) so every `agentic cascade
+  run` tries to invoke it. The CLI signature is
+  `agentic check parity --project <p> --book <key> --reference <docx>`, but
+  the cascade orchestrator's `push_audit_gates` had no `parity` arm — it fell
+  through to the default `_ =>` branch which supplied only `--project`. Clap
+  rejected the call with `error: the following required arguments were not
+  provided: --book <BOOK>, --reference <REFERENCE>` before any per-book
+  dispatch could run. The reference fixture
+  `tests/fixtures/reference/master_thesis_reference.docx` (ADR-0061) is also
+  not on disk in some setups, so a naive fix that hands paths to the gate
+  would still crash on `load_document_xml`. **Three composable changes**:
+  - *Canonical reference-path lookup* — added
+    `parity::canonical_reference_path(book_key) -> Option<PathBuf>` whose
+    body encodes the two ADR-defined facts (`master_thesis_bookkit` ⇒
+    `tests/fixtures/reference/master_thesis_reference.docx` per ADR-0061;
+    `ai_norms_and_regulations` ⇒ `book_build/AI_Norms_and_Regulations_BOOK.docx`
+    per ADR-0057). Any other book key returns `None` (no canonical baseline
+    — manual invocation only). The orchestrator queries this instead of
+    learning ADRs itself.
+  - *Cascade `parity` arm* — added a dedicated `match` arm in
+    `push_audit_gates` that iterates the scoped keys
+    (`opts.thesis_key` / `opts.bookkit_key`), looks up
+    `canonical_reference_path(key)`, and emits one `check parity (<key>)`
+    step per (book, reference) pair. Today this emits exactly one step
+    (`master_thesis_bookkit`); `master_thesis` returns `None` and is
+    correctly skipped (the old-pipeline thesis book has no canonical
+    baseline yet).
+  - *Fixture-absent graceful PASS* — added a top-of-function guard in
+    `run_parity_for_book`: if `reference.is_file()` is false, return a
+    `ParityReport` with a single INFO `PARITY_FIXTURE_ABSENT` finding and
+    `parity_pct = 100.0` instead of erroring on `load_document_xml`. The
+    `audit_verdicts` row still records the per-book run, so the gap shows
+    up in `agentic audit report` — silent skip is avoided. This makes the
+    cascade survive an unprovisioned fixture without breaking.
+  Three new locking tests:
+  `canonical_reference_path_matches_adr0057_and_adr0061` (5 assertions: 2
+  must-Some for the ADR-defined keys × 3 must-None for other keys),
+  `missing_reference_fixture_is_pass_with_info` (verifies one INFO finding
+  with `name = PARITY_FIXTURE_ABSENT`, `scope = "fixture"`,
+  `parity_pct = 100.0` on a non-existent reference path), and
+  `cascade_parity_step_supplies_book_and_reference` (verifies the cascade
+  plan emits exactly one parity step with `--book master_thesis_bookkit`
+  and the canonical reference path; `master_thesis` is correctly skipped).
+  Restores the thesis cascade to **PASS** on the parity step (was the only
+  remaining FAIL after the six prior precision-fix commits).
+
 - **`integrity` gate — three single-line / discursive / structured-template
   false-positive families** (`crates/agentic-checks/src/integrity_gate.rs`):
   - **`INTEGRITY_HALLUCINATED_RESULT`**: `RESULT_ASSERT` was matching

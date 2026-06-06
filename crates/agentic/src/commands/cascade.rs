@@ -537,6 +537,40 @@ fn push_audit_gates(
                     steps.push(Step::gate(6, format!("check {sub} ({key})"), args, cp));
                 }
             }
+            "parity" => {
+                // Per-book parity dispatch — ADR-0057 §3.4 / ADR-0061 §3.1.
+                // Iterate the two book keys cascade tracks (`thesis_key` and
+                // `bookkit_key`, default `"master_thesis"` and
+                // `"master_thesis_bookkit"`), look up the frozen reference
+                // docx via `parity::canonical_reference_path`, and emit one
+                // gate step per (book, reference) pair. Books with no
+                // canonical reference (today: the old-pipeline
+                // `master_thesis` book and any third-party book) are skipped
+                // — the gate has no baseline to compare against, so manual
+                // `agentic check parity --book <k> --reference <docx>` is
+                // the only invocation path for those. Missing fixtures on
+                // disk are handled inside the gate itself
+                // (`PARITY_FIXTURE_ABSENT` INFO finding ⇒ PASS), so the
+                // cascade survives an unprovisioned fixture without losing
+                // the audit_verdicts row.
+                for key in &scoped_keys {
+                    let Some(ref_path) = agentic_checks::parity::canonical_reference_path(key)
+                    else {
+                        continue;
+                    };
+                    let args = vec![
+                        "check".into(),
+                        "parity".into(),
+                        "--project".into(),
+                        p.clone(),
+                        "--book".into(),
+                        (*key).clone(),
+                        "--reference".into(),
+                        ref_path.display().to_string(),
+                    ];
+                    steps.push(Step::gate(6, format!("check parity ({key})"), args, cp));
+                }
+            }
             _ => {
                 let mut args = vec!["check".into(), (*sub).into(), "--project".into(), p.clone()];
                 match *sub {
@@ -1159,6 +1193,52 @@ mod tests {
             assert!(!cit.args.contains(&"--paths-from-manifest".to_string()));
             assert!(!cit.args.contains(&"--book-key".to_string()));
         }
+    }
+
+    #[test]
+    fn cascade_parity_step_supplies_book_and_reference() {
+        // Regression for the 2026-06-06 parity FAIL: the cascade orchestrator
+        // used to fall through to the default `_ =>` arm and invoke
+        // `agentic check parity --project <p>` with no `--book` or
+        // `--reference`, which clap rejected as a required-arg error before
+        // any per-book dispatch could run. The new `parity` arm in
+        // `push_audit_gates` MUST emit one `check parity` step per
+        // (book_key, canonical_reference_path) pair, and skip books with no
+        // canonical baseline (so the old-pipeline `master_thesis` book is
+        // not emitted — only `master_thesis_bookkit`).
+        let plan = build_plan(&opts(true, false, false), &dims(), false, &suite());
+        let parity_steps: Vec<&Step> = plan
+            .iter()
+            .filter(|s| s.label.starts_with("check parity"))
+            .collect();
+        // Exactly one parity step: master_thesis_bookkit (master_thesis has
+        // no canonical reference; parity::canonical_reference_path returns
+        // None and the arm skips it).
+        assert_eq!(
+            parity_steps.len(),
+            1,
+            "parity must emit exactly one step (master_thesis_bookkit; \
+             master_thesis has no canonical reference)"
+        );
+        let step = parity_steps[0];
+        assert_eq!(step.label, "check parity (master_thesis_bookkit)");
+        // Required args present and correctly resolved.
+        assert!(step.args.contains(&"--book".to_string()));
+        assert!(step.args.contains(&"master_thesis_bookkit".to_string()));
+        assert!(step.args.contains(&"--reference".to_string()));
+        // Reference path comes from parity::canonical_reference_path —
+        // forward-slash-normalised on Windows so display() output matches
+        // the expected literal exactly.
+        let expected_ref =
+            agentic_checks::parity::canonical_reference_path("master_thesis_bookkit")
+                .expect("canonical reference for bookkit")
+                .display()
+                .to_string();
+        assert!(
+            step.args.contains(&expected_ref),
+            "parity step must carry the canonical reference path; args = {:?}",
+            step.args
+        );
     }
 
     #[test]
