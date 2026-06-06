@@ -1202,7 +1202,13 @@ fn build(
                     );
                 }
             }
-            Err(e) => eprintln!("  ! {} FAILED: {e}", spec.key),
+            // Show the full anyhow context chain (`{e:#}`) so a book-build
+            // failure includes the inner cause (e.g. "rendering figspec
+            // 'figXX_NN': …", "unterminated figspec block") rather than
+            // only the outermost "resolving figspecs in chapter …" wrapper.
+            // The 2026-06-07 single-line-dump regression went undiagnosed
+            // through several cascades because the chain was hidden.
+            Err(e) => eprintln!("  ! {} FAILED: {e:#}", spec.key),
         }
     }
     // Render report (used by `book audit` to compare iterations).

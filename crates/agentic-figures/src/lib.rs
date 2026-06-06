@@ -254,7 +254,21 @@ pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(Stri
     while let Some(start) = rest.find("```figspec") {
         out.push_str(&rest[..start]);
         let after = &rest[start..];
-        let body_start = after.find('\n').map(|i| i + 1).unwrap_or(after.len());
+        // Skip the opening ```figspec marker. In multi-line markdown a
+        // newline normally follows; in single-line markdown dumps (where
+        // the entire file lives on one line, which the campaign sources
+        // and several frontmatter files do) the JSON body begins
+        // immediately. The previous logic — `after.find('\n').map(|i| i +
+        // 1).unwrap_or(after.len())` — jumped body_start past the entire
+        // remaining string when no newline existed, so the closing-fence
+        // search failed and every campaign book FAILED with "unterminated
+        // figspec block". Skip the opener literally; only consume one
+        // following newline if present.
+        const OPENER: &str = "```figspec";
+        let mut body_start = OPENER.len();
+        if after[body_start..].starts_with('\n') {
+            body_start += 1;
+        }
         let end_rel = after[body_start..]
             .find("```")
             .ok_or_else(|| anyhow!("unterminated figspec block"))?;
@@ -805,22 +819,61 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
         })
         .unwrap_or_default();
 
-    // Longest-path layering (Sugiyama-style); cap iterations for safety on cycles.
+    // Layer assignment via a Kahn-style topological pass that handles cycles
+    // gracefully (Sugiyama's longest-path variant diverged on MAPE-K's
+    // Execute → Monitor back-edge: every outer pass kept bumping layers by
+    // +1, producing ~25 layers and a ~7000 px canvas; a hard clamp at
+    // `n - 1` instead collapsed all cycle members to the last column). The
+    // fix is a remaining-in-degree placement: at each layer, place every
+    // unplaced node whose remaining in-degree equals the current minimum,
+    // then decrement its successors' remaining in-degrees. For DAGs this
+    // matches the topological ordering; for strongly-connected components
+    // it picks the lowest-in-degree members first (preserving cycle members
+    // in distinct layers rather than collapsing them).
     let mut layer = vec![0usize; n];
-    for _ in 0..n {
-        let mut changed = false;
-        for (f, t, _) in &edges {
-            if layer[*t] < layer[*f] + 1 {
-                layer[*t] = layer[*f] + 1;
-                changed = true;
+    if !edges.is_empty() {
+        let mut indeg = vec![0i32; n];
+        for (_, t, _) in &edges {
+            indeg[*t] += 1;
+        }
+        let mut remaining_indeg = indeg.clone();
+        let mut placed = vec![false; n];
+        let mut current_layer = 0usize;
+        let mut iterations = 0usize;
+        let max_iterations = n.saturating_add(1);
+        while iterations < max_iterations {
+            iterations += 1;
+            // Find unplaced nodes with minimum remaining in-degree.
+            let unplaced: Vec<usize> = (0..n).filter(|&i| !placed[i]).collect();
+            if unplaced.is_empty() {
+                break;
             }
+            let min_deg = unplaced
+                .iter()
+                .map(|&i| remaining_indeg[i])
+                .min()
+                .unwrap_or(0);
+            let layer_nodes: Vec<usize> = unplaced
+                .iter()
+                .copied()
+                .filter(|&i| remaining_indeg[i] == min_deg)
+                .collect();
+            for &i in &layer_nodes {
+                layer[i] = current_layer;
+                placed[i] = true;
+            }
+            // Decrement in-degrees of placed nodes' successors (unplaced only).
+            for &f in &layer_nodes {
+                for (ef, et, _) in &edges {
+                    if *ef == f && !placed[*et] {
+                        remaining_indeg[*et] -= 1;
+                    }
+                }
+            }
+            current_layer += 1;
         }
-        if !changed {
-            break;
-        }
-    }
-    // If there are no edges, fall back to a single column per index.
-    if edges.is_empty() {
+    } else {
+        // No edges → place each node in its own column (preserves ordering).
         for (i, l) in layer.iter_mut().enumerate() {
             *l = i;
         }
@@ -832,11 +885,21 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
     }
     let max_rows = cols.iter().map(Vec::len).max().unwrap_or(1).max(1) as i32;
 
-    let (box_w, box_h, col_gap, row_gap) = (190i32, 72i32, 96i32, 34i32);
-    let (mx, my) = (30i32, 64i32);
+    // Box width / wrap budget scaled to the longest node label so multi-line
+    // wrapping stays inside the box and doesn't truncate mid-word at the
+    // hard `take(3)` cap. ~7 px per character at the 13-pt box-label size.
+    let max_label_chars = nodes.iter().map(|s| s.len()).max().unwrap_or(0);
+    let wrap_chars = max_label_chars.div_ceil(4).clamp(22, 36) as usize;
+    let approx_text_w = wrap_chars as i32 * 7 + 16;
+    let box_w = approx_text_w.clamp(190, 260);
+    // Tall enough for 4 wrapped lines instead of the previous 3-line cap.
+    let box_h = 92i32;
+    let col_gap = 110i32;
+    let row_gap = 38i32;
+    let (mx, my) = (32i32, 70i32);
     let w = mx * 2 + nlayers as i32 * box_w + (nlayers as i32 - 1) * col_gap;
     let inner_h = max_rows * box_h + (max_rows - 1) * row_gap;
-    let h = my + inner_h + 30;
+    let h = my + inner_h + 36;
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
     draw_title(&root, &spec.title, w)?;
@@ -864,10 +927,29 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
         line(&root, vec![(midx, sy), (midx, dy)], &GRID, 2)?;
         arrow(&root, (midx, dy), (dx, dy), &WONG[0])?;
         if !lbl.is_empty() {
-            let ly = (sy + dy) / 2;
-            let tw = lbl.len() as i32 * 6 + 8;
-            fill_rect(&root, midx - tw / 2, ly - 9, midx + tw / 2, ly + 9, &WHITE)?;
-            text(&root, lbl, &centered(font_c(11, &GREY)), midx, ly)?;
+            // Cap edge-label text so it stays inside the column gap and never
+            // overlaps the source / destination boxes. `gap_text` budgets ~6
+            // px per char at the 12-pt edge-label size minus 16 px padding so
+            // the white background rect fits cleanly between the two boxes.
+            // Anything longer is truncated with an ellipsis.
+            let gap_text = ((col_gap - 16) / 6).max(8) as usize;
+            let display: String = if lbl.chars().count() > gap_text {
+                let prefix: String = lbl.chars().take(gap_text.saturating_sub(1)).collect();
+                format!("{prefix}…")
+            } else {
+                lbl.clone()
+            };
+            // Place the label offset *above* the elbow's vertical leg so it
+            // never collides with the source/dest row text or arrowhead.
+            let ly = (sy + dy) / 2 - 2;
+            let tw = display.chars().count() as i32 * 6 + 8;
+            let half = tw / 2;
+            // Hard-clamp the white-rect span to the column-gap interior so
+            // the background never paints over either box.
+            let left = (midx - half).max(sx + 4);
+            let right = (midx + half).min(dx - 4);
+            fill_rect(&root, left, ly - 9, right, ly + 9, &WHITE)?;
+            text(&root, &display, &centered(font_c(12, &GREY)), midx, ly)?;
         }
     }
     // boxes
@@ -882,11 +964,12 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
             &RGBColor(0xEE, 0xF2, 0xF8),
         )?;
         stroke_rect(&root, x0, y0, x0 + box_w, y0 + box_h, &NAVY, 2)?;
-        let lines = wrap(label, 20);
-        let total = lines.len().min(3) as i32;
-        for (li, ln) in lines.iter().take(3).enumerate() {
-            let cy = y0 + box_h / 2 - (total - 1) * 8 + li as i32 * 15;
-            text(&root, ln, &centered(font(12)), x0 + box_w / 2, cy)?;
+        let lines = wrap(label, wrap_chars);
+        let max_lines = 4usize;
+        let total = lines.len().min(max_lines) as i32;
+        for (li, ln) in lines.iter().take(max_lines).enumerate() {
+            let cy = y0 + box_h / 2 - (total - 1) * 9 + li as i32 * 17;
+            text(&root, ln, &centered(font(13)), x0 + box_w / 2, cy)?;
         }
     }
     root.present().map_err(|e| anyhow!("present: {e}"))?;
@@ -1927,6 +2010,38 @@ fn render_procmap(spec: &FigSpec, out: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_markdown_handles_single_line_dump() {
+        // Regression for the 2026-06-07 campaign-book FAIL cascade:
+        // single-line markdown dumps (campaign sources, several
+        // frontmatter files) have no newline after the ```figspec opener,
+        // and the previous body-offset logic jumped past the entire
+        // string in that case, producing "unterminated figspec block"
+        // for every figspec in every campaign chapter.
+        let dir = std::env::temp_dir().join("agentic_fig_resolvetest");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two figspec blocks with NO newlines between the opener and the
+        // JSON, then trailing prose.
+        let single_line = "prose ```figspec{\"id\":\"a\",\"type\":\"bar\",\"title\":\"A\",\"caption\":\"c\",\"data\":{\"labels\":[\"x\"],\"values\":[1]}}``` more prose ```figspec{\"id\":\"b\",\"type\":\"bar\",\"title\":\"B\",\"caption\":\"c\",\"data\":{\"labels\":[\"y\"],\"values\":[2]}}``` end";
+        let (resolved, n) =
+            resolve_markdown(single_line, &dir, "resolvetest").expect("must not fail");
+        assert_eq!(n, 2, "both figspec blocks must resolve");
+        assert!(
+            resolved.contains("![c](figures/resolvetest/a.png)"),
+            "first replaced; got: {resolved}"
+        );
+        assert!(
+            resolved.contains("![c](figures/resolvetest/b.png)"),
+            "second replaced"
+        );
+        // Multi-line markdown still works (the legacy form).
+        let multi_line = "prose\n```figspec\n{\"id\":\"c\",\"type\":\"bar\",\"title\":\"C\",\"caption\":\"cap\",\"data\":{\"labels\":[\"z\"],\"values\":[3]}}\n```\nmore";
+        let (resolved2, n2) =
+            resolve_markdown(multi_line, &dir, "resolvetest").expect("multi-line still works");
+        assert_eq!(n2, 1);
+        assert!(resolved2.contains("![cap](figures/resolvetest/c.png)"));
+    }
 
     #[test]
     fn renders_bar_png() {

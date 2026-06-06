@@ -64,6 +64,50 @@ pub fn run(
     )
 }
 
+#[cfg(test)]
+mod body_range_tests {
+    use super::*;
+
+    #[test]
+    fn body_range_inclusive_substring_match() {
+        let paths = [
+            "thesis/fhnw_0_management_summary.md",
+            "thesis/fhnw_1_introduction.md",
+            "thesis/fhnw_2_theory.md",
+            "thesis/fhnw_3_current_state.md",
+            "thesis/fhnw_4_empirical.md",
+            "thesis/fhnw_5_solution.md",
+            "thesis/fhnw_6_conclusion.md",
+            "thesis/fhnw_7_personal_reflection.md",
+        ];
+        let kept = apply_body_range(&paths, Some("fhnw_2_theory"), Some("fhnw_6_conclusion"));
+        assert_eq!(
+            kept,
+            vec![
+                "thesis/fhnw_2_theory.md",
+                "thesis/fhnw_3_current_state.md",
+                "thesis/fhnw_4_empirical.md",
+                "thesis/fhnw_5_solution.md",
+                "thesis/fhnw_6_conclusion.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn body_range_falls_through_on_missing_from() {
+        let paths = ["a.md", "b.md", "c.md"];
+        let kept = apply_body_range(&paths, Some("XXX"), Some("b"));
+        assert_eq!(kept, vec!["a.md", "b.md", "c.md"]);
+    }
+
+    #[test]
+    fn body_range_no_bounds_returns_all() {
+        let paths = ["a.md", "b.md", "c.md"];
+        let kept = apply_body_range(&paths, None, None);
+        assert_eq!(kept, vec!["a.md", "b.md", "c.md"]);
+    }
+}
+
 /// Scoped variant used by the cascade thesis-profile invocation.
 ///
 /// `Scope::Prefix` matches the original behaviour (every `*.md` under the
@@ -87,10 +131,36 @@ pub fn run_scoped(
             }
             (format!("'{prefix}'"), ps)
         }
-        Scope::Paths { book_key, paths } => (
-            format!("book '{book_key}' ({} chapters)", paths.len()),
-            paths.iter().map(|s| (*s).to_string()).collect(),
-        ),
+        Scope::Paths {
+            book_key,
+            paths,
+            body_from,
+            body_to,
+        } => {
+            let body_paths = apply_body_range(paths, body_from, body_to);
+            let scope_msg = match (body_from, body_to) {
+                (Some(from), Some(to)) => format!(
+                    "book '{book_key}' body subset {from} → {to} ({} of {} chapters)",
+                    body_paths.len(),
+                    paths.len()
+                ),
+                (Some(from), None) => format!(
+                    "book '{book_key}' from {from} ({} of {} chapters)",
+                    body_paths.len(),
+                    paths.len()
+                ),
+                (None, Some(to)) => format!(
+                    "book '{book_key}' up to {to} ({} of {} chapters)",
+                    body_paths.len(),
+                    paths.len()
+                ),
+                (None, None) => format!("book '{book_key}' ({} chapters)", paths.len()),
+            };
+            (
+                scope_msg,
+                body_paths.iter().map(|s| (*s).to_string()).collect(),
+            )
+        }
     };
 
     for path in &paths {
@@ -136,12 +206,57 @@ pub enum Scope<'a> {
     /// Sum every `*.md` whose path starts with `prefix` (the legacy behaviour).
     Prefix(&'a str),
     /// Sum exactly the chapter paths listed for one bookkit manifest entry.
+    /// Optional `body_from` / `body_to` further narrow the count to an
+    /// inclusive sub-range of the manifest (e.g. Related Work → Discussion),
+    /// matched against the chapter-path substrings; entries outside the
+    /// range are excluded from the word count.
     Paths {
         /// Manifest key for the audit message (`master_thesis`, etc.).
         book_key: &'a str,
         /// The chapter path list, in manifest order.
         paths: &'a [&'a str],
+        /// Optional inclusive start of the body sub-range — first chapter
+        /// whose path contains this substring becomes the first counted.
+        body_from: Option<&'a str>,
+        /// Optional inclusive end of the body sub-range — last chapter
+        /// (counted from `body_from`) whose path contains this substring
+        /// becomes the last counted.
+        body_to: Option<&'a str>,
     },
+}
+
+/// Filter `paths` to the inclusive sub-range bounded by `body_from`
+/// (substring of the start chapter) and `body_to` (substring of the end
+/// chapter). When either bound is `None` it falls through to the natural
+/// extreme. If `body_from` matches no entry, the original list is
+/// returned (fail-safe: the FHNW operator gets the full body count rather
+/// than zero when a typo'd substring doesn't match).
+fn apply_body_range<'a>(
+    paths: &'a [&'a str],
+    body_from: Option<&str>,
+    body_to: Option<&str>,
+) -> Vec<&'a str> {
+    let start = body_from
+        .and_then(|needle| paths.iter().position(|p| p.contains(needle)))
+        .unwrap_or(0);
+    let end = body_to
+        .and_then(|needle| paths.iter().rposition(|p| p.contains(needle)))
+        .unwrap_or_else(|| paths.len().saturating_sub(1));
+    // If body_from didn't match (start stayed at 0 by fall-through), preserve
+    // the original list — the operator passed a bound that didn't resolve.
+    if body_from.is_some()
+        && !paths
+            .iter()
+            .any(|p| p.contains(body_from.unwrap_or_default()))
+    {
+        return paths.to_vec();
+    }
+    if start > end {
+        // Bounds inverted (body_to before body_from in manifest order) →
+        // fall through to the full list so the operator notices.
+        return paths.to_vec();
+    }
+    paths[start..=end].to_vec()
 }
 
 #[cfg(test)]
@@ -273,6 +388,8 @@ mod tests {
             Scope::Paths {
                 book_key: "master_thesis",
                 paths: &paths,
+                body_from: None,
+                body_to: None,
             },
             60,
             WORDS_PER_PAGE,

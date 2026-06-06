@@ -533,6 +533,23 @@ fn push_audit_gates(
                     if *sub == "page-boundary" {
                         args.push("--words-per-page".into());
                         args.push("280".into());
+                        // ADR-0035 + 2026-06-07 user directive: the body cap
+                        // measures from Related Work (§2 Theory) to Discussion
+                        // (§6 Conclusion) inclusive. Frontmatter (title,
+                        // declarations, management summary), Introduction (§1),
+                        // Personal Reflection (§7), Appendices, and the
+                        // bibliography are EXCLUDED from the 60-page count —
+                        // the gate body-cap rule applies to the
+                        // Related-Work-to-Discussion span only. The thesis
+                        // profile receives the per-key body range; other books
+                        // (companion, merged) get no body-range bounds so the
+                        // full chapter list is measured.
+                        if key.contains("master_thesis") {
+                            args.push("--body-from".into());
+                            args.push("fhnw_2_theory".into());
+                            args.push("--body-to".into());
+                            args.push("fhnw_6_conclusion".into());
+                        }
                     }
                     steps.push(Step::gate(6, format!("check {sub} ({key})"), args, cp));
                 }
@@ -1193,6 +1210,35 @@ mod tests {
             assert!(!cit.args.contains(&"--paths-from-manifest".to_string()));
             assert!(!cit.args.contains(&"--book-key".to_string()));
         }
+    }
+
+    #[test]
+    fn cascade_page_boundary_thesis_carries_body_range_args() {
+        // The 2026-06-07 user directive scopes the FHNW body cap to
+        // Related Work (§2 Theory) → Discussion (§6 Conclusion) inclusive.
+        // The cascade orchestrator MUST pass --body-from fhnw_2_theory +
+        // --body-to fhnw_6_conclusion on the master_thesis page-boundary
+        // step. The companion / merged / bookkit-only books must NOT
+        // receive the body-range args (they aren't measured against the
+        // FHNW 60-page rule the same way).
+        let plan = build_plan(&opts(true, false, false), &dims(), false, &suite());
+        let thesis_pb = plan
+            .iter()
+            .find(|s| s.label == "check page-boundary (master_thesis)")
+            .expect("master_thesis page-boundary step present");
+        assert!(thesis_pb.args.contains(&"--body-from".to_string()));
+        assert!(thesis_pb.args.contains(&"fhnw_2_theory".to_string()));
+        assert!(thesis_pb.args.contains(&"--body-to".to_string()));
+        assert!(thesis_pb.args.contains(&"fhnw_6_conclusion".to_string()));
+
+        // Bookkit profile (master_thesis_bookkit also contains
+        // "master_thesis" as a substring) gets the same scoping.
+        let bookkit_pb = plan
+            .iter()
+            .find(|s| s.label == "check page-boundary (master_thesis_bookkit)")
+            .expect("master_thesis_bookkit page-boundary step present");
+        assert!(bookkit_pb.args.contains(&"--body-from".to_string()));
+        assert!(bookkit_pb.args.contains(&"fhnw_6_conclusion".to_string()));
     }
 
     #[test]

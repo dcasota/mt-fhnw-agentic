@@ -1257,6 +1257,17 @@ pub enum CheckAction {
         /// chapter list to count. Requires `--paths-from-manifest`.
         #[arg(long, requires = "paths_from_manifest")]
         book_key: Option<String>,
+        /// Restrict the count to an inclusive body sub-range, matched
+        /// against the chapter-path substrings (e.g. `fhnw_2_theory` →
+        /// `fhnw_6_conclusion` for the FHNW Related-Work-to-Discussion
+        /// body). Requires `--paths-from-manifest`. If either bound is
+        /// supplied but doesn't match, falls through to the full chapter
+        /// list rather than failing.
+        #[arg(long, requires = "paths_from_manifest")]
+        body_from: Option<String>,
+        /// Inclusive end of the body sub-range; see `--body-from`.
+        #[arg(long, requires = "paths_from_manifest")]
+        body_to: Option<String>,
     },
     /// Verify a rendered FHNW master-thesis docx against 11 structural
     /// predicates derived from the proposal docx (ADR-0050 v0.1.15-engine):

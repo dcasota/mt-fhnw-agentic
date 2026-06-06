@@ -229,6 +229,8 @@ pub async fn run_report(
             words_per_page,
             paths_from_manifest,
             book_key,
+            body_from,
+            body_to,
         } => {
             let report = match (paths_from_manifest, book_key) {
                 (Some(manifest_path), Some(key)) => {
@@ -255,6 +257,8 @@ pub async fn run_report(
                         agentic_checks::page_boundary_gate::Scope::Paths {
                             book_key: &key,
                             paths: &paths_ref,
+                            body_from: body_from.as_deref(),
+                            body_to: body_to.as_deref(),
                         },
                         max_pages,
                         words_per_page,
