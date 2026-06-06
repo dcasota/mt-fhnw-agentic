@@ -40,9 +40,18 @@ static METHOD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bwe (?:trained|ran|conducted|evaluated|implemented and tested|deployed|benchmarked|surveyed)\b|our (?:experiment|user study|benchmark)\b").unwrap()
 });
 /// Strong shortcut markers — imperative scaffolding that is essentially always
-/// a left-in artifact, regardless of context.
+/// a left-in artifact, regardless of context. Negative-lookahead-like guard
+/// applied per-match in `has_genuine_shortcut`: `TODO-09` / `FIXME-123` and
+/// similar `WORD-<digits>` forms are stable identifiers (audit-gap IDs,
+/// issue refs), not left-in scaffolding.
 static SHORTCUT_STRONG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(todo|fixme|xxx|lorem ipsum|tbd)\b").unwrap());
+/// `WORD-<digits>` identifier suffix — `TODO-09`, `FIXME-123` are stable IDs.
+/// Applied to the post-match slice; if it starts with `-<digits>` (or
+/// `-<alpha-digit-mix>` IDs like `TODO-C09`), the match is a reference,
+/// not scaffolding.
+static SHORTCUT_ID_SUFFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^-[A-Za-z0-9_]*\d").unwrap());
 /// Soft shortcut words — also legitimate engineering nouns ("parallelisation
 /// stub", "test stub", a config "placeholder value"). Only the *predicative
 /// scaffolding* sense ("is a stub", "just a placeholder", "placeholder text")
@@ -127,9 +136,15 @@ fn in_quote_or_gloss(pre: &str) -> bool {
 #[must_use]
 pub fn has_genuine_shortcut(ln: &str) -> bool {
     for m in SHORTCUT_STRONG.find_iter(ln) {
-        if !in_quote_or_gloss(&ln[..m.start()]) {
-            return true;
+        if in_quote_or_gloss(&ln[..m.start()]) {
+            continue;
         }
+        // `TODO-09` / `FIXME-C12` / `XXX-7` — `WORD-<digits>` IDs are stable
+        // identifiers (audit-gap IDs, issue refs), not left-in scaffolding.
+        if SHORTCUT_ID_SUFFIX.is_match(&ln[m.end()..]) {
+            continue;
+        }
+        return true;
     }
     for m in SHORTCUT_SOFT.find_iter(ln) {
         let pre = &ln[..m.start()];
@@ -378,6 +393,26 @@ mod tests {
         let f = line_findings("TODO: rewrite this. The parser is broken.", "c.md");
         assert!(f.iter().any(|x| x.category == "INTEGRITY_SHORTCUT"));
         assert!(f.iter().any(|x| x.category == "INTEGRITY_IMPL_BUG"));
+    }
+
+    #[test]
+    fn shortcut_id_suffix_not_flagged_as_left_in_marker() {
+        // `TODO-09`, `FIXME-C12`, `XXX-7` etc. are stable identifiers
+        // (audit-gap IDs, issue refs) — NOT left-in scaffolding markers.
+        for ln in [
+            "audit gap H04, surfaced as review TODO-09: nothing stopped",
+            "IP risk the register must own (audit gap H04 / TODO-09; ISO 5230)",
+            "tracked via FIXME-C12 in the issue tracker",
+            "see XXX-7 for the rationale behind this carve-out",
+        ] {
+            assert!(
+                !has_genuine_shortcut(ln),
+                "WORD-<digits> ID must NOT flag as left-in marker: {ln}"
+            );
+        }
+        // A bare TODO without ID-suffix still flags.
+        assert!(has_genuine_shortcut("TODO: rewrite this paragraph"));
+        assert!(has_genuine_shortcut("FIXME re-run the experiment"));
     }
 
     #[test]

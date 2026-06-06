@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`integrity` gate — `INTEGRITY_SHORTCUT` false positives on `WORD-<digits>`
+  identifiers** (`crates/agentic-checks/src/integrity_gate.rs`). The
+  `SHORTCUT_STRONG` regex `\b(todo|fixme|xxx|lorem ipsum|tbd)\b` matched
+  audit-gap and issue identifiers like `TODO-09`, `FIXME-C12`, `XXX-7` as
+  left-in scaffolding markers — but those forms are stable IDs (audit-gap
+  refs in risk registers, issue-tracker keys), not editorial scaffolding.
+  Added a `SHORTCUT_ID_SUFFIX = ^-[A-Za-z0-9_]*\d` guard applied to the
+  post-match slice in `has_genuine_shortcut`: if the slice immediately
+  following a `TODO` / `FIXME` / `XXX` match starts with `-<alnum-digit-mix>`,
+  the match is a reference, not a marker. New test
+  `shortcut_id_suffix_not_flagged_as_left_in_marker` locks both sides: 4
+  must-pass `WORD-<digits>` ID forms x 2 must-flag bare-marker forms.
+  Clears 2 thesis-repo `INTEGRITY_SHORTCUT` WARNs in
+  `Dimension_08_risk_management_EN.md` (audit gap `TODO-09` references) and
+  preserves the gate's intent on genuine left-in scaffolding (e.g. unfilled
+  acronym-table rows still flag).
+
 - **`integrity` gate — `INTEGRITY_FRAME_LOCK` false positives on single-line
   markdown dumps** (`crates/agentic-checks/src/integrity_gate.rs`). Several
   thesis deliverables are stored as whole-file single-line markdown dumps
