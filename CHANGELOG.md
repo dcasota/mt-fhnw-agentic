@@ -18,6 +18,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`deliverable` gate — FHNW MAS regulatory + German-management-methodology
+  allowlist for `NON_ENGLISH_TEXT`**
+  (`crates/agentic-checks/src/deliverable_gate.rs`). The gate's `DE` and
+  `DE_ABBREV` regexes flagged every occurrence of `Verzeichnis`,
+  `IST-Analyse`, `Ist-Analyse`, `Ch.3 IST`, etc. as German prose — even
+  though `Verzeichnis der Hilfsmittel` is the *mandatory* FHNW MAS
+  back-matter title for the AI-tools-disclosure section (a quoted
+  regulatory obligation, not free prose) and the `IST-Analyse` /
+  `SOLL-Zustand` family are domain-standard German-management-tradition
+  methodology compounds with no exact single-word English equivalent (cf.
+  Wirtschaftsinformatik and business-management academic literature, where
+  the terms appear untranslated in English text by convention). Added a
+  `DE_ALLOWLIST` of 15 recognised phrases and a per-line
+  `inside_de_allowlist(ln, m_start, m_end)` check that runs after a
+  `DE` / `DE_ABBREV` match: if the matched span sits inside an allowlisted
+  phrase, the finding is silenced. The bare-word `IST` / `SOLL` flag in
+  the test fixture (`| Measured IST | Target (SOLL) |`) remains active —
+  the existing test `catches_german_management_abbreviation_ist_soll`
+  still passes — confirming the allowlist only exempts the specific
+  compound / regulatory forms, not free-prose German. New test
+  `non_english_text_allowlists_fhnw_regulatory_and_methodology_phrases`
+  locks both sides: 5 must-pass FHNW/methodology snippets x 2 must-flag
+  free-German-prose snippets. Clears the 17 thesis-repo `NON_ENGLISH_TEXT`
+  ERRORs and takes the `deliverable` gate from FAIL 17 to FAIL 0 in
+  combination with the previous `GRAPHICAL` + `MARKER` fixes (this
+  Unreleased section).
+
 - **`deliverable` gate — `FIGURE_NOT_GRAPHICAL` allowlist + `INTERNAL_MARKER`
   regex precision** (`crates/agentic-checks/src/deliverable_gate.rs`). Two
   gate-precision corrections that together clear ~272 of 289 advisory

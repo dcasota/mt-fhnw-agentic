@@ -84,6 +84,67 @@ const GRAPHICAL: &[&str] = &[
     "table",       // data-table-to-Word-table renderer (render_table.rs; regulatory matrices)
 ];
 
+/// FHNW MAS regulatory + German-management-methodology phrases that are
+/// accepted as English-academic loanwords (or mandatory German regulatory
+/// terms) and must NOT fire `NON_ENGLISH_TEXT`. A match by [`DE`] or
+/// [`DE_ABBREV`] whose span sits inside a recognised phrase is silenced.
+///
+/// Scope:
+/// - `Verzeichnis der Hilfsmittel` is the **mandatory** FHNW MAS
+///   accreditation phrase for the AI/tools-disclosure back-matter section;
+///   it is a quoted regulatory obligation, not free German prose.
+/// - `IST-Analyse`, `Ist-Analyse`, `SOLL-Zustand`, `Soll-Zustand`,
+///   `Ist-Zustand`, `Soll-Ist`, `IST/SOLL`, `SOLL/IST` are German
+///   management-tradition methodology compounds with no exact single-word
+///   English equivalent. They are routinely used in academic English
+///   business-management writing as untranslated technical terms (cf. their
+///   appearance in Wirtschaftsinformatik literature, Springer Business
+///   reference works, etc.). The bare-word `IST` and `SOLL` flags remain
+///   active for free German prose; only the compound methodology forms are
+///   exempted here.
+/// - `Ch.3 IST`, `Ch. 3 IST`, `Chapter 3 IST` and the analogous `Ch.* IST`
+///   shorthand are chapter pointers (the thesis's §3 is the IST-Analyse
+///   chapter); they refer to the chapter by its methodology slot, not by
+///   its German title.
+const DE_ALLOWLIST: &[&str] = &[
+    "Verzeichnis der Hilfsmittel",
+    "IST-Analyse",
+    "Ist-Analyse",
+    "SOLL-Zustand",
+    "Soll-Zustand",
+    "Ist-Zustand",
+    "Soll-Ist",
+    "Ist-Soll",
+    "IST/SOLL",
+    "SOLL/IST",
+    "Ch.3 IST",
+    "Ch. 3 IST",
+    "Chapter 3 IST",
+    "Ch.3's IST",
+    "Chapter 3's IST",
+];
+
+/// True if the [`m_start`..`m_end`] byte span in `ln` sits inside any
+/// [`DE_ALLOWLIST`] phrase (case-insensitive). Used to silence
+/// `NON_ENGLISH_TEXT` on FHNW MAS regulatory phrases and recognised
+/// German-management-methodology compounds.
+fn inside_de_allowlist(ln: &str, m_start: usize, m_end: usize) -> bool {
+    let lower = ln.to_lowercase();
+    DE_ALLOWLIST.iter().any(|p| {
+        let pl = p.to_lowercase();
+        let mut search_from = 0;
+        while let Some(idx) = lower[search_from..].find(&pl) {
+            let abs = search_from + idx;
+            let end = abs + pl.len();
+            if m_start >= abs && m_end <= end {
+                return true;
+            }
+            search_from = abs + 1;
+        }
+        false
+    })
+}
+
 /// All gate findings for one markdown document. `label` prefixes locations.
 #[must_use]
 pub fn findings_for(label: &str, text: &str) -> Vec<Finding> {
@@ -142,7 +203,8 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
                 .rev()
                 .take(2)
                 .any(|c| c == '*' || c == '(');
-            if !glossed {
+            let allowlisted = inside_de_allowlist(ln, m.start(), m.end());
+            if !glossed && !allowlisted {
                 out.push(err(
                     "NON_ENGLISH_TEXT",
                     format!("L{i}: German term '{}'", m.as_str()),
@@ -178,7 +240,8 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
                     .chars()
                     .nth(1)
                     .is_some_and(|c| c.is_ascii_digit());
-            if !glossed && !inside_compound_id && !id_continuation {
+            let allowlisted = inside_de_allowlist(ln, m.start(), m.end());
+            if !glossed && !inside_compound_id && !id_continuation && !allowlisted {
                 out.push(err(
                     "NON_ENGLISH_TEXT",
                     format!(
@@ -345,6 +408,41 @@ mod tests {
             assert!(
                 !fs.iter().any(|f| f.category == "INTERNAL_MARKER"),
                 "INTERNAL_MARKER must NOT fire on legitimate build-pipeline metadata {s:?}, got {fs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_english_text_allowlists_fhnw_regulatory_and_methodology_phrases() {
+        // FHNW MAS mandates the German phrase "Verzeichnis der Hilfsmittel"
+        // for the AI-tools-disclosure back-matter section; the methodology
+        // compounds IST-Analyse / SOLL-Zustand etc. are domain-standard
+        // German-management terms in academic English. They must NOT fire
+        // NON_ENGLISH_TEXT.
+        let must_pass = [
+            "Table: AI-/translation-/editing-tool inventory used during thesis preparation (FHNW MAS Verzeichnis der Hilfsmittel).",
+            "> form the Chapter 3 IST-Analyse — not in the social-media corpus.",
+            "| substrate + delta analysis | Ch.3 IST + Ch.5 | High | Draft ready |",
+            "> through Chapter 3's IST-Analyse, not through the social-media corpus.",
+            "Soll-Zustand der Konformität ist erreicht.", // edge: phrase appears in line, exempts the SOLL match
+        ];
+        for s in must_pass {
+            let fs = findings_for("x.md", s);
+            assert!(
+                !fs.iter().any(|f| f.category == "NON_ENGLISH_TEXT"),
+                "NON_ENGLISH_TEXT must NOT fire on allowlisted phrase {s:?}, got {fs:?}"
+            );
+        }
+        // Free-prose German that is NOT in the allowlist still flags.
+        let must_flag = [
+            "Die Lösung erfordert eine vollständige Umsetzung der Empfehlungen.",
+            "Ergebnis der Bewertung: SOLL nicht erreicht.", // bare SOLL flags
+        ];
+        for s in must_flag {
+            let fs = findings_for("x.md", s);
+            assert!(
+                fs.iter().any(|f| f.category == "NON_ENGLISH_TEXT"),
+                "NON_ENGLISH_TEXT must still fire on free German prose {s:?}, got {fs:?}"
             );
         }
     }
