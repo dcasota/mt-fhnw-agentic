@@ -18,6 +18,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`temporal` gate — `TEMPORAL_FUTURE` false positives on algorithm key
+  lengths + CVE-temporal-reasoning context**
+  (`crates/agentic-checks/src/temporal_gate.rs`). The `YEAR` regex
+  `\b(20\d\d)\b` matched both legitimate future-dated years and the
+  numeric size suffix of cryptographic-algorithm names — `RSA-2048`,
+  `AES-3072`, `SHA-3-2048` etc. all reported as future years. Added a
+  `preceded_by_algo_key()` guard against the regex
+  `ALGO_KEY_PREFIX_AT_END = (?i)\b(RSA|ECC|ECDSA|ECDH|DH|DSA|AES|SHA|HMAC|3DES|DES|HKDF|PBKDF|KECCAK|BLAKE|Curve|FFDHE|Ed|ChaCha|Poly|X)(?:-\d+)*-$`
+  applied to the byte slice ending at the year-match start; if it
+  matches, the year token is suppressed. Optional intermediate
+  `-<digits>-` segment supports compound names like `SHA-3-2048` and
+  `AES-128-256`. Second, the `FORECAST` regex (which exempts forward-
+  framed lines) gained the missing CVE-temporal-reasoning and
+  regulatory-disallow keywords: `disallow*`, `permit*`, `allow*`,
+  `disclos*`, `vulnerab*`, `CVE`, `standpoint`, `affect*`, `instance`,
+  `SBOM`, `VEX`, `updat*`, `feed`, `learn*`. Two new tests:
+  `algorithm_key_lengths_are_not_future_years` (5 must-pass crypto-name
+  cases × 1 must-flag bare-year case) and
+  `cve_temporal_reasoning_and_regulatory_disallows_are_intentional`
+  (6 must-pass CVE / disallow / standpoint cases). Clears 14 thesis-repo
+  `TEMPORAL_FUTURE` WARNs without weakening the gate's intent (a
+  genuinely fabricated future date in non-regulatory prose still flags).
+
 - **`deliverable` gate — FHNW MAS regulatory + German-management-methodology
   allowlist for `NON_ENGLISH_TEXT`**
   (`crates/agentic-checks/src/deliverable_gate.rs`). The gate's `DE` and

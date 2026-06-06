@@ -38,8 +38,26 @@ static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(20\d\d)\b").unwr
 /// market projections), not the typo `future_years` is meant to catch. Without
 /// such a cue a bare future date ("the survey ran in 2031") is still flagged.
 static FORECAST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bbetween\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bobligation\b|\bbinding\b|\bmandat\w*|\bregulat\w*|\bdirective\b|\bcompliance\b|\beffective\b|\bin force\b|\banchor\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b|\btoday\b|\bforward\b|\bpost-quantum\b|\bquantum-safe\b|\bpqc\b|\bnist\b|\bcnsa\b|\bnis2\b|\bcra\b|\bfips\b|\bcert-in\b|\bir\s*8547\b|\betsi\b|\benisa\b)").unwrap()
+    Regex::new(r"(?i)(→|->|\bby\b|\bthrough\b|\buntil\b|\btill\b|\bbetween\b|\bexpected\b|\banticipat\w*|\bproject(?:ed|ion)\w*|\bforecast\w*|\btarget\w*|\bdeadline\b|\bno later than\b|\benforceable\b|\bobligation\b|\bbinding\b|\bmandat\w*|\bregulat\w*|\bdirective\b|\bcompliance\b|\beffective\b|\bin force\b|\banchor\b|\bphas(?:e|es|ed|ing)\b|\bmigrat\w*|\btransition\w*|\bdeprecat\w*|\bsunset\w*|\broadmap\b|\bhorizon\b|\bplanned\b|\bscheduled\b|\bby the (?:late|early|mid)\b|\bend of\b|\bbeyond\b|\breaching\b|\bin year\b|\bcagr\b|\bwill\b|\bforthcoming\b|\bupcoming\b|\btoday\b|\bforward\b|\bpost-quantum\b|\bquantum-safe\b|\bpqc\b|\bnist\b|\bcnsa\b|\bnis2\b|\bcra\b|\bfips\b|\bcert-in\b|\bir\s*8547\b|\betsi\b|\benisa\b|\bdisallow\w*|\bpermit\w*|\ballow\w*|\bdisclos\w*|\bvulnerab\w*|\bCVE\b|\bstandpoint\b|\baffect\w*|\binstance\b|\bSBOM\b|\bVEX\b|\bupdat\w*|\bfeed\b|\blearn\w*)").unwrap()
 });
+/// Cryptographic-algorithm-name prefixes that take a numeric size suffix
+/// shaped like a future year. `RSA-2048`, `AES-3072`, `SHA-3-2048`, etc.
+/// embed digit runs that the `YEAR` regex would otherwise misclassify as
+/// future years. Checked by looking for one of these prefixes followed
+/// immediately by `-` at the end of the byte slice preceding the
+/// year-match.
+/// Algorithm-key-prefix match. Accepts an optional intermediate
+/// `<digits>-` segment (e.g. `SHA-3-2048`, `AES-128-256`) between the
+/// algorithm name and the trailing year-shaped suffix.
+static ALGO_KEY_PREFIX_AT_END: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:RSA|ECC|ECDSA|ECDH|DH|DSA|AES|SHA|HMAC|3DES|DES|HKDF|PBKDF|KECCAK|BLAKE|Curve|FFDHE|Ed|ChaCha|Poly|X)(?:-\d+)*-$",
+    )
+    .unwrap()
+});
+fn preceded_by_algo_key(preceding: &str) -> bool {
+    ALGO_KEY_PREFIX_AT_END.is_match(preceding)
+}
 /// A two-year span — `YYYY/YYYY` deadline pair (CNSA 2.0 "2027/2033", NIST IR
 /// 8547 "2030/2035") or a `YYYY–YYYY` window ("2026–2030") — a roadmap
 /// milestone set / horizon, not a typo. Covers slash, hyphen, en/em dash.
@@ -149,6 +167,15 @@ pub fn future_years(text: &str, max_year: u32) -> Vec<(usize, u32)> {
         for cap in YEAR.captures_iter(ln) {
             if let Ok(y) = cap[1].parse::<u32>() {
                 if y > max_year {
+                    // Suppress if the year token is the numeric suffix of an
+                    // algorithm-key-length compound (e.g. `RSA-2048`,
+                    // `AES-3072`). Look at the byte slice ending at the
+                    // year-match start.
+                    let m = cap.get(1).unwrap();
+                    let preceding = &ln[..m.start()];
+                    if preceded_by_algo_key(preceding) {
+                        continue;
+                    }
                     out.push((i, y));
                 }
             }
@@ -333,6 +360,51 @@ mod tests {
         // En-dash window and a heading referencing a year are intentional.
         assert!(future_years("the 2026\u{2013}2030 window is a managed exit.\n", 2026).is_empty());
         assert!(future_years("### What the picture buys the 2030 standpoint\n", 2026).is_empty());
+    }
+
+    #[test]
+    fn algorithm_key_lengths_are_not_future_years() {
+        // `RSA-2048`, `AES-3072` etc. embed digit runs the YEAR regex would
+        // otherwise misclassify as future years. The algorithm-prefix guard
+        // suppresses those.
+        let cases = [
+            "Shor's algorithm against RSA-2048 and ECC is widely estimated for the",
+            "to run Shor's algorithm against RSA-2048 or 256-bit elliptic-curve keys.",
+            "AES-3072 hybrid keys with HKDF-derived material",
+            "SHA-3-2048 hash-tree depth bound for the synthetic benchmark",
+            "DSA-2049 (made-up key length)",
+        ];
+        for s in cases {
+            assert!(
+                future_years(s, 2026).is_empty(),
+                "{s:?} must NOT report a future year (RSA-/AES-/SHA- key length)"
+            );
+        }
+        // A bare future year on the same line as an algorithm name (but not
+        // hyphen-attached) still flags. `RSA used in 2048` is a real future date.
+        assert!(!future_years("RSA used in 2048 is broken\n", 2026).is_empty());
+    }
+
+    #[test]
+    fn cve_temporal_reasoning_and_regulatory_disallows_are_intentional() {
+        // CVE-temporal-reasoning ("a 2030 CVE on a 2026 install") and
+        // regulatory `disallows`/`disclose`/`vulnerability` phrasings are
+        // intentional forecasting context; their future-year tokens are not
+        // typos.
+        let cases = [
+            "release-time SBOM cannot answer whether a 2030 CVE affects a 2026 install",
+            "directly with the thesis's 2030 standpoint.",
+            "cryptography in 2030 and disallows it in 2035",
+            "VEX + SBOM-update feed so a 2026 customer can learn in 2030 whether a new",
+            "vulnerability disclosed in 2030 must be re-checked",
+            "the 2030-disclosed CVE flow",
+        ];
+        for s in cases {
+            assert!(
+                future_years(s, 2026).is_empty(),
+                "{s:?} must NOT report a future year (CVE / disallow / standpoint context)"
+            );
+        }
     }
 
     #[test]
