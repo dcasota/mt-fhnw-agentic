@@ -298,6 +298,27 @@ fn figure_system_prompt(source: &str, target: &str) -> String {
          filenames, file paths, URLs.\n\
          5. Markdown emphasis markers (`**`, `_`) — preserve them in-place.\n\
          \n\
+         No-hallucination invariants (most important — observed shakedown bug \
+         2026-06-07: an early run produced \
+         `drei Betriebsmodi (normal / Eskalation / katastrophal) Betriebsmodi` for \
+         the source phrase `operating modes`. That output violates ALL of A-D below):\n\
+         A. Do NOT add explanatory content that has no direct correspondent in the \
+         source. If the source says `operating modes`, translate that exactly to \
+         `Betriebsmodi` (or `modes opératoires` / `modi operativi` / etc.) — do \
+         NOT add `(normal / escalation / catastrophic)`, do NOT add `drei` / \
+         `trois` / `tre`, do NOT add any tooltip-like elaboration.\n\
+         B. Do NOT expand abbreviations or acronyms beyond the literal text. If the \
+         source says `HITL`, write `HITL` (or its target-language equivalent acronym), \
+         not `Human-In-The-Loop oversight`.\n\
+         C. Do NOT repeat a word for emphasis. Each source word maps to exactly one \
+         target-language word (or canonical multi-word translation), and no source \
+         word may be inserted twice. Specifically, do NOT write `Betriebsmodi … \
+         Betriebsmodi` — one occurrence per source `modes` only.\n\
+         D. The translation must carry the SAME information content as the source — \
+         neither more nor less. If you find yourself wanting to clarify a term, do \
+         not; that's the editor's job, not the translator's. Word count of the target \
+         caption should be within ±2 of the source caption's word count.\n\
+         \n\
          Output requirements:\n\
          - Return ONLY the modified JSON object, no preamble, no postscript, no markdown \
          fences around it.\n\
