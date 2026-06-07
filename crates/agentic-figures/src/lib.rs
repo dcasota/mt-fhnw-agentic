@@ -25,6 +25,12 @@ mod render_table;
 mod render_tier_matrix;
 mod render_wheel;
 
+/// Regulation-timeline figure (port of `regulation_timeline_v3_kit`).
+/// First commit ships the data layer + a stub `render` API; panel
+/// renderers (A / B / C) and the `LANGUAGES` per-language string
+/// table land in follow-up commits.
+pub mod regulation_timeline;
+
 // Wong colour-blind-safe palette (matches render_figspec).
 pub(crate) const NAVY: RGBColor = RGBColor(0x1F, 0x49, 0x7D);
 pub(crate) const WONG: [RGBColor; 8] = [
@@ -927,29 +933,62 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
         line(&root, vec![(midx, sy), (midx, dy)], &GRID, 2)?;
         arrow(&root, (midx, dy), (dx, dy), &WONG[0])?;
         if !lbl.is_empty() {
-            // Cap edge-label text so it stays inside the column gap and never
-            // overlaps the source / destination boxes. `gap_text` budgets ~6
-            // px per char at the 12-pt edge-label size minus 16 px padding so
-            // the white background rect fits cleanly between the two boxes.
-            // Anything longer is truncated with an ellipsis.
-            let gap_text = ((col_gap - 16) / 6).max(8) as usize;
-            let display: String = if lbl.chars().count() > gap_text {
-                let prefix: String = lbl.chars().take(gap_text.saturating_sub(1)).collect();
-                format!("{prefix}…")
-            } else {
-                lbl.clone()
-            };
-            // Place the label offset *above* the elbow's vertical leg so it
-            // never collides with the source/dest row text or arrowhead.
-            let ly = (sy + dy) / 2 - 2;
-            let tw = display.chars().count() as i32 * 6 + 8;
+            // Edge labels are rendered at 13 pt (was 12; +1.0 pt per
+            // fig07_01 readability feedback 2026-06-07) and wrap to TWO
+            // LINES inside the column gap instead of truncating with an
+            // ellipsis. `gap_chars` budgets ~6 px per char at 13 pt minus
+            // 16 px padding; we then halve it so a two-line wrap fits the
+            // same gap.
+            const EDGE_FONT_PT: i32 = 13;
+            const EDGE_LINE_H: i32 = 14; // line height at 13 pt
+            const EDGE_MAX_LINES: usize = 2;
+            let gap_chars = ((col_gap - 16) / 6).max(8) as usize;
+            let per_line = (gap_chars / 2).max(10);
+            // Wrap, then take at most EDGE_MAX_LINES. If the source label
+            // truly exceeds the two-line budget, the LAST line is suffixed
+            // with `…` so the truncation is still visible to the reader.
+            let mut lines = wrap(lbl, per_line);
+            let truncated = lines.len() > EDGE_MAX_LINES;
+            lines.truncate(EDGE_MAX_LINES);
+            if truncated {
+                if let Some(last) = lines.last_mut() {
+                    let cap = per_line.saturating_sub(1);
+                    let prefix: String = last.chars().take(cap).collect();
+                    *last = format!("{prefix}…");
+                }
+            }
+            let line_count = lines.len() as i32;
+            // Vertical centre of the label stack on the elbow's vertical
+            // leg, then bias 2 px up so the stack sits clear of the
+            // horizontal arrow segment at `dy`. Each line is EDGE_LINE_H
+            // tall; the label rect grows with line_count so it never
+            // overlaps the arrow line below.
+            let centre_y = (sy + dy) / 2 - 2;
+            let stack_top = centre_y - (line_count - 1) * EDGE_LINE_H / 2;
+            let max_chars = lines
+                .iter()
+                .map(|s| s.chars().count() as i32)
+                .max()
+                .unwrap_or(0);
+            let tw = max_chars * 6 + 8;
             let half = tw / 2;
-            // Hard-clamp the white-rect span to the column-gap interior so
-            // the background never paints over either box.
+            // Hard-clamp the white-rect span to the column-gap interior
+            // so the background never paints over either box.
             let left = (midx - half).max(sx + 4);
             let right = (midx + half).min(dx - 4);
-            fill_rect(&root, left, ly - 9, right, ly + 9, &WHITE)?;
-            text(&root, &display, &centered(font_c(12, &GREY)), midx, ly)?;
+            let rect_top = stack_top - EDGE_LINE_H / 2 - 1;
+            let rect_bottom = stack_top + (line_count - 1) * EDGE_LINE_H + EDGE_LINE_H / 2 + 1;
+            fill_rect(&root, left, rect_top, right, rect_bottom, &WHITE)?;
+            for (li, line_text) in lines.iter().enumerate() {
+                let ly = stack_top + li as i32 * EDGE_LINE_H;
+                text(
+                    &root,
+                    line_text,
+                    &centered(font_c(EDGE_FONT_PT, &GREY)),
+                    midx,
+                    ly,
+                )?;
+            }
         }
     }
     // boxes
