@@ -68,7 +68,7 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Rank { action } => rank::run(&args.db, action, args.json),
         Command::Synthesize { action } => synthesize::run(&args.db, action, args.json).await,
         Command::Profile { action } => profile::run(&args.db, action, args.json),
-        Command::Translate { action } => translate::run(&args.db, action, args.json),
+        Command::Translate { action } => translate::run(&args.db, action, args.json).await,
         Command::Orchestrate { action } => orchestrate::run(&args.db, action, args.json),
         Command::Merge { action } => merge::run(&args.db, action, args.json),
         Command::Cascade { action } => cascade::run(&args.db, action, args.json),
