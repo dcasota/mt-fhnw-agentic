@@ -532,6 +532,24 @@ pub enum OrchestrateAction {
 
 #[derive(Debug, Subcommand)]
 pub enum TranslateAction {
+    /// Replace ADR-/CAR-/FRD-style identifier mentions inside every
+    /// ```figspec block in the corpus (caption, title, label, node, edge,
+    /// cell text fields) with a short audience-friendly description. The
+    /// ADR-XXXX identifiers stay valid for the SDD chain but disappear
+    /// from rendered figures and tables, which makes the German / French /
+    /// Hindi outputs of the ADR-0062 Phase A round-trip pipeline
+    /// understandable without an SDD reference handy.
+    DeflateIdentifiers {
+        #[arg(long)]
+        project: String,
+        /// Limit the pass to a single figspec id (e.g. `fig08_03`).
+        /// Without this flag every `*.md` in the corpus is scanned.
+        #[arg(long)]
+        id: Option<String>,
+        /// Skip the writes; preview which files would change.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Translate a scope of the corpus into a target language. Held by
     /// default; requires `agentic authorize grant --action translate`.
     /// Use `--dry-run` to preview the scope and the provider that would be
@@ -542,6 +560,14 @@ pub enum TranslateAction {
         /// Target language tag (de, fr, it, rm, hi).
         #[arg(long)]
         target: String,
+        /// Source language tag — default `en`. Set to any other supported
+        /// code (de, fr, it, rm, hi, en) to translate FROM that language;
+        /// required by ADR-0062 Phase A/C round-trip chains where the
+        /// intermediate steps translate non-EN content (e.g. step 2 of
+        /// EN→DE→FR→EN reads the previous step's DE sidecar and produces
+        /// FR).
+        #[arg(long, default_value = "en")]
+        source: String,
         /// Scope: `front-matter` (smallest), `thesis`, `corpus`, or `figure`.
         /// When `figure`, supply `--id <figspec_id>` to name one specific
         /// figspec; the figure's user-facing text fields (caption / title /

@@ -48,6 +48,12 @@ fn parse_kind(s: &str) -> Option<ProviderKind> {
 
 const ALLOWED_TARGETS: &[&str] = &["de", "fr", "it", "rm", "hi"];
 
+/// Allowed source-language tags. `en` is the natural source for the
+/// initial fan-out; the other tags exist so ADR-0062 Phase A/C round-trip
+/// chains (which translate non-EN content as their middle steps) work
+/// end-to-end. `target == source` is rejected — nothing to translate.
+const ALLOWED_SOURCES: &[&str] = &["en", "de", "fr", "it", "rm", "hi"];
+
 /// Cloud providers eligible to serve the translation task. Mirrors the
 /// review-command preference list — Anthropic / Google / Grok — picked in
 /// order of `registry::has_key`. The Ollama local provider is intentionally
@@ -242,10 +248,13 @@ fn target_path(src: &str, target: &str) -> String {
     format!("{src}.{lower}")
 }
 
-/// ISO target → human-readable language label for the LLM system prompt.
+/// ISO language tag → human-readable label for the LLM system prompt.
+/// Covers both source and target — `en` is a source-only entry for the
+/// round-trip chains (e.g. step 3 of EN→DE→FR→EN comes back to English).
 #[must_use]
-fn language_label(target: &str) -> &'static str {
-    match target {
+fn language_label(tag: &str) -> &'static str {
+    match tag {
+        "en" => "English",
         "de" => "German (Deutsch)",
         "fr" => "French (français)",
         "it" => "Italian (italiano)",
@@ -261,11 +270,13 @@ fn language_label(target: &str) -> &'static str {
 /// structural keys (id, type, palette, data shape) MUST be preserved
 /// byte-for-byte so the renderer round-trip stays deterministic.
 #[must_use]
-fn figure_system_prompt(target: &str) -> String {
+fn figure_system_prompt(source: &str, target: &str) -> String {
+    let src_label = language_label(source);
     let label = language_label(target);
     format!(
         "You are a precise technical translator working on a figure inside a master-thesis \
-         manuscript. You will receive a JSON object that describes one figure (a `figspec`). \
+         manuscript. You will receive a JSON object that describes one figure (a `figspec`) \
+         whose user-facing text fields are written in {src_label}. \
          Translate ONLY the user-facing text fields to {label}; preserve every structural \
          key and value byte-for-byte.\n\
          \n\
@@ -302,11 +313,12 @@ fn figure_system_prompt(target: &str) -> String {
 /// keep filenames and identifier strings untranslated, target-language
 /// only output, no preamble.
 #[must_use]
-fn system_prompt(target: &str) -> String {
+fn system_prompt(source: &str, target: &str) -> String {
+    let src_label = language_label(source);
     let label = language_label(target);
     format!(
         "You are a precise technical translator working on a master-thesis manuscript.\n\
-         Translate the user's markdown content from English to {label}.\n\
+         Translate the user's markdown content from {src_label} to {label}.\n\
          \n\
          Strict invariants — non-negotiable:\n\
          1. Preserve every ``` code / figspec / table fence and its inner JSON / code EXACTLY \
@@ -434,19 +446,420 @@ fn extract_figure_json(raw: &str) -> Result<String> {
     Ok(cleaned)
 }
 
+/// High-frequency thesis identifiers (ADR-XXXX, CAR-XX-XXX, FRD-CXX) →
+/// short, audience-friendly description that fits inside a figure caption
+/// or table label without losing the load-bearing meaning.
+///
+/// The deflation table is intentionally CONSERVATIVE: it only covers
+/// identifiers that appear in `figspec` blocks today and whose
+/// translated form ("ADR-0017 Betriebsmodi" / "ADR-0017 modes") would
+/// otherwise read as a mystery code to anyone without the SDD chain to
+/// hand. Identifiers absent from the table are left untouched — better
+/// to preserve precision than to invent a phrase.
+const DEFLATION_MAP: &[(&str, &str)] = &[
+    // The table is ordered by raw frequency inside the corpus's figspec
+    // blocks (2026-06-07 tally): ADR-0040 / ADR-0017 first (18×), then
+    // ADR-0054 (9×), then the FRD-Cxx campaign frontmatter (4-5×), then
+    // the load-bearing rest. Anything not in the table is kept verbatim.
+    //
+    // ADR-0017: three operating modes (normal / escalation / catastrophic).
+    (
+        "ADR-0017",
+        "three operating modes (normal / escalation / catastrophic)",
+    ),
+    // ADR-0040: 5/10/15-year Risk-Adjusted Metadata Prediction (RAMP).
+    (
+        "ADR-0040",
+        "5/10/15-year Risk-Adjusted Metadata Prediction (RAMP)",
+    ),
+    // ADR-0054: dynamic SBOM / CRA post-deployment lifecycle (VEX + SBOM-update).
+    (
+        "ADR-0054",
+        "dynamic SBOM lifecycle (CRA VEX + SBOM-update service)",
+    ),
+    // ADR-0035: FHNW 60-page body cap + EN-core / DE-bilingual rendering.
+    (
+        "ADR-0035",
+        "FHNW 60-page body cap with EN-core thesis policy",
+    ),
+    // ADR-0039: ML-DSA-87 signed-audit-report seal (FIPS 204).
+    (
+        "ADR-0039",
+        "ML-DSA-87 signed-audit-report seal (FIPS 204)",
+    ),
+    // ADR-0047: irreversible-action discipline (push / tag / publish gates).
+    (
+        "ADR-0047",
+        "irreversible-action authorisation discipline",
+    ),
+    // ADR-0062: multi-language translation pipeline shakedown.
+    (
+        "ADR-0062",
+        "multi-language translation pipeline shakedown",
+    ),
+    // ADR-0013: claim-audit-result records (score + placement + justification).
+    (
+        "ADR-0013",
+        "claim-audit-result records (score + placement + justification)",
+    ),
+    // ADR-0016: material passport (per-item provenance ledger).
+    (
+        "ADR-0016",
+        "material-passport per-item provenance ledger",
+    ),
+    // ADR-0032: Rust runtime replaces the Python tooling.
+    (
+        "ADR-0032",
+        "Rust runtime (agentic binary) replacing the Python tooling",
+    ),
+    // ADR-0055: scan-artefact persistence cap (e.g. 100 MB Snyk cap).
+    (
+        "ADR-0055",
+        "scan-artefact persistence cap (100 MB Snyk-export bound)",
+    ),
+    // ADR-0052: enforced_by frontmatter on every ADR.
+    (
+        "ADR-0052",
+        "machine-enforced frontmatter on every ADR",
+    ),
+    // ADR-0051: SDD chain entry-point checklist.
+    (
+        "ADR-0051",
+        "SDD chain entry-point checklist",
+    ),
+    // ADR-0009: adversarial arbitration protocol (HITL when gates disagree).
+    (
+        "ADR-0009",
+        "adversarial-arbitration protocol (HITL escalation when gates disagree)",
+    ),
+    // FRD-C09 / C10 / C11 — three campaign feature definitions referenced
+    // across the campaign book and the Snyk evidence figures.
+    ("FRD-C09", "Sovereign Photon OS campaign brief"),
+    ("FRD-C10", "Deterministic Dependency Constraint (DDC) Pilot brief"),
+    ("FRD-C11", "ISO 5230 OpenChain licence-compliance brief"),
+    ("FRD-C01", "claim-audit-discipline campaign brief"),
+    ("FRD-C02", "least-privilege service-account campaign brief"),
+    ("FRD-C03", "PQC migration campaign brief"),
+    // CAR-XX-XXX: numbered claim-audit records that appear in the campaign
+    // figspec blocks. We don't try to summarise every CAR (~30+ exist);
+    // we collapse the ones that recur most often in the figures.
+    (
+        "CAR-06-002",
+        "Photon OS classical-baseline CAR (quantum migration)",
+    ),
+    (
+        "CAR-10-003",
+        "Photon OS software-engineering CAR (deterministic-builder)",
+    ),
+    // CWE-79 / CWE-89 / CWE-787 / CWE-327 / CWE-129 / CWE-798 —
+    // expand to the recognisable weakness name; do NOT keep the CWE-XXX
+    // identifier inside the replacement (it would re-match on the next
+    // deflation pass and nest the prefix infinitely, corrupting the
+    // figspec body — observed bug 2026-06-07).
+    ("CWE-79", "Cross-Site Scripting"),
+    ("CWE-89", "SQL Injection"),
+    ("CWE-129", "Improper Validation of Array Index"),
+    ("CWE-327", "Use of Broken or Risky Cryptographic Algorithm"),
+    ("CWE-787", "Out-of-Bounds Write"),
+    ("CWE-798", "Hard-Coded Credentials"),
+    // CVSS 7+ band — informal but how the thesis renders the severity ribbon.
+    ("CVSS≥7", "high-or-critical severity"),
+];
+
+/// Old, retired CWE pairs from the buggy first DEFLATION_MAP where the
+/// replacement string contained the needle itself. Listed here ONLY so
+/// the one-shot repair pass can detect and collapse the nested-prefix
+/// corruption it produced (`name (name (name (CWE-XXX)))` etc.). Do NOT
+/// add new entries; the invariant test
+/// `deflate_map_has_no_self_recursive_replacements` enforces that the
+/// live `DEFLATION_MAP` can never seed a new chain.
+const NESTED_CORRUPTION_REPAIR: &[(&str, &str)] = &[
+    ("Cross-Site Scripting", "CWE-79"),
+    ("SQL Injection", "CWE-89"),
+    ("Improper Validation of Array Index", "CWE-129"),
+    ("Use of Broken or Risky Cryptographic Algorithm", "CWE-327"),
+    ("Out-of-Bounds Write", "CWE-787"),
+    ("Hard-Coded Credentials", "CWE-798"),
+];
+
+/// Detect and collapse nested-CWE corruption produced by an earlier
+/// buggy deflation pass. For each (name, needle) pair, find chains of
+/// the form `(name (name (… (needle) …)))` with K opening `(name (`
+/// prefixes and K matching trailing `)` characters, and replace the
+/// whole chain with just `name`. Idempotent on clean text.
+///
+/// After the chain collapse, a separate dedupe pass merges any
+/// `<name> <name>` adjacency that the chain collapse leaves behind
+/// (the FIRST `name` instance from pass 1 of the buggy deflater has
+/// no leading `(`, so the chain matcher cannot consume it — the
+/// dedupe pass cleans the duplicate).
+#[must_use]
+fn collapse_nested_corruption(text: &str) -> String {
+    let mut out = text.to_string();
+    for (name, needle) in NESTED_CORRUPTION_REPAIR {
+        let outer_open = format!("({} ", name);
+        let inner = format!("({})", needle);
+        let mut search_start = 0usize;
+        loop {
+            let Some(rel) = out[search_start..].find(&outer_open) else {
+                break;
+            };
+            let start = search_start + rel;
+            let mut depth = 1usize;
+            let mut cursor = start + outer_open.len();
+            while out[cursor..].starts_with(&outer_open) {
+                depth += 1;
+                cursor += outer_open.len();
+            }
+            if !out[cursor..].starts_with(&inner) {
+                search_start = start + outer_open.len();
+                continue;
+            }
+            let after_inner = cursor + inner.len();
+            let close_count = out[after_inner..]
+                .chars()
+                .take_while(|c| *c == ')')
+                .count();
+            if close_count < depth {
+                search_start = start + outer_open.len();
+                continue;
+            }
+            let final_end = after_inner + depth;
+            let mut acc = String::with_capacity(out.len());
+            acc.push_str(&out[..start]);
+            acc.push_str(name);
+            acc.push_str(&out[final_end..]);
+            out = acc;
+            search_start = start + name.len();
+        }
+        // Dedupe pass: `<name> <name>` → `<name>`. Iterates until no
+        // more dups exist. Safe because legitimate figspec text never
+        // repeats one of the deflation names back-to-back.
+        let dup = format!("{name} {name}");
+        while let Some(pos) = out.find(&dup) {
+            out.replace_range(pos..pos + dup.len(), name);
+        }
+    }
+    out
+}
+
+/// Apply the deflation map to a single string. Identifiers are replaced
+/// left-to-right; an identifier already inside another identifier (e.g.
+/// `ADR-00170` would not match `ADR-0017` because we anchor on a
+/// non-digit boundary) is left alone. Returns the rewritten string.
+#[must_use]
+fn deflate_identifiers_in_text(text: &str) -> String {
+    let mut out = text.to_string();
+    for (needle, replacement) in DEFLATION_MAP {
+        // Word-boundary-safe pass: scan with manual index walk so we can
+        // assert the character following the match is NOT a digit or
+        // letter (so `ADR-0017` doesn't capture `ADR-00170`).
+        let mut acc = String::with_capacity(out.len());
+        let mut cursor = 0usize;
+        while let Some(pos) = out[cursor..].find(needle) {
+            let abs = cursor + pos;
+            let end = abs + needle.len();
+            let next_is_word = out[end..]
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphanumeric())
+                .unwrap_or(false);
+            if next_is_word {
+                acc.push_str(&out[cursor..end]);
+                cursor = end;
+                continue;
+            }
+            acc.push_str(&out[cursor..abs]);
+            acc.push_str(replacement);
+            cursor = end;
+        }
+        acc.push_str(&out[cursor..]);
+        out = acc;
+    }
+    out
+}
+
+/// Walk every ` ```figspec ` block in `md`, apply [`deflate_identifiers_in_text`]
+/// to its body, and re-stitch the document. Prose outside the blocks is
+/// preserved verbatim so the running text of the thesis keeps its
+/// SDD-precise identifiers.
+#[must_use]
+fn deflate_figspec_blocks(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut rest = md;
+    const OPENER: &str = "```figspec";
+    while let Some(start) = rest.find(OPENER) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let mut body_start = OPENER.len();
+        let mut newline_consumed = false;
+        if after[body_start..].starts_with('\n') {
+            body_start += 1;
+            newline_consumed = true;
+        }
+        let Some(end_rel) = after[body_start..].find("```") else {
+            out.push_str(after);
+            return out;
+        };
+        let body = &after[body_start..body_start + end_rel];
+        out.push_str(OPENER);
+        if newline_consumed {
+            out.push('\n');
+        }
+        // First repair any nested-CWE corruption left by the buggy
+        // pre-2026-06-07 map, then apply the live deflation map.
+        let repaired = collapse_nested_corruption(body);
+        out.push_str(&deflate_identifiers_in_text(&repaired));
+        out.push_str("```");
+        rest = &after[body_start + end_rel + 3..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Run the corpus-wide deflation pass. Scans every `*.md` blob in the
+/// project's worktree, applies `deflate_figspec_blocks`, and writes the
+/// blob back when content changed. With `dry_run` the writes are skipped
+/// and the per-path delta is printed. The pass is idempotent.
+pub fn run_deflate(
+    db_path: &Path,
+    project: &str,
+    id: Option<&str>,
+    dry_run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let conn = agentic_core::db::open(db_path).context("open db")?;
+    let all = agentic_core::worktree::list(&conn, project, "")?;
+    let mut changed = 0usize;
+    let mut scanned = 0usize;
+    let mut changed_paths: Vec<String> = Vec::new();
+    for (path, _) in &all {
+        if !path.ends_with(".md") {
+            continue;
+        }
+        let blob = match agentic_core::worktree::read_at(&conn, project, path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let body = String::from_utf8_lossy(&blob.content).to_string();
+        // Cheap reject: nothing to do if there's no figspec opener.
+        if !body.contains("```figspec") {
+            continue;
+        }
+        scanned += 1;
+        // When `--id <figspec_id>` is set, skip files that don't contain
+        // that specific figspec block.
+        if let Some(target_id) = id {
+            if !figspec_id_present(&body, target_id) {
+                continue;
+            }
+        }
+        let updated = deflate_figspec_blocks(&body);
+        if updated == body {
+            continue;
+        }
+        changed += 1;
+        changed_paths.push(path.clone());
+        if dry_run {
+            println!("  · would deflate {path}");
+            continue;
+        }
+        let commit_msg = format!(
+            "deflate-identifiers: {path} (ADR/CWE collapsed to audience-friendly forms)"
+        );
+        agentic_core::worktree::put_at(
+            &conn,
+            project,
+            path,
+            updated.as_bytes(),
+            "text/markdown",
+            Some("en"),
+            "agentic-translate-deflate",
+            &commit_msg,
+        )?;
+        println!("  ✓ deflated {path}");
+    }
+    if json_out {
+        println!(
+            "{}",
+            serde_json::json!({
+                "dry_run": dry_run,
+                "id": id,
+                "scanned_figspec_files": scanned,
+                "changed_files": changed,
+                "changed_paths": changed_paths,
+            })
+        );
+    } else {
+        println!(
+            "\ndeflate-identifiers DONE: scanned={scanned} figspec file(s), \
+             {} {} change(s).",
+            if dry_run { "would apply" } else { "applied" },
+            changed
+        );
+    }
+    Ok(())
+}
+
+/// Cheap scan: does any ` ```figspec ` block in `md` carry a top-level
+/// `"id"` equal to `target`? Used to scope a deflation pass to a single
+/// figspec when `--id` is set.
+fn figspec_id_present(md: &str, target: &str) -> bool {
+    let mut rest = md;
+    const OPENER: &str = "```figspec";
+    while let Some(start) = rest.find(OPENER) {
+        let after = &rest[start..];
+        let mut body_start = OPENER.len();
+        if after[body_start..].starts_with('\n') {
+            body_start += 1;
+        }
+        let Some(end_rel) = after[body_start..].find("```") else {
+            return false;
+        };
+        if json_id_matches(&after[body_start..body_start + end_rel], target) {
+            return true;
+        }
+        rest = &after[body_start + end_rel + 3..];
+    }
+    false
+}
+
 pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Result<()> {
+    if let TranslateAction::DeflateIdentifiers {
+        project,
+        id,
+        dry_run,
+    } = &action
+    {
+        return run_deflate(db_path, project, id.as_deref(), *dry_run, json_out);
+    }
     let TranslateAction::Scope {
         project,
         target,
+        source,
         scope,
         id,
         provider,
         dry_run,
-    } = action;
+    } = action
+    else {
+        unreachable!("DeflateIdentifiers handled above")
+    };
     if !ALLOWED_TARGETS.contains(&target.as_str()) {
         anyhow::bail!(
             "target '{target}' is not a supported language; valid: {}",
             ALLOWED_TARGETS.join(", ")
+        );
+    }
+    if !ALLOWED_SOURCES.contains(&source.as_str()) {
+        anyhow::bail!(
+            "source '{source}' is not a supported language; valid: {}",
+            ALLOWED_SOURCES.join(", ")
+        );
+    }
+    if source == target {
+        anyhow::bail!(
+            "source and target must differ ({source} == {target}); nothing to translate"
         );
     }
     let scope_enum = Scope::parse(&scope, id.as_deref())?;
@@ -457,20 +870,30 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
     if dry_run {
         // Figure scope: locate the figspec by id (no LLM call) and report
         // the resolved (source-path, sidecar-target) pair so the operator
-        // sees exactly what would happen.
+        // sees exactly what would happen. For non-EN source the locator
+        // points at `out/figures/<id>_<source>.json` (a previous-step
+        // sidecar) rather than the EN corpus markdown.
         if let Scope::Figure { id } = &scope_enum {
-            let located = find_figspec_by_id(&conn, &project, id)?;
             let sidecar = format!("out/figures/{id}_{target}.json");
+            let (located_path, located_ok): (Option<String>, bool) = if source == "en" {
+                let r = find_figspec_by_id(&conn, &project, id)?;
+                (r.as_ref().map(|(p, _)| p.clone()), r.is_some())
+            } else {
+                let p = format!("out/figures/{id}_{source}.json");
+                let ok = agentic_core::worktree::read_at(&conn, &project, &p).is_ok();
+                (Some(p), ok)
+            };
             if json_out {
                 println!(
                     "{}",
                     serde_json::json!({
                         "dry_run": true,
+                        "source": source,
                         "target": target,
                         "scope": scope_enum.slug(),
                         "id": id,
-                        "located": located.is_some(),
-                        "source_path": located.as_ref().map(|(p, _)| p.clone()),
+                        "located": located_ok,
+                        "source_path": located_path,
                         "sidecar_path": sidecar,
                         "provider": provider_label,
                         "would_authorise": false,
@@ -478,16 +901,22 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
                 );
             } else {
                 println!(
-                    "[dry-run] target={target} scope={} provider={}",
+                    "[dry-run] source={source} target={target} scope={} provider={}",
                     scope_enum.slug(),
                     provider_label
                 );
-                match &located {
-                    Some((src, _)) => {
+                match (&located_path, located_ok) {
+                    (Some(src), true) => {
                         println!("[dry-run] figspec id={id} located in {src}");
                         println!("[dry-run] would write sidecar to {sidecar}");
                     }
-                    None => {
+                    (Some(src), false) => {
+                        println!(
+                            "[dry-run] non-EN source sidecar {src} NOT FOUND; run \
+                             the EN→{source} step first"
+                        );
+                    }
+                    (None, _) => {
                         println!("[dry-run] figspec id={id} NOT FOUND in the corpus");
                     }
                 }
@@ -574,17 +1003,36 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
 
     // ADR-0062 Phase A — per-figure scope. Locate the figspec by `id`,
     // translate its user-facing text fields with the figure-aware
-    // system prompt, and write a sidecar JSON blob.
+    // system prompt, and write a sidecar JSON blob. When `source != en`
+    // we're inside a round-trip chain and the source comes from a
+    // previously-written sidecar (`out/figures/<id>_<source>.json`)
+    // rather than the EN corpus markdown.
     if let Scope::Figure { id } = &scope_enum {
-        let Some((source_path, figspec_json)) = find_figspec_by_id(&conn, &project, id)? else {
-            anyhow::bail!("no figspec with id='{id}' found in the corpus");
+        let (source_path, figspec_json) = if source == "en" {
+            find_figspec_by_id(&conn, &project, id)?.ok_or_else(|| {
+                anyhow!("no figspec with id='{id}' found in the corpus")
+            })?
+        } else {
+            let sidecar_src = format!("out/figures/{id}_{source}.json");
+            let blob = agentic_core::worktree::read_at(&conn, &project, &sidecar_src)
+                .with_context(|| {
+                    format!(
+                        "non-EN source figure sidecar {sidecar_src} not found; run \
+                         the EN→{source} step first"
+                    )
+                })?;
+            (
+                sidecar_src,
+                String::from_utf8_lossy(&blob.content).to_string(),
+            )
         };
         println!(
-            "translate-figure: id={id} located in {source_path}; fallback order = {attempt_order:?}"
+            "translate-figure: id={id} located in {source_path} (source={source}); \
+             fallback order = {attempt_order:?}"
         );
         let (used_kind, used_model, translated_json) = try_translate_chain(
             &attempt_order,
-            figure_system_prompt(&target),
+            figure_system_prompt(&source, &target),
             figspec_json,
             4096,
             extract_figure_json,
@@ -658,7 +1106,7 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         println!("  → translating {src}  →  {target_path_str}");
         match try_translate_chain(
             &attempt_order,
-            system_prompt(&target),
+            system_prompt(&source, &target),
             source_md,
             8192,
             |raw| Ok(raw.to_string()),
@@ -781,11 +1229,25 @@ mod tests {
 
     #[test]
     fn figure_system_prompt_locks_invariants() {
-        let p = figure_system_prompt("de");
+        let p = figure_system_prompt("en", "de");
+        assert!(p.contains("English"));
         assert!(p.contains("German (Deutsch)"));
         assert!(p.contains("preserve every structural")); // structural keys preserved
         assert!(p.contains("ADR-XXXX")); // identifier invariant
         assert!(p.contains("ONLY the modified JSON")); // output format
+    }
+
+    #[test]
+    fn figure_system_prompt_handles_non_en_source() {
+        // Round-trip chain middle step: DE → FR. Both language labels
+        // must appear so the model knows the directionality.
+        let p = figure_system_prompt("de", "fr");
+        assert!(p.contains("German (Deutsch)"));
+        assert!(p.contains("French (français)"));
+        // Round-trip closing step: HI → EN. English is allowed as a target.
+        let q = figure_system_prompt("hi", "en");
+        assert!(q.contains("Hindi"));
+        assert!(q.contains("English"));
     }
 
     #[test]
@@ -879,10 +1341,148 @@ mod tests {
 
     #[test]
     fn system_prompt_mentions_target_language_label_and_invariants() {
-        let p = system_prompt("de");
+        let p = system_prompt("en", "de");
+        assert!(p.contains("English"));
         assert!(p.contains("German (Deutsch)"));
         assert!(p.contains("EXACTLY AS-IS")); // figspec / code invariant
         assert!(p.contains("ADR-XXXX")); // identifier invariant
         assert!(p.contains("SOLELY in")); // purity invariant
+    }
+
+    #[test]
+    fn deflate_known_identifiers_replaces_high_frequency_ids() {
+        // High-frequency thesis identifiers must collapse to their
+        // audience-friendly form so the translation pipeline doesn't
+        // carry "ADR-0017" through into the German caption.
+        let before = "Per ADR-0017 the runtime degrades safely.";
+        let after = deflate_identifiers_in_text(before);
+        assert!(after.contains("operating modes"));
+        assert!(!after.contains("ADR-0017"));
+
+        let before2 = "The signed-report stack is rooted in ADR-0039.";
+        let after2 = deflate_identifiers_in_text(before2);
+        assert!(after2.contains("ML-DSA-87"));
+        assert!(!after2.contains("ADR-0039"));
+    }
+
+    /// Idempotency invariant: a replacement string MUST NOT contain
+    /// ANY needle from the map. Otherwise re-running the deflater nests
+    /// the replacement infinitely (observed corruption bug 2026-06-07
+    /// where `CWE-327` → `"… (CWE-327)"` produced six-deep nesting).
+    /// This test is the load-bearing safety net that prevents the bug
+    /// from reappearing the next time someone adds an entry.
+    #[test]
+    fn deflate_map_has_no_self_recursive_replacements() {
+        for (needle_a, replacement_a) in DEFLATION_MAP {
+            for (needle_b, _) in DEFLATION_MAP {
+                assert!(
+                    !replacement_a.contains(needle_b),
+                    "replacement for `{needle_a}` (`{replacement_a}`) contains \
+                     needle `{needle_b}` — this would nest infinitely on \
+                     subsequent deflation passes."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deflate_leaves_unknown_identifiers_untouched() {
+        // Anything not in the deflation table is preserved verbatim so
+        // we never silently drop SDD precision the reader might need.
+        let before = "See ADR-9999 (no such ADR) and CVE-2024-00001.";
+        let after = deflate_identifiers_in_text(before);
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn collapse_repairs_5_level_cwe_corruption() {
+        // The exact shape observed in Dimension_02 block 2 (2026-06-07).
+        // 5 nested `(Use of Broken or Risky Cryptographic Algorithm (` chains
+        // wrapping a single `(CWE-327)` token with 5 trailing `)`s.
+        let corrupted = "(1,385 Use of Broken or Risky Cryptographic Algorithm \
+                         (Use of Broken or Risky Cryptographic Algorithm \
+                         (Use of Broken or Risky Cryptographic Algorithm \
+                         (Use of Broken or Risky Cryptographic Algorithm \
+                         (Use of Broken or Risky Cryptographic Algorithm \
+                         (CWE-327))))) crypto)";
+        let repaired = collapse_nested_corruption(corrupted);
+        assert!(
+            !repaired.contains("(Use of Broken or Risky Cryptographic Algorithm \
+                                (Use of Broken or Risky"),
+            "nested-chain prefix not collapsed: {repaired}"
+        );
+        assert!(
+            repaired.contains("Use of Broken or Risky Cryptographic Algorithm"),
+            "expected single weakness name to survive the collapse: {repaired}"
+        );
+        assert!(
+            !repaired.contains("(CWE-327)"),
+            "expected bare CWE-327 token to be removed: {repaired}"
+        );
+    }
+
+    #[test]
+    fn collapse_repairs_single_level_corruption() {
+        // K=1 form — single wrap from one deflate pass with the buggy map.
+        let corrupted = "(1,385 Use of Broken or Risky Cryptographic Algorithm \
+                         (CWE-327) crypto)";
+        let repaired = collapse_nested_corruption(corrupted);
+        assert!(
+            !repaired.contains("(CWE-327)"),
+            "K=1 chain not collapsed: {repaired}"
+        );
+        assert!(
+            repaired.contains("Use of Broken or Risky Cryptographic Algorithm"),
+            "expected name to survive: {repaired}"
+        );
+    }
+
+    #[test]
+    fn collapse_leaves_clean_text_untouched() {
+        let clean = "(1,385 CWE-327 crypto) and CWE-79 too";
+        let repaired = collapse_nested_corruption(clean);
+        assert_eq!(repaired, clean);
+    }
+
+    #[test]
+    fn collapse_dedupes_already_repaired_chain_residue() {
+        // Real-world residue from the first (buggy) repair pass: the
+        // bare leading NAME survived the chain collapse and now sits
+        // next to a second NAME from the replacement. The dedupe pass
+        // must merge the two.
+        let residue = "(1,385 Use of Broken or Risky Cryptographic Algorithm \
+                       Use of Broken or Risky Cryptographic Algorithm crypto)";
+        let repaired = collapse_nested_corruption(residue);
+        assert!(
+            repaired.contains("Use of Broken or Risky Cryptographic Algorithm crypto"),
+            "expected single weakness name before `crypto`: {repaired}"
+        );
+        assert!(
+            !repaired.contains(
+                "Use of Broken or Risky Cryptographic Algorithm \
+                 Use of Broken or Risky Cryptographic Algorithm"
+            ),
+            "dedupe pass left adjacent duplicate: {repaired}"
+        );
+    }
+
+    #[test]
+    fn deflate_only_text_fields_in_figspec_block() {
+        let md = "preamble\n\n```figspec\n{\
+\"id\":\"fig08_03\",\
+\"type\":\"bar\",\
+\"title\":\"ADR-0017 modes\",\
+\"caption\":\"Per ADR-0017\",\
+\"data\":{\"labels\":[\"Normal\"],\"values\":[1]}\
+}\n```\n\npostamble ADR-0017 should NOT change here";
+        let out = deflate_figspec_blocks(md);
+        // Outside the block, identifier untouched (it's body prose).
+        assert!(out.contains("postamble ADR-0017 should NOT change here"));
+        // Inside the block, ADR-0017 collapsed to its friendly form.
+        let block_start = out.find("```figspec").unwrap();
+        let block_end = out[block_start + 10..].find("```").unwrap() + block_start + 10;
+        let block = &out[block_start..block_end];
+        assert!(!block.contains("ADR-0017"));
+        assert!(block.contains("operating modes"));
     }
 }
