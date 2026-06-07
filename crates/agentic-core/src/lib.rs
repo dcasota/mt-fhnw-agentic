@@ -28,6 +28,7 @@ pub mod rank_summary;
 pub mod review;
 pub mod signing;
 pub mod tombstone;
+pub mod translation_cache;
 pub mod worktree;
 
 pub use error::{Error, Result};

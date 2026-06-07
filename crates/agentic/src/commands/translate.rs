@@ -452,6 +452,74 @@ where
     anyhow::bail!("all providers failed in the fallback chain — {summary}")
 }
 
+/// Outcome of one cache-aware translate call. `cached` is `true` when
+/// the cache hit short-circuited the LLM round-trip; `false` when the
+/// chain ran for real and the result was stored.
+#[derive(Debug, Clone)]
+struct CacheOutcome {
+    cached: bool,
+    provider: String,
+    model: String,
+    target: String,
+}
+
+/// Cache-then-chain: look the segment up in `translation_cache`; on
+/// miss, run the provider fallback chain and store the result.
+/// `segment_kind` is a human-readable tag stored alongside the cached
+/// entry (`figspec`, `document`, `paragraph` — useful for analytics).
+async fn translate_with_cache<F>(
+    conn: &rusqlite::Connection,
+    project: &str,
+    source_lang: &str,
+    target_lang: &str,
+    source_text: &str,
+    segment_kind: &str,
+    attempt_order: &[ProviderKind],
+    system: String,
+    max_tokens: u32,
+    extract: F,
+) -> Result<CacheOutcome>
+where
+    F: Fn(&str) -> Result<String>,
+{
+    if let Some(hit) =
+        agentic_core::translation_cache::get(conn, source_lang, target_lang, source_text, Some(project))?
+    {
+        return Ok(CacheOutcome {
+            cached: true,
+            provider: hit.provider,
+            model: hit.model,
+            target: hit.target_text,
+        });
+    }
+    let (used_kind, used_model, target) = try_translate_chain(
+        attempt_order,
+        system,
+        source_text.to_string(),
+        max_tokens,
+        extract,
+    )
+    .await?;
+    let provider = format!("{used_kind:?}");
+    agentic_core::translation_cache::put(
+        conn,
+        source_lang,
+        target_lang,
+        source_text,
+        &target,
+        &provider,
+        &used_model,
+        Some(project),
+        segment_kind,
+    )?;
+    Ok(CacheOutcome {
+        cached: false,
+        provider,
+        model: used_model,
+        target,
+    })
+}
+
 /// Post-processor for figure scope: strip optional ```json fences and
 /// validate that the result parses as a JSON object. Returns the cleaned
 /// JSON body.
@@ -1051,10 +1119,15 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
             "translate-figure: id={id} located in {source_path} (source={source}); \
              fallback order = {attempt_order:?}"
         );
-        let (used_kind, used_model, translated_json) = try_translate_chain(
+        let outcome = translate_with_cache(
+            &conn,
+            &project,
+            &source,
+            &target,
+            &figspec_json,
+            "figspec",
             &attempt_order,
             figure_system_prompt(&source, &target),
-            figspec_json,
             4096,
             extract_figure_json,
         )
@@ -1062,22 +1135,26 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         let sidecar_path = format!("out/figures/{id}_{target}.json");
         let commit_msg = format!(
             "translate-figure: {id} (from {source_path}) → {sidecar_path} \
-             (target={target}, provider={used_kind:?}, model={used_model})"
+             (target={target}, provider={}, model={}, cached={})",
+            outcome.provider, outcome.model, outcome.cached,
         );
         let sha = agentic_core::worktree::put_at(
             &conn,
             &project,
             &sidecar_path,
-            translated_json.as_bytes(),
+            outcome.target.as_bytes(),
             "application/json",
             Some(&target),
             "agentic-translate",
             &commit_msg,
         )?;
+        let cache_tag = if outcome.cached { "CACHE-HIT" } else { "cache-miss" };
         println!(
-            "  ✓ figure id={id} translated to {target} via {used_kind:?} ({used_model}) \
+            "  ✓ figure id={id} translated to {target} via {} ({}) [{cache_tag}] \
              ({} bytes) → {sidecar_path} (commit {})",
-            translated_json.len(),
+            outcome.provider,
+            outcome.model,
+            outcome.target.len(),
             &sha[..12.min(sha.len())]
         );
         if json_out {
@@ -1089,9 +1166,10 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
                     "target": target,
                     "source_path": source_path,
                     "sidecar_path": sidecar_path,
-                    "bytes_written": translated_json.len(),
-                    "provider": format!("{used_kind:?}"),
-                    "model": used_model,
+                    "bytes_written": outcome.target.len(),
+                    "provider": outcome.provider,
+                    "model": outcome.model,
+                    "cached": outcome.cached,
                     "commit": sha,
                 })
             );
@@ -1107,6 +1185,8 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
 
     let mut written = 0usize;
     let mut skipped_empty = 0usize;
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
     let mut failed: Vec<(String, String)> = Vec::new();
 
     for src in &paths {
@@ -1125,20 +1205,33 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         }
         let target_path_str = target_path(src, &target);
         println!("  → translating {src}  →  {target_path_str}");
-        match try_translate_chain(
+        match translate_with_cache(
+            &conn,
+            &project,
+            &source,
+            &target,
+            &source_md,
+            "document",
             &attempt_order,
             system_prompt(&source, &target),
-            source_md,
             8192,
             |raw| Ok(raw.to_string()),
         )
         .await
         {
-            Ok((used_kind, used_model, translated)) => {
-                let bytes = translated.as_bytes();
+            Ok(outcome) => {
+                let bytes = outcome.target.as_bytes();
+                let cache_tag = if outcome.cached {
+                    cache_hits += 1;
+                    "CACHE-HIT"
+                } else {
+                    cache_misses += 1;
+                    "cache-miss"
+                };
                 let commit_msg = format!(
                     "translate: {src} → {target_path_str} \
-                     (target={target}, provider={used_kind:?}, model={used_model})"
+                     (target={target}, provider={}, model={}, cached={})",
+                    outcome.provider, outcome.model, outcome.cached,
                 );
                 match agentic_core::worktree::put_at(
                     &conn,
@@ -1153,9 +1246,11 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
                     Ok(sha) => {
                         written += 1;
                         println!(
-                            "    ✓ {} bytes written to {target_path_str} via {used_kind:?} \
-                             ({used_model}) (commit {})",
-                            translated.len(),
+                            "    ✓ {} bytes written to {target_path_str} via {} \
+                             ({}) [{cache_tag}] (commit {})",
+                            outcome.target.len(),
+                            outcome.provider,
+                            outcome.model,
                             &sha[..12.min(sha.len())]
                         );
                     }
@@ -1180,13 +1275,16 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
                 "fallback_order": attempt_order.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>(),
                 "written": written,
                 "skipped_empty": skipped_empty,
+                "cache_hits": cache_hits,
+                "cache_misses": cache_misses,
                 "failed": failed,
             })
         );
     } else {
         println!(
             "\ntranslate target={target} scope={scope} DONE: written={written}, \
-             skipped_empty={skipped_empty}, failed={}.",
+             skipped_empty={skipped_empty}, cache_hits={cache_hits}, \
+             cache_misses={cache_misses}, failed={}.",
             failed.len()
         );
         if !failed.is_empty() {
