@@ -255,12 +255,47 @@ fn target_path(src: &str, target: &str) -> String {
 fn language_label(tag: &str) -> &'static str {
     match tag {
         "en" => "English",
-        "de" => "German (Deutsch)",
+        // Note: the thesis writes Schweizerhochdeutsch (Swiss Standard
+        // German), NOT German-from-Germany. See `swiss_german_addendum`
+        // for the orthographic invariants the prompt enforces.
+        "de" => "Swiss Standard German (Schweizerhochdeutsch)",
         "fr" => "French (français)",
         "it" => "Italian (italiano)",
         "rm" => "Rumantsch Grischun (the standardised Romansh of Switzerland)",
         "hi" => "Hindi (हिन्दी, written in Devanagari)",
         _ => "the target language",
+    }
+}
+
+/// Swiss Standard German addendum — appended to every prompt when
+/// `target == "de"` so the output uses Schweizerhochdeutsch orthography
+/// instead of Bundesdeutsch. Two locked-in invariants:
+/// (a) no `ß` — always render the eszett as `ss` (e.g. `Strasse`,
+///     `grosse`, `dass`, `muss` — never `Straße`, `große`, `daß`, `muß`).
+/// (b) Swiss guillemets `«…»` for direct quotation — never the
+///     German typographic pair `„…"` / `„…"`.
+/// The thesis is FHNW-MAS Swiss-issued and must follow Swiss orthography
+/// across every render artefact.
+#[must_use]
+fn swiss_german_addendum(target: &str) -> &'static str {
+    if target == "de" {
+        "\n\n\
+         Swiss Standard German (Schweizerhochdeutsch) orthography is MANDATORY \
+         for `de` output:\n\
+         (a) NO eszett `ß`. Always render as double-s `ss` — `Strasse` not \
+         `Straße`, `grosse` not `große`, `dass` not `daß`, `muss` not `muß`, \
+         `Schloss` not `Schloß`, `Mass` not `Maß`. This applies inside every \
+         translated field — captions, titles, labels, node text, edge text.\n\
+         (b) Direct-speech quotation marks MUST be Swiss guillemets `«…»` — \
+         NOT the German typographic pair `„…\u{201C}`. Example: `«Operating \
+         modes» entscheiden`, NOT `\u{201E}Operating modes\u{201C} entscheiden`.\n\
+         (c) Word choice should prefer the Swiss-standard variant when one \
+         exists (e.g. `Trottoir` over `Bürgersteig` where natural), but do not \
+         force this if the source phrasing is technical/neutral.\n\
+         These rules are non-negotiable: a `ß` or a `\u{201E}` / `\u{201C}` \
+         in the output is a hard validation failure."
+    } else {
+        ""
     }
 }
 
@@ -325,7 +360,8 @@ fn figure_system_prompt(source: &str, target: &str) -> String {
          - The JSON must be a single valid object that re-parses with the same structure as \
          the input (same keys at every level, same array lengths).\n\
          - The output must be SOLELY in {label} for the translated fields; mixing English \
-         fragments other than the preserved-verbatim items above is a hard error."
+         fragments other than the preserved-verbatim items above is a hard error.{}",
+        swiss_german_addendum(target),
     )
 }
 
@@ -359,7 +395,8 @@ fn system_prompt(source: &str, target: &str) -> String {
          (other than the preserved-verbatim items in invariants 1 + 3) is a hard error.\n\
          \n\
          If you are uncertain about a term, default to the English form unchanged rather than \
-         inventing a translation; the per-iteration fidelity gate will surface it for review."
+         inventing a translation; the per-iteration fidelity gate will surface it for review.{}",
+        swiss_german_addendum(target),
     )
 }
 
@@ -1350,23 +1387,37 @@ mod tests {
     fn figure_system_prompt_locks_invariants() {
         let p = figure_system_prompt("en", "de");
         assert!(p.contains("English"));
-        assert!(p.contains("German (Deutsch)"));
+        assert!(p.contains("Swiss Standard German"));
         assert!(p.contains("preserve every structural")); // structural keys preserved
         assert!(p.contains("ADR-XXXX")); // identifier invariant
         assert!(p.contains("ONLY the modified JSON")); // output format
+        // Swiss orthography addendum must appear for DE target.
+        assert!(p.contains("NO eszett"));
+        assert!(p.contains("«…»"));
     }
 
     #[test]
     fn figure_system_prompt_handles_non_en_source() {
-        // Round-trip chain middle step: DE → FR. Both language labels
-        // must appear so the model knows the directionality.
+        // Round-trip chain middle step: DE → FR. The DE source label is
+        // the source-language label (Swiss German), and FR is the target.
         let p = figure_system_prompt("de", "fr");
-        assert!(p.contains("German (Deutsch)"));
+        assert!(p.contains("Swiss Standard German"));
         assert!(p.contains("French (français)"));
         // Round-trip closing step: HI → EN. English is allowed as a target.
         let q = figure_system_prompt("hi", "en");
         assert!(q.contains("Hindi"));
         assert!(q.contains("English"));
+    }
+
+    #[test]
+    fn swiss_german_addendum_only_for_de_target() {
+        assert!(swiss_german_addendum("de").contains("NO eszett"));
+        assert!(swiss_german_addendum("de").contains("«…»"));
+        assert_eq!(swiss_german_addendum("fr"), "");
+        assert_eq!(swiss_german_addendum("it"), "");
+        assert_eq!(swiss_german_addendum("rm"), "");
+        assert_eq!(swiss_german_addendum("hi"), "");
+        assert_eq!(swiss_german_addendum("en"), "");
     }
 
     #[test]
@@ -1448,7 +1499,10 @@ mod tests {
     fn language_label_renders_human_readable_target_names() {
         // Cosmetic, but the prompt text relies on these — keep the
         // mappings visible in tests so a future rename surfaces here.
-        assert_eq!(language_label("de"), "German (Deutsch)");
+        assert_eq!(
+            language_label("de"),
+            "Swiss Standard German (Schweizerhochdeutsch)"
+        );
         assert_eq!(language_label("fr"), "French (français)");
         assert_eq!(language_label("it"), "Italian (italiano)");
         assert_eq!(
@@ -1462,10 +1516,12 @@ mod tests {
     fn system_prompt_mentions_target_language_label_and_invariants() {
         let p = system_prompt("en", "de");
         assert!(p.contains("English"));
-        assert!(p.contains("German (Deutsch)"));
+        assert!(p.contains("Swiss Standard German"));
         assert!(p.contains("EXACTLY AS-IS")); // figspec / code invariant
         assert!(p.contains("ADR-XXXX")); // identifier invariant
         assert!(p.contains("SOLELY in")); // purity invariant
+        // Swiss orthography addendum applies to document scope too.
+        assert!(p.contains("NO eszett"));
     }
 
     #[test]
