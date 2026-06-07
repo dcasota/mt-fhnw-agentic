@@ -3158,6 +3158,17 @@ fn postprocess_docx_inner_layout(
             if name == "word/document.xml" {
                 let mut s = document_xml.take().unwrap_or_default();
                 s = mark_header_rows(&s);
+                // CRITICAL 2026-06-07: docx-rs 0.4.x emits pPr
+                // children in builder-call order, which puts
+                // `<w:pStyle>` AFTER `<w:rPr/>` for paragraphs that
+                // were styled via `.style(...)` after construction.
+                // OOXML CT_PPr requires pStyle to be the FIRST child;
+                // Word silently strips the style otherwise (every
+                // styled paragraph then renders as default body text
+                // — "chaotic, no formatting"). Re-order here so the
+                // emitted docx satisfies the schema regardless of how
+                // docx-rs sequenced the builder calls.
+                s = fix_ppr_schema_order(&s);
                 s = apply_layout_overrides_to_sectprs(&s, layout);
                 s = collapse_empty_header_refs(&s);
                 // Wave-9 (AI-Norms parity, 2026-06-03): also strip
@@ -3885,6 +3896,115 @@ fn inject_update_fields(mut s: String) -> String {
 /// header fill — data rows use other fills and chrome boxes (key-points) lack
 /// `cantSplit`, so neither is touched. `tblHeader` is inserted last in
 /// `<w:trPr>` (after cantSplit / trHeight), matching the CT_TrPr schema order.
+/// Re-order `<w:pStyle .../>` and `<w:rPr/>` inside every `<w:pPr>` to
+/// satisfy the OOXML CT_PPr schema requirement that `pStyle` is the
+/// FIRST child and `rPr` is the LAST. docx-rs 0.4.x emits pPr children
+/// in the order the builder methods were called — so a paragraph that
+/// inherited the docx-rs default empty `<w:rPr/>` followed by an
+/// explicit `.style("Heading1")` call produces
+/// `<w:pPr><w:rPr /><w:pStyle w:val="Heading1" />...</w:pPr>`.
+///
+/// Microsoft Word silently REJECTS the `pStyle` reference when it is
+/// not the first child of `pPr` — every styled paragraph then renders
+/// in default body style. Observed 2026-06-07 across every snapshot
+/// docx (283/283 styled paragraphs broken in master_thesis alone:
+/// headings, ToC entries, captions all flattened to body text — what
+/// the reader sees as "totally chaotic, no formatting").
+///
+/// The fix is a single in-place rewrite of every pPr block: move any
+/// `<w:pStyle .../>` to the front, move any empty `<w:rPr/>` to the
+/// end, leave everything else alone. Non-empty `<w:rPr>...</w:rPr>`
+/// blocks (which docx-rs occasionally emits) are also moved to the
+/// end. Idempotent: a pPr that already has the right order is left
+/// untouched.
+fn fix_ppr_schema_order(doc: &str) -> String {
+    let mut out = String::with_capacity(doc.len() + 256);
+    let mut rest = doc;
+    while let Some(open) = rest.find("<w:pPr>") {
+        let after_open = open + "<w:pPr>".len();
+        let Some(close_rel) = rest[after_open..].find("</w:pPr>") else {
+            break;
+        };
+        let body_end = after_open + close_rel;
+        out.push_str(&rest[..after_open]);
+        let body = &rest[after_open..body_end];
+        out.push_str(&reorder_ppr_body(body));
+        out.push_str("</w:pPr>");
+        rest = &rest[body_end + "</w:pPr>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Helper for [`fix_ppr_schema_order`]. Given the bytes between
+/// `<w:pPr>` and `</w:pPr>`, returns the schema-correct re-ordering.
+fn reorder_ppr_body(body: &str) -> String {
+    let pstyle = extract_self_closing(body, "<w:pStyle ");
+    let body_no_pstyle = remove_substring(body, pstyle.as_deref());
+    // Empty rPr stub: `<w:rPr/>` or `<w:rPr />`.
+    let empty_rpr = extract_one_of(&body_no_pstyle, &["<w:rPr/>", "<w:rPr />"]);
+    let body_no_empty = remove_substring(&body_no_pstyle, empty_rpr);
+    // Non-empty rPr: `<w:rPr> ... </w:rPr>`. There is usually at most
+    // one inside a pPr; play safe and only re-locate the first.
+    let nonempty_rpr = extract_balanced(&body_no_empty, "<w:rPr>", "</w:rPr>");
+    let body_no_rpr = remove_substring(&body_no_empty, nonempty_rpr.as_deref());
+
+    let mut s = String::with_capacity(body.len());
+    if let Some(ps) = pstyle {
+        s.push_str(&ps);
+    }
+    s.push_str(&body_no_rpr);
+    if let Some(rp) = nonempty_rpr {
+        s.push_str(&rp);
+    } else if let Some(er) = empty_rpr {
+        s.push_str(er);
+    }
+    s
+}
+
+/// Find the first occurrence of `prefix` and extract through the next
+/// self-closing `/>` (matches e.g. `<w:pStyle w:val="Heading1" />`).
+/// Returns `None` if the prefix is absent.
+fn extract_self_closing(body: &str, prefix: &str) -> Option<String> {
+    let start = body.find(prefix)?;
+    let after_prefix = start + prefix.len();
+    let end_rel = body[after_prefix..].find("/>")?;
+    let end = after_prefix + end_rel + 2;
+    Some(body[start..end].to_string())
+}
+
+/// Return the first match from `candidates` that appears in `body`,
+/// or `None` if none do.
+fn extract_one_of<'a>(body: &'a str, candidates: &[&'a str]) -> Option<&'a str> {
+    candidates.iter().find(|c| body.contains(**c)).copied()
+}
+
+/// Find the first balanced `open ... close` slice, returning the
+/// substring from the start of `open` through the end of `close`.
+fn extract_balanced(body: &str, open: &str, close: &str) -> Option<String> {
+    let start = body.find(open)?;
+    let after_open = start + open.len();
+    let end_rel = body[after_open..].find(close)?;
+    let end = after_open + end_rel + close.len();
+    Some(body[start..end].to_string())
+}
+
+/// Remove the first occurrence of `needle` from `body`. Returns the
+/// original `body` when `needle` is `None` or absent.
+fn remove_substring(body: &str, needle: Option<&str>) -> String {
+    let Some(n) = needle else {
+        return body.to_string();
+    };
+    if let Some(pos) = body.find(n) {
+        let mut s = String::with_capacity(body.len());
+        s.push_str(&body[..pos]);
+        s.push_str(&body[pos + n.len()..]);
+        s
+    } else {
+        body.to_string()
+    }
+}
+
 fn mark_header_rows(doc: &str) -> String {
     let headbg_fill = format!("w:fill=\"{HEADBG}\"");
     let mut out = String::with_capacity(doc.len() + 512);
@@ -6175,6 +6295,113 @@ fn render_thesis_book(
 mod tests {
     use super::*;
     use docx_rs::BuildXML;
+
+    // ====================================================================
+    // CRITICAL pPr schema-order fix (#405, 2026-06-07).
+    // Locks the post-processor that moves `<w:pStyle>` to the first
+    // child of `<w:pPr>` and `<w:rPr/>` to the last, so Microsoft Word
+    // applies the paragraph style instead of silently dropping it.
+    // ====================================================================
+
+    #[test]
+    fn fix_ppr_schema_order_moves_pstyle_to_front() {
+        let broken =
+            "<w:p><w:pPr><w:rPr /><w:pStyle w:val=\"Heading1\" /><w:spacing w:after=\"120\" /></w:pPr></w:p>";
+        let fixed = fix_ppr_schema_order(broken);
+        // pStyle must precede rPr.
+        let p_pos = fixed.find("<w:pStyle").expect("pStyle present");
+        let r_pos = fixed.find("<w:rPr").expect("rPr present");
+        assert!(
+            p_pos < r_pos,
+            "pStyle must come before rPr after fix: {fixed}"
+        );
+        // pStyle must be the FIRST child of pPr (immediately after the open tag).
+        assert!(
+            fixed.contains("<w:pPr><w:pStyle"),
+            "pStyle must be first child of pPr: {fixed}"
+        );
+    }
+
+    #[test]
+    fn fix_ppr_schema_order_moves_empty_rpr_to_back() {
+        let broken =
+            "<w:pPr><w:rPr /><w:pStyle w:val=\"Heading2\" /><w:spacing w:after=\"60\" /></w:pPr>";
+        let fixed = fix_ppr_schema_order(broken);
+        assert!(
+            fixed.contains("<w:spacing w:after=\"60\" /><w:rPr /></w:pPr>"),
+            "rPr must be the last child before </w:pPr>: {fixed}"
+        );
+    }
+
+    #[test]
+    fn fix_ppr_schema_order_is_idempotent_on_already_correct() {
+        let good =
+            "<w:pPr><w:pStyle w:val=\"Heading3\" /><w:spacing w:after=\"60\" /><w:rPr /></w:pPr>";
+        let fixed = fix_ppr_schema_order(good);
+        assert_eq!(fixed, good, "already-correct pPr must be unchanged");
+    }
+
+    #[test]
+    fn fix_ppr_schema_order_leaves_pstyle_less_blocks_untouched() {
+        let plain = "<w:pPr><w:rPr /><w:spacing w:after=\"100\" /></w:pPr>";
+        let fixed = fix_ppr_schema_order(plain);
+        // No pStyle present, but the empty rPr should be moved to back
+        // anyway since that's what the schema wants. Verify rPr ends up
+        // after spacing.
+        assert!(
+            fixed.contains("<w:spacing w:after=\"100\" /><w:rPr /></w:pPr>"),
+            "rPr must be moved to the end even without pStyle: {fixed}"
+        );
+    }
+
+    #[test]
+    fn fix_ppr_schema_order_handles_multiple_paragraphs() {
+        let multi = "<w:p><w:pPr><w:rPr /><w:pStyle w:val=\"Heading1\" /></w:pPr></w:p>\
+                     <w:p><w:pPr><w:rPr /><w:pStyle w:val=\"Heading2\" /></w:pPr></w:p>\
+                     <w:p><w:pPr><w:rPr /><w:pStyle w:val=\"Caption\" /></w:pPr></w:p>";
+        let fixed = fix_ppr_schema_order(multi);
+        // Every pPr should have pStyle immediately after the open tag.
+        for style in ["Heading1", "Heading2", "Caption"] {
+            let pattern = format!("<w:pPr><w:pStyle w:val=\"{style}\" />");
+            assert!(
+                fixed.contains(&pattern),
+                "expected pattern '{pattern}' in fixed XML: {fixed}"
+            );
+        }
+    }
+
+    #[test]
+    fn fix_ppr_schema_order_handles_nonempty_rpr_block() {
+        // A pPr with both pStyle and a NON-empty rPr (the rare
+        // builder-emitted run-default with actual properties).
+        let broken = "<w:pPr><w:rPr><w:b /><w:sz w:val=\"20\" /></w:rPr>\
+                      <w:pStyle w:val=\"Heading1\" /><w:spacing w:after=\"60\" /></w:pPr>";
+        let fixed = fix_ppr_schema_order(broken);
+        let p_pos = fixed.find("<w:pStyle").expect("pStyle present");
+        let r_pos = fixed.find("<w:rPr>").expect("non-empty rPr present");
+        assert!(p_pos < r_pos, "pStyle before rPr: {fixed}");
+        // rPr should be the last child before </w:pPr>.
+        assert!(
+            fixed.ends_with("</w:rPr></w:pPr>"),
+            "non-empty rPr must close immediately before </w:pPr>: {fixed}"
+        );
+    }
+
+    #[test]
+    fn extract_self_closing_handles_attrs_with_slashes() {
+        // Some self-closing tags have `/>` inside attribute values
+        // (unlikely for pStyle but proves the parser is well-behaved).
+        let body = "<w:pStyle w:val=\"Heading1\" /><w:spacing w:after=\"60\" />";
+        let pstyle = extract_self_closing(body, "<w:pStyle ");
+        assert_eq!(pstyle.as_deref(), Some("<w:pStyle w:val=\"Heading1\" />"));
+    }
+
+    #[test]
+    fn extract_self_closing_returns_none_when_absent() {
+        let body = "<w:spacing w:after=\"60\" />";
+        let pstyle = extract_self_closing(body, "<w:pStyle ");
+        assert_eq!(pstyle, None);
+    }
 
     /// Round V (zone A — psb-01 / psb-02, 2026-06-03): the
     /// `chapter_end_rule` helper must emit exactly one paragraph carrying
