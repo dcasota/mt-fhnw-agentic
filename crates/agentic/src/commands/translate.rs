@@ -25,9 +25,8 @@
 
 use std::path::Path;
 
-use agentic_providers::ProviderKind;
-use agentic_providers::registry;
 use agentic_providers::traits::{ChatMessage, ChatRequest, Role};
+use agentic_providers::{ProviderKind, Task, registry, router};
 use anyhow::{Context, Result, anyhow};
 
 use crate::cli::TranslateAction;
@@ -334,35 +333,97 @@ fn system_prompt(target: &str) -> String {
 /// Send the prompt to the configured provider and return the translated
 /// content. Bounds: the source markdown is sent in full (no chunking yet);
 /// the model is responsible for the same-paragraph-count invariant.
-async fn translate_figure_one(
-    prov: &dyn agentic_providers::traits::Provider,
-    model: &str,
-    target: &str,
-    figspec_json: &str,
-) -> Result<String> {
-    let req = ChatRequest {
-        model: model.to_string(),
-        messages: vec![ChatMessage {
-            role: Role::User,
-            content: figspec_json.to_string(),
-        }],
-        temperature: Some(0.0),
-        max_tokens: Some(4096),
-        seed: None,
-        system: Some(figure_system_prompt(target)),
-    };
-    let resp = prov
-        .chat(&req)
-        .await
-        .map_err(|e| anyhow!("provider chat failed: {e}"))?;
-    let trimmed = resp.content.trim().to_string();
-    if trimmed.is_empty() {
-        anyhow::bail!("provider returned empty translation");
+/// Default model name per provider for the Translate task.
+#[must_use]
+fn translate_model_for(kind: ProviderKind) -> String {
+    match kind {
+        ProviderKind::Anthropic => "claude-opus-4-7".to_string(),
+        ProviderKind::Google => "gemini-2.5-pro".to_string(),
+        ProviderKind::Grok => "grok-4.3".to_string(),
+        ProviderKind::OpenAi => "gpt-4o".to_string(),
+        other => format!("{other:?}").to_lowercase(),
     }
-    // Light validation: the response must be a JSON object that parses.
-    // The provider sometimes prepends ```json fences despite the system
-    // prompt — strip them.
-    let cleaned = trimmed
+}
+
+/// Walk `attempt_order` building each provider and calling chat. Returns
+/// the first successful (kind, model, content) tuple, or aggregates every
+/// failure into a single anyhow error so the operator sees the full
+/// chain (e.g. "Anthropic → 400 credit balance too low; Grok → success"
+/// vs the previous "first provider failed; gave up").
+///
+/// `extract` post-processes the raw model output (figure scope strips
+/// ```json fences and validates JSON; document scope is the identity).
+async fn try_translate_chain<F>(
+    attempt_order: &[ProviderKind],
+    system: String,
+    user: String,
+    max_tokens: u32,
+    extract: F,
+) -> Result<(ProviderKind, String, String)>
+where
+    F: Fn(&str) -> Result<String>,
+{
+    let mut failures: Vec<(ProviderKind, String)> = Vec::new();
+    for kind in attempt_order {
+        let model = translate_model_for(*kind);
+        let prov = match registry::build(*kind) {
+            Ok(p) => p,
+            Err(e) => {
+                failures.push((*kind, format!("build failed: {e}")));
+                continue;
+            }
+        };
+        let req = ChatRequest {
+            model: model.clone(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: user.clone(),
+            }],
+            temperature: Some(0.0),
+            max_tokens: Some(max_tokens),
+            seed: None,
+            system: Some(system.clone()),
+        };
+        match prov.chat(&req).await {
+            Ok(resp) => {
+                let trimmed = resp.content.trim().to_string();
+                if trimmed.is_empty() {
+                    failures.push((*kind, "provider returned empty content".into()));
+                    eprintln!("  ! {kind:?} returned empty content; trying next provider…");
+                    continue;
+                }
+                match extract(&trimmed) {
+                    Ok(out) => return Ok((*kind, model, out)),
+                    Err(e) => {
+                        failures.push((*kind, format!("post-process: {e}")));
+                        eprintln!(
+                            "  ! {kind:?} response failed post-processing ({e}); \
+                             trying next provider…"
+                        );
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                failures.push((*kind, format!("{e}")));
+                eprintln!("  ! {kind:?} call failed: {e}; trying next provider…");
+                continue;
+            }
+        }
+    }
+    let summary: String = failures
+        .iter()
+        .map(|(k, msg)| format!("{k:?}: {msg}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    anyhow::bail!("all providers failed in the fallback chain — {summary}")
+}
+
+/// Post-processor for figure scope: strip optional ```json fences and
+/// validate that the result parses as a JSON object. Returns the cleaned
+/// JSON body.
+fn extract_figure_json(raw: &str) -> Result<String> {
+    let cleaned = raw
         .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
@@ -371,34 +432,6 @@ async fn translate_figure_one(
     serde_json::from_str::<serde_json::Value>(&cleaned)
         .with_context(|| format!("figure translation did not parse as JSON: {cleaned}"))?;
     Ok(cleaned)
-}
-
-async fn translate_one(
-    prov: &dyn agentic_providers::traits::Provider,
-    model: &str,
-    target: &str,
-    source_md: &str,
-) -> Result<String> {
-    let req = ChatRequest {
-        model: model.to_string(),
-        messages: vec![ChatMessage {
-            role: Role::User,
-            content: source_md.to_string(),
-        }],
-        temperature: Some(0.0),
-        max_tokens: Some(8192),
-        seed: None,
-        system: Some(system_prompt(target)),
-    };
-    let resp = prov
-        .chat(&req)
-        .await
-        .map_err(|e| anyhow!("provider chat failed: {e}"))?;
-    let trimmed = resp.content.trim().to_string();
-    if trimmed.is_empty() {
-        anyhow::bail!("provider returned empty translation");
-    }
-    Ok(trimmed)
 }
 
 pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Result<()> {
@@ -508,29 +541,36 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         )
     })?;
 
-    // Pick a configured cloud provider (explicit or first available in the
-    // translate-preferred cloud list).
-    let kind = match &provider {
-        Some(p) => parse_kind(p).ok_or_else(|| anyhow!("unknown provider '{p}'"))?,
-        None => CLOUD_TRANSLATE
-            .iter()
-            .copied()
-            .find(|k| registry::has_key(*k))
-            .ok_or_else(|| {
-                anyhow!(
-                    "no chat provider configured (set e.g. AGENTIC_ANTHROPIC_KEY, \
-                     ANTHROPIC_API_KEY, AGENTIC_GOOGLE_KEY, or GOOGLE_API_KEY)"
-                )
-            })?,
+    // Build the provider attempt order. The first-choice provider honors:
+    //   1. explicit --provider <p> (no fallback — user said exactly which)
+    //   2. AGENTIC_TRANSLATE_PROVIDER env var (via router::route)
+    //   3. AGENTIC_DEFAULT_PROVIDER env var (via router::route)
+    //   4. CLI context default (Claude Code → Anthropic, etc.)
+    //   5. Available-key scan in the router's preferred order
+    // The 2026-06-07 fallback addition: when the first-choice provider's
+    // chat call fails (e.g. Anthropic returns HTTP 400 "credit balance too
+    // low" — a common shakedown gotcha because Anthropic Workbench API
+    // credits are a separate billing pool from Claude Max subscription
+    // quota), walk the rest of CLOUD_TRANSLATE skipping already-tried
+    // providers, picking only those with a configured key. Explicit
+    // --provider disables this walk (the user said exactly which one).
+    let explicit_choice = provider
+        .as_deref()
+        .map(|p| parse_kind(p).ok_or_else(|| anyhow!("unknown provider '{p}'")))
+        .transpose()?;
+    let first_choice = if let Some(k) = explicit_choice {
+        k
+    } else {
+        router::route(Task::Translate).kind
     };
-    let model = match kind {
-        ProviderKind::Anthropic => "claude-opus-4-7".to_string(),
-        ProviderKind::Google => "gemini-2.5-pro".to_string(),
-        ProviderKind::Grok => "grok-4.3".to_string(),
-        ProviderKind::OpenAi => "gpt-4o".to_string(),
-        other => format!("{other:?}").to_lowercase(),
-    };
-    let prov = registry::build(kind).map_err(|e| anyhow!("provider build failed: {e}"))?;
+    let mut attempt_order: Vec<ProviderKind> = vec![first_choice];
+    if explicit_choice.is_none() {
+        for k in CLOUD_TRANSLATE {
+            if !attempt_order.contains(k) && registry::has_key(*k) {
+                attempt_order.push(*k);
+            }
+        }
+    }
 
     // ADR-0062 Phase A — per-figure scope. Locate the figspec by `id`,
     // translate its user-facing text fields with the figure-aware
@@ -539,13 +579,21 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         let Some((source_path, figspec_json)) = find_figspec_by_id(&conn, &project, id)? else {
             anyhow::bail!("no figspec with id='{id}' found in the corpus");
         };
-        println!("translate-figure: id={id} located in {source_path}; calling {kind:?} ({model})");
-        let translated_json =
-            translate_figure_one(prov.as_ref(), &model, &target, &figspec_json).await?;
+        println!(
+            "translate-figure: id={id} located in {source_path}; fallback order = {attempt_order:?}"
+        );
+        let (used_kind, used_model, translated_json) = try_translate_chain(
+            &attempt_order,
+            figure_system_prompt(&target),
+            figspec_json,
+            4096,
+            extract_figure_json,
+        )
+        .await?;
         let sidecar_path = format!("out/figures/{id}_{target}.json");
         let commit_msg = format!(
             "translate-figure: {id} (from {source_path}) → {sidecar_path} \
-             (target={target}, model={model})"
+             (target={target}, provider={used_kind:?}, model={used_model})"
         );
         let sha = agentic_core::worktree::put_at(
             &conn,
@@ -558,7 +606,8 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
             &commit_msg,
         )?;
         println!(
-            "  ✓ figure id={id} translated to {target} ({} bytes) → {sidecar_path} (commit {})",
+            "  ✓ figure id={id} translated to {target} via {used_kind:?} ({used_model}) \
+             ({} bytes) → {sidecar_path} (commit {})",
             translated_json.len(),
             &sha[..12.min(sha.len())]
         );
@@ -572,6 +621,8 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
                     "source_path": source_path,
                     "sidecar_path": sidecar_path,
                     "bytes_written": translated_json.len(),
+                    "provider": format!("{used_kind:?}"),
+                    "model": used_model,
                     "commit": sha,
                 })
             );
@@ -580,7 +631,7 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
     }
 
     println!(
-        "translate target={target} scope={scope} provider={kind:?} model={model} \
+        "translate target={target} scope={scope} fallback_order={attempt_order:?} \
          paths={} — beginning per-path LLM-translate-and-write loop (ADR-0062 v1).",
         paths.len()
     );
@@ -605,19 +656,20 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         }
         let target_path_str = target_path(src, &target);
         println!("  → translating {src}  →  {target_path_str}");
-        match translate_one(prov.as_ref(), &model, &target, &source_md).await {
-            Ok(translated) => {
-                // Stage the translation as a parallel-path blob via
-                // `worktree::put_at` — one commit per write, captured by
-                // the project's default branch the same way every other
-                // content writer in the runtime works. The commit message
-                // names the source path + target language so the audit
-                // trail tells the story without the operator opening the
-                // diff.
+        match try_translate_chain(
+            &attempt_order,
+            system_prompt(&target),
+            source_md,
+            8192,
+            |raw| Ok(raw.to_string()),
+        )
+        .await
+        {
+            Ok((used_kind, used_model, translated)) => {
                 let bytes = translated.as_bytes();
                 let commit_msg = format!(
-                    "translate: {} → {target_path_str} (target={target}, model={model})",
-                    src
+                    "translate: {src} → {target_path_str} \
+                     (target={target}, provider={used_kind:?}, model={used_model})"
                 );
                 match agentic_core::worktree::put_at(
                     &conn,
@@ -632,7 +684,8 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
                     Ok(sha) => {
                         written += 1;
                         println!(
-                            "    ✓ {} bytes written to {target_path_str} (commit {})",
+                            "    ✓ {} bytes written to {target_path_str} via {used_kind:?} \
+                             ({used_model}) (commit {})",
                             translated.len(),
                             &sha[..12.min(sha.len())]
                         );
@@ -655,8 +708,7 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
             serde_json::json!({
                 "target": target,
                 "scope": scope_enum.slug(),
-                "provider": format!("{kind:?}"),
-                "model": model,
+                "fallback_order": attempt_order.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>(),
                 "written": written,
                 "skipped_empty": skipped_empty,
                 "failed": failed,
