@@ -29,6 +29,10 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
+pub use crate::regulation_timeline_languages::{
+    LANGUAGES, REQUIRED_KEYS as LANGUAGE_REQUIRED_KEYS, t,
+};
+
 // ===========================================================================
 // X-axis bounds (Panels A / B / C all share the same time range).
 // ===========================================================================

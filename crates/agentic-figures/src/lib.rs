@@ -30,6 +30,10 @@ mod render_wheel;
 /// renderers (A / B / C) and the `LANGUAGES` per-language string
 /// table land in follow-up commits.
 pub mod regulation_timeline;
+/// Per-language UI string table for `regulation_timeline` (port of
+/// the kit's `LANGUAGES` dict). Re-exported by [`regulation_timeline`]
+/// as `t(lang, key)`.
+pub mod regulation_timeline_languages;
 
 // Wong colour-blind-safe palette (matches render_figspec).
 pub(crate) const NAVY: RGBColor = RGBColor(0x1F, 0x49, 0x7D);
