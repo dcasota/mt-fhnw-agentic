@@ -34,6 +34,9 @@ pub mod regulation_timeline;
 /// the kit's `LANGUAGES` dict). Re-exported by [`regulation_timeline`]
 /// as `t(lang, key)`.
 pub mod regulation_timeline_languages;
+/// Panel A renderer (enforcement starts per year, stacked by
+/// jurisdiction). Port of the python kit's `render_panel_A`.
+pub mod regulation_timeline_panel_a;
 
 // Wong colour-blind-safe palette (matches render_figspec).
 pub(crate) const NAVY: RGBColor = RGBColor(0x1F, 0x49, 0x7D);

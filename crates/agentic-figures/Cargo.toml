@@ -21,5 +21,10 @@ serde_json = { workspace = true }
 anyhow     = { workspace = true }
 textwrap   = "0.16"
 
+[dev-dependencies]
+# Used by regulation_timeline_panel_a tests to write standalone-render
+# PNGs to a scratch dir during the test pass.
+tempfile = "3"
+
 [lints]
 workspace = true
