@@ -44,6 +44,10 @@ pub mod regulation_timeline_panel_b;
 /// meta-methodology columns + conflict markers). Port of the
 /// python kit's `render_panel_C` + `_render_detail`.
 pub mod regulation_timeline_panel_c;
+/// Layout orchestration: `render_abc` (the composite that the thesis
+/// §2.3 uses), `render_ab`, `render_c_only`. Composes panel
+/// renderers into the kit's published PNG layouts.
+pub mod regulation_timeline_layout;
 
 // Wong colour-blind-safe palette (matches render_figspec).
 pub(crate) const NAVY: RGBColor = RGBColor(0x1F, 0x49, 0x7D);

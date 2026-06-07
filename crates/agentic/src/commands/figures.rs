@@ -28,7 +28,43 @@ pub fn run(action: FiguresAction, json_out: bool) -> Result<()> {
             out,
             min_bytes,
         } => extract_from_docx(&docx, &out, min_bytes, json_out),
+        FiguresAction::RegulationTimeline { out, target, mode } => {
+            regulation_timeline(&out, &target, &mode, json_out)
+        }
     }
+}
+
+fn regulation_timeline(out: &Path, target: &str, mode: &str, json_out: bool) -> Result<()> {
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create output parent {}", parent.display()))?;
+    }
+    match mode {
+        "abc" => agentic_figures::regulation_timeline_layout::render_abc(out, target)?,
+        "ab" => agentic_figures::regulation_timeline_layout::render_ab(out, target)?,
+        "c" => agentic_figures::regulation_timeline_layout::render_c_only(out, target)?,
+        other => {
+            return Err(anyhow!(
+                "unknown --mode '{other}'; valid: abc | ab | c"
+            ));
+        }
+    }
+    let size = fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    if json_out {
+        let v = json!({
+            "out": out.display().to_string(),
+            "target": target,
+            "mode": mode,
+            "bytes": size,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else {
+        println!(
+            "wrote regulation-timeline (mode={mode}, target={target}) -> {} ({size} bytes)",
+            out.display()
+        );
+    }
+    Ok(())
 }
 
 fn extract_from_docx(docx: &Path, out: &Path, min_bytes: u64, json_out: bool) -> Result<()> {

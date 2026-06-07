@@ -396,6 +396,27 @@ pub enum FiguresAction {
         #[arg(long, default_value_t = 0u64)]
         min_bytes: u64,
     },
+    /// Render the regulation-timeline figure (the ABC composite that
+    /// the thesis §2.3 uses). Native-Rust port of the python kit's
+    /// `regulation_timeline_v3_kit`.
+    ///
+    /// Mode `abc` (default) writes the three-panel composite matching
+    /// `regulation_timeline_v3_ABC.png`. Mode `ab` writes only panels
+    /// A + B. Mode `c` writes only panel C.
+    RegulationTimeline {
+        /// Output PNG path. A sibling `.pdf` is NOT written today
+        /// (plotters' SVG backend would handle that — follow-up).
+        #[arg(long)]
+        out: PathBuf,
+        /// Target language (en | de | fr | it | rm | hi). `de` uses
+        /// Swiss Standard German (no ß).
+        #[arg(long, default_value = "en")]
+        target: String,
+        /// Composite mode. `abc` (default) = three-panel composite;
+        /// `ab` = density + hot-spots only; `c` = conflict Gantt only.
+        #[arg(long, default_value = "abc")]
+        mode: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
