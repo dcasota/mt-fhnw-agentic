@@ -3371,6 +3371,14 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
             if name == "word/document.xml" {
                 let s = document_xml.take().unwrap_or_default();
                 let s = drop_refs_to_empty_parts(&s, &dropped_rids);
+                // #405 follow-up (2026-06-08): Word COM regenerates field
+                // expansions (notably INDEX with column-spec, e.g.
+                // `INDEX \c 2`) by inserting NEW section-break paragraphs
+                // whose pPr emits rPr-before-sectPr — re-violating
+                // CT_PPr after the render-time pass already corrected
+                // the original docx. Re-apply the schema-order fix here
+                // so the post-finalize bytes are still schema-clean.
+                let s = fix_ppr_schema_order(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start document.xml")?;
                 zout.write_all(s.as_bytes()).context("write document.xml")?;
@@ -6381,6 +6389,27 @@ mod tests {
         let r_pos = fixed.find("<w:rPr>").expect("non-empty rPr present");
         assert!(p_pos < r_pos, "pStyle before rPr: {fixed}");
         // rPr should be the last child before </w:pPr>.
+        assert!(
+            fixed.ends_with("</w:rPr></w:pPr>"),
+            "non-empty rPr must close immediately before </w:pPr>: {fixed}"
+        );
+    }
+
+    /// #405 follow-up (2026-06-08): Word COM's INDEX field expansion
+    /// emits section-break paragraphs whose pPr contains rPr BEFORE
+    /// sectPr, which violates CT_PPr (sectPr must precede rPr).
+    /// Verify the fix re-orders correctly.
+    #[test]
+    fn fix_ppr_schema_order_moves_rpr_after_sectpr() {
+        let broken = "<w:pPr><w:rPr><w:noProof/></w:rPr><w:sectPr w:rsidR=\"004A6544\" w:rsidSect=\"004A6544\"><w:footerReference w:type=\"default\" r:id=\"rId183\"/><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:cols w:space=\"425\"/></w:sectPr></w:pPr>";
+        let fixed = fix_ppr_schema_order(broken);
+        let s_pos = fixed.find("<w:sectPr").expect("sectPr present");
+        let r_pos = fixed.find("<w:rPr>").expect("rPr present");
+        assert!(
+            s_pos < r_pos,
+            "sectPr must come before rPr after fix: {fixed}"
+        );
+        // rPr must be the last child before </w:pPr>.
         assert!(
             fixed.ends_with("</w:rPr></w:pPr>"),
             "non-empty rPr must close immediately before </w:pPr>: {fixed}"

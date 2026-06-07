@@ -126,6 +126,7 @@ dependencies = [
  "plotters",
  "serde",
  "serde_json",
+ "tempfile",
  "textwrap",
 ]
 

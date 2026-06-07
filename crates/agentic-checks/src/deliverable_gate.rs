@@ -170,6 +170,23 @@ fn inside_quote(ln: &str, pos: usize) -> bool {
 pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut in_fence = false;
+    // ADR-0037 English-only is scoped to EN deliverables. A `_DE.md` /
+    // `.de.md` (and the fr / it / rm / hi siblings) is by definition a
+    // non-English sidecar — `Empfehlungen` in `about_this_book.de.md` is
+    // CORRECT German, not a NON_ENGLISH_TEXT error. Pre-2026-06-07 the
+    // gate over-reached on those paths; this flag suppresses the
+    // language-specific German/abbreviation/translation-not-applicable
+    // checks below for sidecar files. Other checks (CAPTION_TOO_LONG,
+    // NUMBER_UNSOURCED, etc.) still run.
+    let is_non_en_target = {
+        let lc = label.to_ascii_lowercase();
+        const TAGS: &[&str] = &["de", "fr", "it", "rm", "hi"];
+        TAGS.iter().any(|t| {
+            lc.ends_with(&format!(".{t}.md"))
+                || lc.ends_with(&format!("_{t}.md"))
+                || lc.ends_with(&format!(".{t}.markdown"))
+        })
+    };
     // Parenthesis nesting carried across prose lines: a number inside a
     // multi-line `(…)` aside is rescued exactly as the existing single-line
     // `(` rule (NUMSRC) already rescues one. Reset at paragraph breaks so a
@@ -197,19 +214,22 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
         paren_depth = paren_depth.max(0);
         let here = || Some(format!("{label}:{i}"));
         // ADR-0037 English-only (skip terms glossed in *…* or (…) just before).
-        if let Some(m) = DE.find(ln) {
-            let glossed = ln[..m.start()]
-                .chars()
-                .rev()
-                .take(2)
-                .any(|c| c == '*' || c == '(');
-            let allowlisted = inside_de_allowlist(ln, m.start(), m.end());
-            if !glossed && !allowlisted {
-                out.push(err(
-                    "NON_ENGLISH_TEXT",
-                    format!("L{i}: German term '{}'", m.as_str()),
-                    here(),
-                ));
+        // Suppressed entirely for non-EN sidecars — see is_non_en_target above.
+        if !is_non_en_target {
+            if let Some(m) = DE.find(ln) {
+                let glossed = ln[..m.start()]
+                    .chars()
+                    .rev()
+                    .take(2)
+                    .any(|c| c == '*' || c == '(');
+                let allowlisted = inside_de_allowlist(ln, m.start(), m.end());
+                if !glossed && !allowlisted {
+                    out.push(err(
+                        "NON_ENGLISH_TEXT",
+                        format!("L{i}: German term '{}'", m.as_str()),
+                        here(),
+                    ));
+                }
             }
         }
         // German management-tradition abbreviations (IST / SOLL) — case-sensitive
@@ -221,7 +241,7 @@ pub fn findings_for_facts(label: &str, text: &str, anchored: &[String]) -> Vec<F
         // symmetrically for `IST-Analyse` — if the match is the bare `IST` and
         // the next char is `-` that introduces a non-management compound
         // (e.g. `IST-001` as a CAR id continuation), skip it too.
-        if let Some(m) = DE_ABBREV.find(ln) {
+        if !is_non_en_target && let Some(m) = DE_ABBREV.find(ln) {
             let pre_char = ln[..m.start()].chars().last();
             let post_char = ln[m.end()..].chars().next();
             let glossed = ln[..m.start()]
