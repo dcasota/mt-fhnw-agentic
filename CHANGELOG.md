@@ -5,14 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Documentation gap (2026-06-04 audit):** detailed entries for releases
-> `0.1.18` (AI Norms parity baseline, 4 new gates, 7 figure renderers,
-> 186-style raw-XML port; tag `30a0c8c`), `0.1.19` (AI Norms visual parity
-> PASS, 5 new gates, 8 figspec renderers across Round V; tag `868e9fe`)
-> and `0.1.20` (MasterThesis-Bookkit profile, per-book parity gate routing,
-> Wave-1/2/3 close-out; tag `54676fc`) are not yet backfilled below; refer
-> to the release commits and to `specs/adr/0061-master-thesis-bookkit-parity-gate.md`
-> in the thesis repo for the canonical narrative until this gap is closed.
+> **Documentation gap closed (2026-06-07):** the per-release sections
+> for `0.1.18`, `0.1.19` and `0.1.20` are now backfilled below — see
+> the dedicated entries between `[Unreleased]` and `[0.1.17]`. The
+> backfill is based on the release-commit narrative and the
+> per-zone / per-wave merge commit subjects between the tagged
+> revisions; for the prose detail behind any individual change see
+> the per-commit messages (`git log v0.1.17..v0.1.20`).
 
 ## [Unreleased]
 
@@ -311,6 +310,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the Warn band. Fixture updated to 30 rules (`|delta|=10`, just
   outside Info, inside Warn), comment documents the band arithmetic. Closes
   the all-3-OS CI failure that landed alongside the v0.1.20 release tag.
+
+## [0.1.20] — 2026-06-04
+
+Release commit `54676fc` — **MasterThesis-Bookkit profile + per-book parity
+gate routing + Wave-1/2/3 close-out**. Backfilled 2026-06-07; the prose
+detail behind individual sub-items lives in the per-wave merge commits
+and in `specs/adr/0061-master-thesis-bookkit-parity-gate.md` (thesis
+repo) — this entry captures the release-level intent.
+
+### Added
+
+- **MasterThesis-Bookkit profile + per-book parity gate routing**
+  (ADR-0061). Adds a third gate-matrix profile alongside `thesis-default`
+  and `ai-norms-default`: the cascade now picks a per-book reference docx
+  fixture, routes the `parity` gate against it, and records one
+  `audit_verdicts` row per book per run. The canonical-reference lookup
+  encodes ADR-defined facts in code (`parity::canonical_reference_path`),
+  so the orchestrator does not learn ADRs itself. Wave-1/2/3 close-out
+  cleared the residual visual-parity gaps that had been carried over
+  from Round V.
+- **Cascade-time fixture-absent graceful PASS** for the parity gate
+  (`run_parity_for_book`). When the reference docx is not on disk, the
+  gate emits a single INFO `PARITY_FIXTURE_ABSENT` finding with
+  `parity_pct = 100.0` and still records the per-book run in
+  `audit_verdicts`. Silent skip is avoided — the gap shows up in
+  `agentic audit report` for the next iteration.
+
+### Fixed
+
+- Wave-1/2/3 follow-up patches for the per-book parity routing in the
+  cascade orchestrator (`crates/agentic/src/commands/cascade.rs`).
+
+## [0.1.19] — 2026-06-04
+
+Release commit `868e9fe` — **AI Norms visual parity (PASS), 5 new gates,
+8 figspec renderers across Round V**. Backfilled 2026-06-07; the
+per-zone narrative (zones A, BC, D, E1, E2-icons, F-tables, G2) is in
+the merge commits between v0.1.18..v0.1.19 — this entry summarises the
+release-level intent.
+
+### Added
+
+- **Round V — 8 figspec renderers + 5 new gates** integrated across
+  seven worked-in-parallel zones:
+  - **Zone A (`round-v-zone-a-breaks`)** — `chapter_end_rule` + page-break
+    audit + sentinel rewrite (commit `d1cc3b6`).
+  - **Zone BC (`round-v-zone-bc`)** — `theme_xml` + `body_color` /
+    `hyperlink` / `title` styles + G1 `ICON_PX=330` (commit `5e17ad9`).
+  - **Zone D (`round-v-zone-d`)** — `numbering_xml` + bullet/ordered
+    styling + `keep_lines` / `keep_next` (commit `4fd13c5`).
+  - **Zone E1 (`round-v-zone-e1`)** — `decorations.rs` + `CalloutFlavor`
+    + `apply_callout_chrome` post-process pass (commit `3be68d4`).
+  - **Zone E2-icons (`round-v-zone-e2-icons`)** — `icons.rs` +
+    `IconKind` + embedded PNGs + `rewrite_pic_names` (commit `e0744ce`).
+  - **Zone F-tables (`round-v-zone-f-tables`)** — `table_xml` +
+    `TableKind` enum + 3 `Table::new()` routes + `vAlign` drop
+    (commit `510fa24`).
+  - **Zone G2 (`round-v-zone-g2`)** — `parity_icons.rs` + 6 sub-checks
+    integrated in `parity.rs` (commit `15f3ac5`).
+
+### Fixed
+
+- **CI byte-parity fixture (`theme1_reference.xml`) pinned as binary
+  via `.gitattributes`** (commit `a7d827a`). Without the `binary`
+  attribute, git autocrlf normalised CRLF → LF on Linux/macOS checkouts,
+  causing off-by-one byte-length tests and silent in-zip parity drift.
+  Passed on Windows runners, failed on Linux/macOS. See memory entry
+  `round-v-byte-parity-fixtures-crlf.md` for the pattern.
+
+## [0.1.18] — 2026-06-02
+
+Release commit `30a0c8c` — **AI Norms parity baseline + 4 new gates + 7
+new figure renderers + 186-style raw-XML port**. Backfilled 2026-06-07.
+
+### Added
+
+- **AI Norms parity baseline (PASS).** Establishes a reference docx
+  fixture for the AI-Norms-and-Regulations book and adds the per-book
+  parity gate that compares the rendered output against it across
+  figures (`<w:drawing>` count), captioned tables, style usage (16
+  named styles within ±10 %), and layout (sectPr / header-footer /
+  back-matter order).
+- **4 new cascade gates** — registered in `GATE_CATALOG` and
+  `default_matrix().universal` so every `agentic cascade run` invokes
+  them. (Detail per-gate lives in the release commit message and the
+  per-gate test files; the integration follow-up is the
+  `default_matrix` wiring fix below.)
+- **7 new figure renderers** in `crates/agentic-figures/src/` so the
+  AI-Norms book can render its figspecs without falling back to
+  text placeholders.
+- **186-style raw-XML port.** Migrates the remaining python-renderer
+  style code to native Rust raw-XML emission — closes the
+  `Only use Rust` portion of the Python→Rust migration directive
+  (memory entry `python-to-rust-migration.md`).
+
+### Fixed
+
+- **Cascade gate registration** (commit `b3b3741`). v0.1.18 added 4
+  gates to `GATE_CATALOG` but missed the corresponding
+  `default_matrix().universal` wiring, which broke two invariant
+  tests across all three OS runners. The repair commits both arms +
+  repairs a contradictory `term-rename` test that was asserting a
+  retired phrasing. Memory entry `gate-catalog-default-matrix-drift.md`
+  documents the pattern.
 
 ## [0.1.17] — 2026-05-30
 
