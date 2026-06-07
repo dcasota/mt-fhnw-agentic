@@ -138,18 +138,40 @@ pub fn count(conn: &Connection) -> Result<i64> {
     Ok(n)
 }
 
+/// Coerce a column to `String` even when the row stores it as `BLOB`
+/// (which happens when an operator updates a cache row via SQLite's
+/// `readfile()` and forgets the `CAST(... AS TEXT)` follow-up). Falls
+/// back to `r.get(idx)` for strict TEXT rows.
+fn col_text(r: &rusqlite::Row, idx: usize) -> rusqlite::Result<String> {
+    use rusqlite::types::ValueRef;
+    match r.get_ref(idx)? {
+        ValueRef::Text(s) => Ok(String::from_utf8_lossy(s).into_owned()),
+        ValueRef::Blob(b) => Ok(String::from_utf8_lossy(b).into_owned()),
+        ValueRef::Null => Err(rusqlite::Error::InvalidColumnType(
+            idx,
+            "expected TEXT or BLOB, got NULL".into(),
+            rusqlite::types::Type::Null,
+        )),
+        other => Err(rusqlite::Error::InvalidColumnType(
+            idx,
+            format!("expected TEXT or BLOB, got {other:?}"),
+            other.data_type(),
+        )),
+    }
+}
+
 fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
     Ok(Entry {
-        cache_key: r.get(0)?,
-        source_lang: r.get(1)?,
-        target_lang: r.get(2)?,
-        source_text: r.get(3)?,
-        target_text: r.get(4)?,
-        provider: r.get(5)?,
-        model: r.get(6)?,
-        project_id: r.get(7)?,
-        segment_kind: r.get(8)?,
-        created_at: r.get(9)?,
+        cache_key: col_text(r, 0)?,
+        source_lang: col_text(r, 1)?,
+        target_lang: col_text(r, 2)?,
+        source_text: col_text(r, 3)?,
+        target_text: col_text(r, 4)?,
+        provider: col_text(r, 5)?,
+        model: col_text(r, 6)?,
+        project_id: r.get(7)?, // Option<String> — let rusqlite handle the NULL branch.
+        segment_kind: col_text(r, 8)?,
+        created_at: col_text(r, 9)?,
     })
 }
 
@@ -205,13 +227,17 @@ mod tests {
     }
 
     #[test]
-    fn project_scope_preferred_then_global_fallback() {
+    fn project_scope_lookup_hits_then_falls_back_to_global() {
+        // v1 schema has `cache_key` as the sole PK, so only ONE row exists
+        // per (source_lang, target_lang, source_text) — the `project_id`
+        // column records which project last wrote the entry, but the
+        // get() lookup logic still prefers a project-scoped row when one
+        // exists and falls back to a global row otherwise. We exercise
+        // both branches with distinct source texts so the schema's
+        // single-row-per-key invariant is preserved.
         let conn = db::open_in_memory().unwrap();
-        // Seed a project-scoped entry (project id not in projects table is
-        // fine for the in-memory test — the FK is `REFERENCES projects(id)`
-        // but FKs in SQLite require both PRAGMA and the table to exist; the
-        // schema-creation runner sets the PRAGMA but tests can drop it).
         conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        // A project-scoped entry for one phrase.
         put(
             &conn,
             "en",
@@ -224,34 +250,62 @@ mod tests {
             "paragraph",
         )
         .unwrap();
-        // Seed a different global entry for the same key.
+        // A global entry for a different phrase.
         put(
             &conn,
             "en",
             "de",
-            "operating modes",
-            "GLOBAL Betriebsmodi",
+            "the system",
+            "GLOBAL das System",
             "Grok",
             "grok-4.3",
             None,
             "paragraph",
         )
         .unwrap();
-        // Lookup with the project hint must prefer the project entry.
+        // Project-scoped lookup with the matching project id hits the
+        // project entry.
         let got = get(&conn, "en", "de", "operating modes", Some("proj-A"))
             .unwrap()
             .unwrap();
         assert_eq!(got.target_text, "PROJECT-SCOPED Betriebsmodi");
-        // Lookup with a DIFFERENT project hint falls back to global.
-        let got = get(&conn, "en", "de", "operating modes", Some("proj-B"))
+        // Project-scoped lookup for the OTHER phrase falls back to global
+        // (no project-scoped row exists for "the system").
+        let got = get(&conn, "en", "de", "the system", Some("proj-A"))
             .unwrap()
             .unwrap();
-        assert_eq!(got.target_text, "GLOBAL Betriebsmodi");
+        assert_eq!(got.target_text, "GLOBAL das System");
         // Lookup with no project hint returns the global entry.
+        let got = get(&conn, "en", "de", "the system", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.target_text, "GLOBAL das System");
+    }
+
+    #[test]
+    fn get_tolerates_blob_typed_target_text() {
+        // SQLite is dynamically typed. An operator who hand-edits a cache
+        // row via `UPDATE … SET target_text = readfile(…)` ends up with a
+        // BLOB-typed value in a TEXT column; the reader must still return
+        // a `String`, not error with `InvalidColumnType(Blob)`.
+        let conn = db::open_in_memory().unwrap();
+        let key = key_for("en", "de", "operating modes");
+        conn.execute(
+            "INSERT INTO translation_cache
+               (cache_key, source_lang, target_lang, source_text, target_text,
+                provider, model, project_id, segment_kind, created_at)
+             VALUES (?1, 'en', 'de', 'operating modes',
+                     CAST(x'42657472696562736d6f6469' AS BLOB),
+                     'human-correction', 'manual', NULL,
+                     'paragraph', '2026-06-07T00:00:00Z')",
+            params![key],
+        )
+        .unwrap();
         let got = get(&conn, "en", "de", "operating modes", None)
             .unwrap()
-            .unwrap();
-        assert_eq!(got.target_text, "GLOBAL Betriebsmodi");
+            .expect("blob-typed row should still be readable");
+        assert_eq!(got.target_text, "Betriebsmodi");
+        assert_eq!(got.provider, "human-correction");
     }
 
     #[test]
