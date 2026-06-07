@@ -61,38 +61,56 @@ const CLOUD_TRANSLATE: &[ProviderKind] = &[
     ProviderKind::OpenAi,
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Scope {
     FrontMatter,
     Thesis,
     Corpus,
+    /// ADR-0062 Phase A — translate exactly one figspec's user-facing text
+    /// fields (caption, title, label / node / edge / cell strings inside
+    /// `data`). The figspec is located by `id` across the corpus. Output
+    /// is written as a sidecar JSON blob, not as a `_<LANG>.md` rewrite.
+    Figure {
+        id: String,
+    },
 }
 
 impl Scope {
-    fn parse(s: &str) -> Result<Self> {
+    fn parse(s: &str, figspec_id: Option<&str>) -> Result<Self> {
         match s {
             "front-matter" | "frontmatter" | "fm" => Ok(Scope::FrontMatter),
             "thesis" => Ok(Scope::Thesis),
             "corpus" => Ok(Scope::Corpus),
+            "figure" => match figspec_id {
+                Some(id) if !id.is_empty() => Ok(Scope::Figure { id: id.to_string() }),
+                _ => {
+                    anyhow::bail!("scope 'figure' requires --id <figspec_id> (e.g. --id fig08_03)")
+                }
+            },
             other => {
-                anyhow::bail!("unknown scope '{other}'; valid: front-matter | thesis | corpus")
+                anyhow::bail!(
+                    "unknown scope '{other}'; valid: front-matter | thesis | corpus | figure"
+                )
             }
         }
     }
 
-    fn prefixes(self) -> &'static [&'static str] {
+    fn prefixes(&self) -> &'static [&'static str] {
         match self {
             Scope::FrontMatter => &["out/sources/frontmatter/", "thesis/fhnw_00_"],
             Scope::Thesis => &["thesis/"],
             Scope::Corpus => &["thesis/", "out/sources/"],
+            // Figure scope walks the corpus to find the matching id.
+            Scope::Figure { .. } => &["thesis/", "out/sources/"],
         }
     }
 
-    fn slug(self) -> &'static str {
+    fn slug(&self) -> String {
         match self {
-            Scope::FrontMatter => "front-matter",
-            Scope::Thesis => "thesis",
-            Scope::Corpus => "corpus",
+            Scope::FrontMatter => "front-matter".to_string(),
+            Scope::Thesis => "thesis".to_string(),
+            Scope::Corpus => "corpus".to_string(),
+            Scope::Figure { id } => format!("figure:{id}"),
         }
     }
 }
@@ -101,7 +119,7 @@ impl Scope {
 fn enumerate_scope(
     conn: &rusqlite::Connection,
     project: &str,
-    scope: Scope,
+    scope: &Scope,
 ) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     let all = agentic_core::worktree::list(conn, project, "")?;
@@ -120,6 +138,68 @@ fn enumerate_scope(
     }
     out.sort();
     Ok(out)
+}
+
+/// Find the figspec block whose `id` field equals `target_id` across the
+/// corpus and return (containing-path, figspec-JSON-body). Searches every
+/// `.md` source the corpus scope enumerates. Returns `None` if no figspec
+/// with that id is found.
+fn find_figspec_by_id(
+    conn: &rusqlite::Connection,
+    project: &str,
+    target_id: &str,
+) -> Result<Option<(String, String)>> {
+    let scope = Scope::Corpus;
+    for path in enumerate_scope(conn, project, &scope)? {
+        let Ok(blob) = agentic_core::worktree::read_at(conn, project, &path) else {
+            continue;
+        };
+        let md = String::from_utf8_lossy(&blob.content);
+        // Walk every ```figspec block in this file; mirrors the
+        // single-line-dump-safe parser the renderer uses.
+        let mut rest = md.as_ref();
+        const OPENER: &str = "```figspec";
+        while let Some(start) = rest.find(OPENER) {
+            let after = &rest[start..];
+            let mut body_start = OPENER.len();
+            if after[body_start..].starts_with('\n') {
+                body_start += 1;
+            }
+            let Some(end_rel) = after[body_start..].find("```") else {
+                break;
+            };
+            let json = &after[body_start..body_start + end_rel];
+            // Best-effort id extraction — accept the figspec if its
+            // `"id"` field (string-quoted) equals target_id.
+            if json_id_matches(json, target_id) {
+                return Ok(Some((path.clone(), json.trim().to_string())));
+            }
+            let consumed = body_start + end_rel + 3;
+            rest = &after[consumed..];
+        }
+    }
+    Ok(None)
+}
+
+/// Test whether a figspec JSON body's TOP-LEVEL `"id"` field equals
+/// `target_id`. Only the first `"id"` occurrence is checked — figspecs
+/// don't nest figspecs, and a `data.id` (e.g. when a sub-object happens
+/// to use the same key) must not collide with our outer-id search.
+/// Lightweight scan rather than a full parse so we survive minor
+/// whitespace and key-order variation.
+fn json_id_matches(json: &str, target_id: &str) -> bool {
+    let Some(idx) = json.find("\"id\"") else {
+        return false;
+    };
+    let after = &json[idx + 4..];
+    let trimmed = after.trim_start_matches(|c: char| c.is_whitespace() || c == ':');
+    let Some(stripped) = trimmed.strip_prefix('"') else {
+        return false;
+    };
+    let Some(close) = stripped.find('"') else {
+        return false;
+    };
+    &stripped[..close] == target_id
 }
 
 /// Returns true when `path` looks like an English-source markdown (i.e.
@@ -176,6 +256,48 @@ fn language_label(target: &str) -> &'static str {
     }
 }
 
+/// Build the figure-scope system prompt — used for `Scope::Figure { id }`.
+/// The user-facing text fields of a figspec (caption, title, label /
+/// node / edge / cell strings inside `data`) get translated; the
+/// structural keys (id, type, palette, data shape) MUST be preserved
+/// byte-for-byte so the renderer round-trip stays deterministic.
+#[must_use]
+fn figure_system_prompt(target: &str) -> String {
+    let label = language_label(target);
+    format!(
+        "You are a precise technical translator working on a figure inside a master-thesis \
+         manuscript. You will receive a JSON object that describes one figure (a `figspec`). \
+         Translate ONLY the user-facing text fields to {label}; preserve every structural \
+         key and value byte-for-byte.\n\
+         \n\
+         Translate these fields (when present): `caption`, `title`, every string inside \
+         `data.labels`, every string inside `data.rows`, every string inside `data.cols`, \
+         every string inside `data.nodes`, every string inside `data.cells` (when the \
+         cell is a free-text string rather than a status code like `OK` / `block` / `review`), \
+         the third element of every entry in `data.edges` (the edge-label text), and any \
+         `xlabel` / `ylabel` field.\n\
+         \n\
+         Do NOT translate:\n\
+         1. JSON keys (`id`, `type`, `palette`, `data`, `nodes`, `edges`, etc.) — keep them \
+         exactly as given.\n\
+         2. The `id` value, the `type` value, the `palette` value.\n\
+         3. Numeric values, booleans, hex colour codes, status codes (`OK`, `block`, `review`, \
+         `L0`–`L4`, `HITL`).\n\
+         4. Identifier strings: ADR-XXXX, CAR-XX-XXX, FRD-CXX, CWE-XXX, CVE-XXXX-XXXXX, \
+         CVSS, NIST IR XXXX, CNSA, ISO/IEC NNNNN, ML-DSA-87, ML-KEM-512, SLH-DSA, FIPS 203, \
+         filenames, file paths, URLs.\n\
+         5. Markdown emphasis markers (`**`, `_`) — preserve them in-place.\n\
+         \n\
+         Output requirements:\n\
+         - Return ONLY the modified JSON object, no preamble, no postscript, no markdown \
+         fences around it.\n\
+         - The JSON must be a single valid object that re-parses with the same structure as \
+         the input (same keys at every level, same array lengths).\n\
+         - The output must be SOLELY in {label} for the translated fields; mixing English \
+         fragments other than the preserved-verbatim items above is a hard error."
+    )
+}
+
 /// Build the system prompt for one translation call. Stresses the
 /// non-negotiable invariants: keep code / figspec / table fences VERBATIM,
 /// keep filenames and identifier strings untranslated, target-language
@@ -212,6 +334,45 @@ fn system_prompt(target: &str) -> String {
 /// Send the prompt to the configured provider and return the translated
 /// content. Bounds: the source markdown is sent in full (no chunking yet);
 /// the model is responsible for the same-paragraph-count invariant.
+async fn translate_figure_one(
+    prov: &dyn agentic_providers::traits::Provider,
+    model: &str,
+    target: &str,
+    figspec_json: &str,
+) -> Result<String> {
+    let req = ChatRequest {
+        model: model.to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: figspec_json.to_string(),
+        }],
+        temperature: Some(0.0),
+        max_tokens: Some(4096),
+        seed: None,
+        system: Some(figure_system_prompt(target)),
+    };
+    let resp = prov
+        .chat(&req)
+        .await
+        .map_err(|e| anyhow!("provider chat failed: {e}"))?;
+    let trimmed = resp.content.trim().to_string();
+    if trimmed.is_empty() {
+        anyhow::bail!("provider returned empty translation");
+    }
+    // Light validation: the response must be a JSON object that parses.
+    // The provider sometimes prepends ```json fences despite the system
+    // prompt — strip them.
+    let cleaned = trimmed
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+        .to_string();
+    serde_json::from_str::<serde_json::Value>(&cleaned)
+        .with_context(|| format!("figure translation did not parse as JSON: {cleaned}"))?;
+    Ok(cleaned)
+}
+
 async fn translate_one(
     prov: &dyn agentic_providers::traits::Provider,
     model: &str,
@@ -245,6 +406,7 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         project,
         target,
         scope,
+        id,
         provider,
         dry_run,
     } = action;
@@ -254,12 +416,55 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
             ALLOWED_TARGETS.join(", ")
         );
     }
-    let scope_enum = Scope::parse(&scope)?;
+    let scope_enum = Scope::parse(&scope, id.as_deref())?;
     let conn = agentic_core::db::open(db_path).context("open db")?;
-    let paths = enumerate_scope(&conn, &project, scope_enum)?;
+    let paths = enumerate_scope(&conn, &project, &scope_enum)?;
     let provider_label = provider.as_deref().unwrap_or("(first configured cloud)");
 
     if dry_run {
+        // Figure scope: locate the figspec by id (no LLM call) and report
+        // the resolved (source-path, sidecar-target) pair so the operator
+        // sees exactly what would happen.
+        if let Scope::Figure { id } = &scope_enum {
+            let located = find_figspec_by_id(&conn, &project, id)?;
+            let sidecar = format!("out/figures/{id}_{target}.json");
+            if json_out {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "dry_run": true,
+                        "target": target,
+                        "scope": scope_enum.slug(),
+                        "id": id,
+                        "located": located.is_some(),
+                        "source_path": located.as_ref().map(|(p, _)| p.clone()),
+                        "sidecar_path": sidecar,
+                        "provider": provider_label,
+                        "would_authorise": false,
+                    })
+                );
+            } else {
+                println!(
+                    "[dry-run] target={target} scope={} provider={}",
+                    scope_enum.slug(),
+                    provider_label
+                );
+                match &located {
+                    Some((src, _)) => {
+                        println!("[dry-run] figspec id={id} located in {src}");
+                        println!("[dry-run] would write sidecar to {sidecar}");
+                    }
+                    None => {
+                        println!("[dry-run] figspec id={id} NOT FOUND in the corpus");
+                    }
+                }
+                println!(
+                    "[dry-run] No LLM calls made, no blobs written. To run for real, first \
+                     `agentic authorize grant --project {project} --action translate --rationale '<why>'`."
+                );
+            }
+            return Ok(());
+        }
         if json_out {
             println!(
                 "{}",
@@ -326,6 +531,53 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         other => format!("{other:?}").to_lowercase(),
     };
     let prov = registry::build(kind).map_err(|e| anyhow!("provider build failed: {e}"))?;
+
+    // ADR-0062 Phase A — per-figure scope. Locate the figspec by `id`,
+    // translate its user-facing text fields with the figure-aware
+    // system prompt, and write a sidecar JSON blob.
+    if let Scope::Figure { id } = &scope_enum {
+        let Some((source_path, figspec_json)) = find_figspec_by_id(&conn, &project, id)? else {
+            anyhow::bail!("no figspec with id='{id}' found in the corpus");
+        };
+        println!("translate-figure: id={id} located in {source_path}; calling {kind:?} ({model})");
+        let translated_json =
+            translate_figure_one(prov.as_ref(), &model, &target, &figspec_json).await?;
+        let sidecar_path = format!("out/figures/{id}_{target}.json");
+        let commit_msg = format!(
+            "translate-figure: {id} (from {source_path}) → {sidecar_path} \
+             (target={target}, model={model})"
+        );
+        let sha = agentic_core::worktree::put_at(
+            &conn,
+            &project,
+            &sidecar_path,
+            translated_json.as_bytes(),
+            "application/json",
+            Some(&target),
+            "agentic-translate",
+            &commit_msg,
+        )?;
+        println!(
+            "  ✓ figure id={id} translated to {target} ({} bytes) → {sidecar_path} (commit {})",
+            translated_json.len(),
+            &sha[..12.min(sha.len())]
+        );
+        if json_out {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "scope": scope_enum.slug(),
+                    "id": id,
+                    "target": target,
+                    "source_path": source_path,
+                    "sidecar_path": sidecar_path,
+                    "bytes_written": translated_json.len(),
+                    "commit": sha,
+                })
+            );
+        }
+        return Ok(());
+    }
 
     println!(
         "translate target={target} scope={scope} provider={kind:?} model={model} \
@@ -439,12 +691,49 @@ mod tests {
 
     #[test]
     fn scope_parses_aliases() {
-        assert_eq!(Scope::parse("front-matter").unwrap(), Scope::FrontMatter);
-        assert_eq!(Scope::parse("frontmatter").unwrap(), Scope::FrontMatter);
-        assert_eq!(Scope::parse("fm").unwrap(), Scope::FrontMatter);
-        assert_eq!(Scope::parse("thesis").unwrap(), Scope::Thesis);
-        assert_eq!(Scope::parse("corpus").unwrap(), Scope::Corpus);
-        assert!(Scope::parse("bogus").is_err());
+        assert_eq!(
+            Scope::parse("front-matter", None).unwrap(),
+            Scope::FrontMatter
+        );
+        assert_eq!(
+            Scope::parse("frontmatter", None).unwrap(),
+            Scope::FrontMatter
+        );
+        assert_eq!(Scope::parse("fm", None).unwrap(), Scope::FrontMatter);
+        assert_eq!(Scope::parse("thesis", None).unwrap(), Scope::Thesis);
+        assert_eq!(Scope::parse("corpus", None).unwrap(), Scope::Corpus);
+        assert!(Scope::parse("bogus", None).is_err());
+        // `figure` without --id fails fast.
+        assert!(Scope::parse("figure", None).is_err());
+        assert!(Scope::parse("figure", Some("")).is_err());
+        // `figure` with an id resolves to Figure { id }.
+        assert_eq!(
+            Scope::parse("figure", Some("fig08_03")).unwrap(),
+            Scope::Figure {
+                id: "fig08_03".into()
+            }
+        );
+    }
+
+    #[test]
+    fn json_id_match_handles_realistic_figspec() {
+        let body = r#"{"id":"fig08_03","type":"bar","title":"x","caption":"c","data":{"labels":["Low"],"values":[22]}}"#;
+        assert!(json_id_matches(body, "fig08_03"));
+        assert!(!json_id_matches(body, "fig08_04"));
+        // Spaces around the colon and other ids in the body do not confuse
+        // the matcher.
+        let spaced = r#"{ "id"  :  "fig09_01" , "type":"flow", "data":{"id":"ignored"} }"#;
+        assert!(json_id_matches(spaced, "fig09_01"));
+        assert!(!json_id_matches(spaced, "ignored"));
+    }
+
+    #[test]
+    fn figure_system_prompt_locks_invariants() {
+        let p = figure_system_prompt("de");
+        assert!(p.contains("German (Deutsch)"));
+        assert!(p.contains("preserve every structural")); // structural keys preserved
+        assert!(p.contains("ADR-XXXX")); // identifier invariant
+        assert!(p.contains("ONLY the modified JSON")); // output format
     }
 
     #[test]

@@ -542,9 +542,17 @@ pub enum TranslateAction {
         /// Target language tag (de, fr, it, rm, hi).
         #[arg(long)]
         target: String,
-        /// Scope: `front-matter` (smallest), `thesis`, or `corpus`.
+        /// Scope: `front-matter` (smallest), `thesis`, `corpus`, or `figure`.
+        /// When `figure`, supply `--id <figspec_id>` to name one specific
+        /// figspec; the figure's user-facing text fields (caption / title /
+        /// labels / nodes / edge labels) are translated and written to a
+        /// sidecar JSON blob under `out/figures/<id>_<lang>.json`.
         #[arg(long, default_value = "front-matter")]
         scope: String,
+        /// Figspec id to scope to when `--scope figure` is set
+        /// (e.g. `fig08_03`, `fig09_01`). Ignored for other scopes.
+        #[arg(long)]
+        id: Option<String>,
         /// Provider to use; default = first configured cloud provider.
         #[arg(long)]
         provider: Option<String>,
