@@ -40,6 +40,10 @@ pub mod regulation_timeline_panel_a;
 /// Panel B renderer (hot-spots: same regulatory goal, mismatched
 /// country timelines). Port of the python kit's `render_panel_B`.
 pub mod regulation_timeline_panel_b;
+/// Panel C renderer (per-regulation conflict-involved Gantt with
+/// meta-methodology columns + conflict markers). Port of the
+/// python kit's `render_panel_C` + `_render_detail`.
+pub mod regulation_timeline_panel_c;
 
 // Wong colour-blind-safe palette (matches render_figspec).
 pub(crate) const NAVY: RGBColor = RGBColor(0x1F, 0x49, 0x7D);
