@@ -12,6 +12,7 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // Wave 1 figspec types (image-embed, sankey, wheel, tier-matrix,
@@ -191,6 +192,36 @@ pub(crate) fn fig_seed(s: &str) -> u64 {
 }
 
 // ---- public API ----
+
+/// Page-orientation hint for a single figspec (readability brief
+/// 2026-06-13). When `Landscape`, the docx renderer is expected to wrap
+/// the figure paragraph with `<w:sectPr>` blocks that flip the page to
+/// landscape and then back to portrait, so an oversized figure can
+/// breathe on its own page instead of forcing a body-cap. Optional /
+/// defaults to `Portrait`; only the renderer in [`crate::resolve_markdown`]
+/// and downstream docx export consume the value — the PNG rasterisation
+/// itself is layout-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Layout {
+    #[default]
+    Portrait,
+    Landscape,
+}
+
+impl Layout {
+    /// Parse the layout from the optional `"layout"` JSON field on a
+    /// figspec object. Accepts `"landscape"` / `"portrait"` (case-
+    /// insensitive); any unknown / missing / non-string value falls
+    /// back to `Portrait`.
+    fn from_value(v: Option<&Value>) -> Self {
+        match v.and_then(Value::as_str).map(str::to_ascii_lowercase) {
+            Some(ref s) if s == "landscape" => Self::Landscape,
+            _ => Self::Portrait,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FigSpec {
     pub id: String,
@@ -198,6 +229,19 @@ pub struct FigSpec {
     pub title: String,
     pub caption: String,
     pub data: Value,
+    /// Optional page-orientation hint (readability brief 2026-06-13).
+    /// Defaults to `Portrait`; only consumed by [`resolve_markdown`] +
+    /// the docx export when set to `Landscape`.
+    pub layout: Layout,
+}
+
+impl FigSpec {
+    /// Page-orientation hint parsed from the figspec's optional
+    /// `"layout"` field (`"landscape"` | `"portrait"`; defaults to
+    /// `Portrait`).
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
 }
 
 pub fn parse(spec_json: &str) -> Result<FigSpec> {
@@ -224,6 +268,7 @@ pub fn parse(spec_json: &str) -> Result<FigSpec> {
             .unwrap_or("")
             .to_string(),
         data: v.get("data").cloned().unwrap_or(Value::Null),
+        layout: Layout::from_value(v.get("layout")),
     })
 }
 
@@ -311,11 +356,23 @@ pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(Stri
             // deliverable must never lose a figspec without a trace (non-repudiation).
             render_figspec(json, &png)
                 .map_err(|e| anyhow!("rendering figspec '{}': {e}", spec.id))?;
+            // Readability brief 2026-06-13: when the figspec opts into
+            // landscape, append a `#landscape` URL fragment to the image
+            // ref. The docx renderer detects + strips the fragment in the
+            // `DocxBlock::Image` arm and wraps the figure paragraph with
+            // portrait→landscape→portrait section breaks. The fragment is
+            // never part of the on-disk path; the markdown parser
+            // preserves it verbatim through `dest_url`.
+            let suffix = match spec.layout {
+                Layout::Landscape => "#landscape",
+                Layout::Portrait => "",
+            };
             out.push_str(&format!(
-                "![{}](figures/{}/{}.png)",
+                "![{}](figures/{}/{}.png{})",
                 spec.caption.replace(['[', ']'], ""),
                 subdir,
-                spec.id
+                spec.id,
+                suffix,
             ));
             n += 1;
         }
@@ -578,10 +635,12 @@ fn render_line(spec: &FigSpec, path: &Path) -> Result<()> {
     for k in 0..=nt {
         let yv = mt + ph - ((f64::from(k) * step / tmax) * f64::from(ph)) as i32;
         line(&root, vec![(ml, yv), (ml + pw, yv)], &GRID, 1)?;
+        // y-axis tick numbers: +4pt (11 → 15) — matches `render_bar` ticks
+        // (readability brief 2026-06-13; figure-audit ≥7pt floor).
         text(
             &root,
             &fmt_num(f64::from(k) * step),
-            &font_c(11, &GREY).pos(Pos::new(HPos::Right, VPos::Center)),
+            &font_c(15, &GREY).pos(Pos::new(HPos::Right, VPos::Center)),
             ml - 8,
             yv,
         )?;
@@ -910,15 +969,37 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
     let max_rows = cols.iter().map(Vec::len).max().unwrap_or(1).max(1) as i32;
 
     // Box width / wrap budget scaled to the longest node label so multi-line
-    // wrapping stays inside the box and doesn't truncate mid-word at the
-    // hard `take(3)` cap. ~7 px per character at the 13-pt box-label size.
-    let max_label_chars = nodes.iter().map(|s| s.len()).max().unwrap_or(0);
-    let wrap_chars = max_label_chars.div_ceil(4).clamp(22, 36) as usize;
+    // wrapping stays inside the box. ~7 px per character at the 13-pt
+    // box-label size.
+    let max_label_chars = nodes.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+    let wrap_chars = max_label_chars.div_ceil(4).clamp(22, 36);
     let approx_text_w = wrap_chars as i32 * 7 + 16;
-    let box_w = approx_text_w.clamp(190, 260);
-    // Tall enough for 4 wrapped lines instead of the previous 3-line cap.
-    let box_h = 92i32;
-    let col_gap = 110i32;
+    let box_w = approx_text_w.clamp(190, 280);
+    // #408 (2026-06-08): box_h grows to the actual wrapped line count so
+    // long labels are no longer silently dropped by the prior `take(4)`
+    // cap. 17 px per line + 28 px padding (14 top + 14 bottom);
+    // baseline ≥ 92 px so simple flows stay visually identical.
+    const BOX_LINE_H: i32 = 17;
+    let box_max_lines = nodes
+        .iter()
+        .map(|s| wrap(s, wrap_chars).len())
+        .max()
+        .unwrap_or(1);
+    let box_h = (box_max_lines as i32 * BOX_LINE_H + 28).max(92);
+    // #408 (2026-06-08): col_gap scales to the longest edge label so the
+    // edge text fits in ≤2 lines at the natural per-line budget instead
+    // of being truncated with "…". `target_per_line` chars per line at
+    // ~6 px/char + 16 px padding, then clamped so the canvas stays
+    // reasonable (baseline 110 keeps tiny flows compact, ceiling 220
+    // bounds the widest canvas).
+    let max_edge_chars = edges
+        .iter()
+        .map(|(_, _, l)| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let target_per_line = max_edge_chars.div_ceil(2).max(20);
+    let needed_gap = target_per_line as i32 * 6 + 16;
+    let col_gap = needed_gap.clamp(110, 220);
     let row_gap = 38i32;
     let (mx, my) = (32i32, 70i32);
     let w = mx * 2 + nlayers as i32 * box_w + (nlayers as i32 - 1) * col_gap;
@@ -951,30 +1032,23 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
         line(&root, vec![(midx, sy), (midx, dy)], &GRID, 2)?;
         arrow(&root, (midx, dy), (dx, dy), &WONG[0])?;
         if !lbl.is_empty() {
-            // Edge labels are rendered at 13 pt (was 12; +1.0 pt per
-            // fig07_01 readability feedback 2026-06-07) and wrap to TWO
-            // LINES inside the column gap instead of truncating with an
-            // ellipsis. `gap_chars` budgets ~6 px per char at 13 pt minus
-            // 16 px padding; we then halve it so a two-line wrap fits the
-            // same gap.
+            // Edge labels: 13 pt, full gap width per line (was halved →
+            // forced "…" truncation on every long label). The outer
+            // `col_gap` already widened above to fit max_edge_chars in
+            // ≤2 lines, so `per_line = gap_chars` and EDGE_MAX_LINES = 3
+            // together mean the renderer never has to truncate — even
+            // pathological 60+ char labels get 3 honest lines instead of
+            // 1.5 lines + ellipsis.
+            // #408 (2026-06-08): replaces the prior 2-line cap +
+            // ellipsis suffix that produced labels like "names build
+            // si…" and "QBOM / CBOM make…" in figs 1 / 3 / 4.
             const EDGE_FONT_PT: i32 = 13;
-            const EDGE_LINE_H: i32 = 14; // line height at 13 pt
-            const EDGE_MAX_LINES: usize = 2;
+            const EDGE_LINE_H: i32 = 14;
+            const EDGE_MAX_LINES: usize = 3;
             let gap_chars = ((col_gap - 16) / 6).max(8) as usize;
-            let per_line = (gap_chars / 2).max(10);
-            // Wrap, then take at most EDGE_MAX_LINES. If the source label
-            // truly exceeds the two-line budget, the LAST line is suffixed
-            // with `…` so the truncation is still visible to the reader.
+            let per_line = gap_chars;
             let mut lines = wrap(lbl, per_line);
-            let truncated = lines.len() > EDGE_MAX_LINES;
             lines.truncate(EDGE_MAX_LINES);
-            if truncated {
-                if let Some(last) = lines.last_mut() {
-                    let cap = per_line.saturating_sub(1);
-                    let prefix: String = last.chars().take(cap).collect();
-                    *last = format!("{prefix}…");
-                }
-            }
             let line_count = lines.len() as i32;
             // Vertical centre of the label stack on the elbow's vertical
             // leg, then bias 2 px up so the stack sits clear of the
@@ -1021,10 +1095,12 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
             &RGBColor(0xEE, 0xF2, 0xF8),
         )?;
         stroke_rect(&root, x0, y0, x0 + box_w, y0 + box_h, &NAVY, 2)?;
+        // #408 (2026-06-08): no `take(4)` cap — box_h was sized above to
+        // fit `box_max_lines` exactly, so every line renders inside the
+        // box without silent loss.
         let lines = wrap(label, wrap_chars);
-        let max_lines = 4usize;
-        let total = lines.len().min(max_lines) as i32;
-        for (li, ln) in lines.iter().take(max_lines).enumerate() {
+        let total = lines.len() as i32;
+        for (li, ln) in lines.iter().enumerate() {
             let cy = y0 + box_h / 2 - (total - 1) * 9 + li as i32 * 17;
             text(&root, ln, &centered(font(13)), x0 + box_w / 2, cy)?;
         }
@@ -2100,6 +2176,58 @@ mod tests {
         assert!(resolved2.contains("![cap](figures/resolvetest/c.png)"));
     }
 
+    /// #408 (2026-06-08): the flow renderer used to halve `per_line`
+    /// for edge labels, which forced long labels (47-char "QBOM / CBOM
+    /// make the crypto inventory auditable", 36-char "verifiable by
+    /// the customer's auditor", etc.) through a 2-line cap that
+    /// triggered "…" truncation. The widened wrap budget here renders
+    /// a synthetic flow with one long edge label and asserts the PNG
+    /// is larger than the canvas at the prior baseline col_gap of 110
+    /// — proof the adaptive col_gap actually fired.
+    #[test]
+    fn flow_widens_canvas_for_long_edge_labels() {
+        let dir = std::env::temp_dir().join("agentic_flow_widen_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p_short = dir.join("flow_short.png");
+        let p_long = dir.join("flow_long.png");
+        // Identical nodes; edge label length is the only difference.
+        let short_spec = r#"{"id":"fs","type":"flow","title":"T","caption":"c","data":{"nodes":["A","B"],"edges":[["A","B","ok"]]}}"#;
+        let long_spec = r#"{"id":"fl","type":"flow","title":"T","caption":"c","data":{"nodes":["A","B"],"edges":[["A","B","QBOM / CBOM make the crypto inventory auditable across all build stages"]]}}"#;
+        render_figspec(short_spec, &p_short).unwrap();
+        render_figspec(long_spec, &p_long).unwrap();
+        let len_short = std::fs::metadata(&p_short).unwrap().len();
+        let len_long = std::fs::metadata(&p_long).unwrap().len();
+        // The long-label PNG must be larger (wider canvas → more
+        // pixels). If it isn't, the adaptive col_gap regressed.
+        assert!(
+            len_long > len_short,
+            "long-label PNG ({len_long} B) should exceed short-label PNG ({len_short} B); adaptive col_gap regressed"
+        );
+    }
+
+    /// #408 (2026-06-08): boxes used to silently drop wrapped lines
+    /// past the hard `take(4)` cap. With a long node label that wraps
+    /// to 5+ lines, the PNG should now grow vertically to fit them
+    /// rather than truncate.
+    #[test]
+    fn flow_grows_box_height_for_long_node_labels() {
+        let dir = std::env::temp_dir().join("agentic_flow_grow_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p_short = dir.join("flow_box_short.png");
+        let p_long = dir.join("flow_box_long.png");
+        let short_spec = r#"{"id":"bs","type":"flow","title":"T","caption":"c","data":{"nodes":["A","B"],"edges":[["A","B","x"]]}}"#;
+        // 5-line worth of label content at the 22-36 char wrap budget.
+        let long_spec = r#"{"id":"bl","type":"flow","title":"T","caption":"c","data":{"nodes":["Multi-jurisdictional obligation set across CRA DORA AI Act EO 14028 FADP CERT-In PCI DSS aggregator with even more text to push it past four lines","B"],"edges":[["Multi-jurisdictional obligation set across CRA DORA AI Act EO 14028 FADP CERT-In PCI DSS aggregator with even more text to push it past four lines","B","x"]]}}"#;
+        render_figspec(short_spec, &p_short).unwrap();
+        render_figspec(long_spec, &p_long).unwrap();
+        let len_long = std::fs::metadata(&p_long).unwrap().len();
+        let len_short = std::fs::metadata(&p_short).unwrap().len();
+        assert!(
+            len_long > len_short,
+            "long-box-label PNG ({len_long} B) should exceed short ({len_short} B); box_h did not grow"
+        );
+    }
+
     #[test]
     fn renders_bar_png() {
         let dir = std::env::temp_dir().join("agentic_fig_test");
@@ -2200,6 +2328,101 @@ mod tests {
             "body row 2: {out}"
         );
         assert!(out.contains("Lead-in.") && out.contains("Trailer."));
+    }
+
+    /// Readability brief 2026-06-13: `Layout` parses the optional
+    /// top-level `"layout"` figspec field. Missing / unknown / wrong type
+    /// → Portrait; `"landscape"` (case-insensitive) → Landscape. The
+    /// accessor `FigSpec::layout()` exposes it.
+    #[test]
+    fn layout_field_parses_from_figspec_json() {
+        // Missing field → Portrait (default).
+        let spec = parse(
+            r#"{"id":"lp1","type":"bar","title":"T","caption":"c","data":{"labels":["a"],"values":[1]}}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.layout(), Layout::Portrait);
+
+        // Explicit "portrait" → Portrait.
+        let spec = parse(
+            r#"{"id":"lp2","type":"bar","title":"T","caption":"c","layout":"portrait","data":{"labels":["a"],"values":[1]}}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.layout(), Layout::Portrait);
+
+        // "landscape" → Landscape.
+        let spec = parse(
+            r#"{"id":"ll1","type":"bar","title":"T","caption":"c","layout":"landscape","data":{"labels":["a"],"values":[1]}}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.layout(), Layout::Landscape);
+
+        // Case-insensitive accept.
+        let spec = parse(
+            r#"{"id":"ll2","type":"bar","title":"T","caption":"c","layout":"LANDSCAPE","data":{"labels":["a"],"values":[1]}}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.layout(), Layout::Landscape);
+
+        // Unknown / non-string → Portrait.
+        let spec = parse(
+            r#"{"id":"lu1","type":"bar","title":"T","caption":"c","layout":"oblique","data":{"labels":["a"],"values":[1]}}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.layout(), Layout::Portrait);
+        let spec = parse(
+            r#"{"id":"lu2","type":"bar","title":"T","caption":"c","layout":42,"data":{"labels":["a"],"values":[1]}}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.layout(), Layout::Portrait);
+    }
+
+    /// Landscape figspecs round-trip through `resolve_markdown` as image
+    /// references whose URL carries a `#landscape` fragment — the docx
+    /// renderer reads that fragment to know it should wrap the figure
+    /// with section breaks. Portrait figspecs keep the historical
+    /// no-fragment image ref.
+    #[test]
+    fn resolve_markdown_appends_landscape_fragment() {
+        let dir = std::env::temp_dir().join("agentic_fig_landscape_md");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Portrait figspec: no fragment.
+        let md_portrait = "x\n\n```figspec\n{\"id\":\"lp\",\"type\":\"bar\",\"title\":\"T\",\"caption\":\"cap\",\"data\":{\"labels\":[\"a\"],\"values\":[1]}}\n```\n";
+        let (out, _n) = resolve_markdown(md_portrait, &dir, "lsub").unwrap();
+        assert!(
+            out.contains("![cap](figures/lsub/lp.png)"),
+            "portrait figspec must emit a bare image ref (no fragment): {out}"
+        );
+        assert!(
+            !out.contains("#landscape"),
+            "portrait figspec must NOT carry a landscape fragment: {out}"
+        );
+        // Landscape figspec: `#landscape` fragment present.
+        let md_landscape = "x\n\n```figspec\n{\"id\":\"ll\",\"type\":\"bar\",\"title\":\"T\",\"caption\":\"cap\",\"layout\":\"landscape\",\"data\":{\"labels\":[\"a\"],\"values\":[1]}}\n```\n";
+        let (out, _n) = resolve_markdown(md_landscape, &dir, "lsub").unwrap();
+        assert!(
+            out.contains("![cap](figures/lsub/ll.png#landscape)"),
+            "landscape figspec must emit a #landscape URL fragment: {out}"
+        );
+    }
+
+    /// Readability brief 2026-06-13: `render_line` y-tick labels were 11pt
+    /// (below the ≥7pt floor with too little headroom). Bumped to 15pt to
+    /// match `render_bar`. Smoke-tests that the line renderer still
+    /// produces a non-trivial PNG after the bump.
+    #[test]
+    fn line_y_tick_font_bump_smoke() {
+        let dir = std::env::temp_dir().join("agentic_fig_line_fontbump");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("line_fontbump.png");
+        let spec = r#"{"id":"ln1","type":"line","title":"Trend","caption":"cap","data":{"labels":["2020","2021","2022","2023","2024","2025"],"values":[12,18,25,33,40,52]}}"#;
+        render_figspec(spec, &out).unwrap();
+        let meta = std::fs::metadata(&out).unwrap();
+        assert!(
+            meta.len() > 1500,
+            "line png at bumped y-tick font should be ≥1.5 KB: got {}",
+            meta.len()
+        );
     }
 
     /// Cells containing literal `|` characters must be escaped so the

@@ -5020,9 +5020,24 @@ fn render_block(
             }
         }
         DocxBlock::Image { path, caption } => {
+            // Readability brief 2026-06-13: a figspec with `layout:
+            // "landscape"` resolves through `agentic_figures::resolve_markdown`
+            // to `![cap](figures/sub/id.png#landscape)`. The URL fragment
+            // is preserved by `pulldown_cmark` into `dest_url` but is NOT
+            // part of the on-disk path — strip it before opening the file,
+            // and remember the flag so we can wrap the figure paragraph
+            // with portrait→landscape→portrait section breaks.
+            let (path_clean, is_landscape) = match path.split_once('#') {
+                Some((p, frag)) => (p, frag.eq_ignore_ascii_case("landscape")),
+                None => (path.as_str(), false),
+            };
             let full = ctx
                 .figdir
-                .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+                .join(path_clean.replace('/', std::path::MAIN_SEPARATOR_STR));
+            // Shadow `path` with the cleaned string for the size-manifest
+            // lookup + figure-class discriminator below; the manifest is
+            // keyed on the on-disk path (no fragments).
+            let path: &str = path_clean;
             if let Ok(bytes) = std::fs::read(&full) {
                 ctx.figno += 1;
                 // Round V iter-9 (drawing_class_bucket parity, 2026-06-03):
@@ -5068,6 +5083,20 @@ fn render_block(
                 };
                 let (w_emu, h_emu) = image_dims_to_emu(&bytes, width_in_override);
                 let pic = Pic::new(&bytes).size(w_emu, h_emu);
+                // Readability brief 2026-06-13: when the figspec's `layout`
+                // field was `"landscape"` (signalled via a `#landscape` URL
+                // fragment from `agentic_figures::resolve_markdown`), wrap
+                // the figure paragraph with a leading portrait sectPr (closes
+                // the prior portrait section) and a trailing landscape sectPr
+                // (closes the landscape section so subsequent body text
+                // resumes in the document-level portrait orientation). Same
+                // mechanism the wide-table path uses to put 7+ column tables
+                // on their own A4 landscape page.
+                if is_landscape {
+                    doc = doc.add_paragraph(
+                        Paragraph::new().section_property(portrait_sectpr_with(&ctx.layout)),
+                    );
+                }
                 // Breathing room above the figure (ADR-0030 relaxed placement).
                 doc = doc.add_paragraph(
                     Paragraph::new().line_spacing(LineSpacing::new().after(SPACE_AROUND_FIG)),
@@ -5111,7 +5140,7 @@ fn render_block(
                 // across a page boundary (caption_count = 1054 in the
                 // reference body, of which the multi-line variants are the
                 // overwhelming majority — selective per the audit row).
-                doc.add_paragraph(
+                doc = doc.add_paragraph(
                     Paragraph::new()
                         .style(caption_style_id)
                         .align(AlignmentType::Center)
@@ -5124,7 +5153,16 @@ fn render_block(
                             false,
                         ))
                         .add_run(cap_style(&format!("{sep} {caption}"))),
-                )
+                );
+                // Trailing landscape sectPr — closes the landscape section
+                // so the next body content resumes in portrait. Paired with
+                // the leading portrait sectPr emitted above.
+                if is_landscape {
+                    doc = doc.add_paragraph(
+                        Paragraph::new().section_property(landscape_sectpr_with(&ctx.layout)),
+                    );
+                }
+                doc
             } else {
                 doc.add_paragraph(
                     Paragraph::new().add_run(
@@ -7206,6 +7244,82 @@ mod tests {
         assert!(
             d.contains("keepNext"),
             "the image paragraph must keep_next so it stays with its caption"
+        );
+    }
+
+    /// Readability brief 2026-06-13: a figspec carrying `layout: "landscape"`
+    /// resolves through `agentic_figures::resolve_markdown` to an image ref
+    /// with a `#landscape` URL fragment. The book renderer detects the
+    /// fragment, strips it before reading the on-disk PNG, and wraps the
+    /// figure paragraph with a leading portrait `<w:sectPr>` (closes prior
+    /// portrait section) + trailing landscape `<w:sectPr>` (closes the
+    /// landscape section so following content resumes in portrait). A
+    /// portrait figure in the same document must NOT acquire these
+    /// section breaks, so the two-figure assertion proves the wrapping
+    /// is conditional on the fragment, not unconditional.
+    #[test]
+    fn landscape_figure_emits_paired_section_breaks() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        // Two PNGs: one referenced as portrait, one as landscape.
+        image::RgbImage::new(8, 8)
+            .save(dir.path().join("portrait_fig.png"))
+            .unwrap();
+        image::RgbImage::new(8, 8)
+            .save(dir.path().join("landscape_fig.png"))
+            .unwrap();
+        let meta = BookMeta {
+            title: "T".into(),
+            ..Default::default()
+        };
+        // Markdown intentionally bypasses the figspec→markdown resolver
+        // (which would write the PNGs itself) so this test exercises the
+        // book renderer's URL-fragment branch directly with hand-rolled
+        // image refs — exactly mirroring what `resolve_markdown` emits.
+        let md = "# Chapter\n\nPortrait fig:\n\n![Portrait fig caption](portrait_fig.png)\n\nLandscape fig:\n\n![Landscape fig caption](landscape_fig.png#landscape)\n\nTrailer.\n".to_string();
+        let bytes = render_book(&meta, &[("c1".into(), md)], dir.path()).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        // The landscape section break must appear at least once in body
+        // content (the doc-level sectPr is portrait, so any landscape
+        // attribute can only come from the in-body wrapping pair).
+        let landscape_hits = xml.matches("orient=\"landscape\"").count();
+        assert!(
+            landscape_hits >= 1,
+            "landscape figure must emit a body sectPr with orient=\"landscape\"; got {landscape_hits} hits in xml of length {}",
+            xml.len()
+        );
+        // The body must contain at least three sectPrs after wrapping
+        // the landscape figure: the leading portrait sectPr, the trailing
+        // landscape sectPr, and the document-level sectPr that docx-rs
+        // always emits. Without the landscape figure the document would
+        // carry exactly 1 sectPr.
+        let sectpr_count = xml.matches("<w:sectPr").count();
+        assert!(
+            sectpr_count >= 3,
+            "landscape figure wrapping must add ≥2 in-body sectPrs (got total={sectpr_count}; expected ≥3 incl. doc-level)"
+        );
+        // The on-disk path must NOT contain the `#landscape` fragment —
+        // the renderer must have stripped it before reading the PNG.
+        // (If it didn't, `std::fs::read` would have failed and the
+        // figure would have rendered as `[figure missing: ...]`.)
+        assert!(
+            !xml.contains("[figure missing"),
+            "fragment-stripping failed: figure marked missing in {xml}"
+        );
+        // Both captions must render (proves the portrait figure was
+        // unaffected by the landscape branch).
+        assert!(
+            xml.contains("Portrait fig caption"),
+            "portrait figure caption must render"
+        );
+        assert!(
+            xml.contains("Landscape fig caption"),
+            "landscape figure caption must render"
         );
     }
 
