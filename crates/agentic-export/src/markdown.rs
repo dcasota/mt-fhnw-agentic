@@ -15,6 +15,8 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 /// bullet lists, ordered lists, code blocks and inline code map straight over.
 #[must_use]
 pub fn to_typst(md: &str) -> String {
+    let reflowed = structural_reflow(md);
+    let md: &str = reflowed.as_ref();
     let parser = Parser::new_ext(md, options());
     let mut out = String::with_capacity(md.len());
     let mut list_stack: Vec<Option<u64>> = Vec::new(); // None = bullet, Some(n) = ordered next
@@ -276,6 +278,8 @@ fn url_end(s: &str) -> usize {
 /// Parse markdown into a flat `Vec<DocxBlock>`.
 #[must_use]
 pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
+    let reflowed = structural_reflow(md);
+    let md: &str = reflowed.as_ref();
     let parser = Parser::new_ext(md, options());
     let mut blocks: Vec<DocxBlock> = Vec::new();
     let mut current_runs: Vec<DocxRun> = Vec::new();
@@ -538,6 +542,170 @@ fn flush(
     }
 }
 
+/// Restore paragraph / heading / list / table breaks on markdown sources
+/// that arrived as flattened single-line dumps (newlines collapsed into
+/// 3+ space runs by an upstream pipeline step). The Jun-6 cycle-close
+/// regression (see ADR-0063) recovered campaign + student-notes sources
+/// from an older anchor that had this shape; without this pre-pass,
+/// pulldown-cmark treats the dump as one continuous paragraph and the
+/// rendered docx has no headings, no tables, and ~7 % of the original
+/// paragraph count.
+///
+/// The reflow is heuristic and code-fence aware:
+///   * runs only when LF density < 10 LF/kB (clean multi-line content
+///     is left untouched — borne out by the corpus baseline of 22 LF/kB
+///     mean and 6.14 LF/kB minimum for list-heavy inbox files)
+///   * inside fenced ``` code blocks, the original bytes pass through
+///     unchanged (multi-space content is legitimate in code)
+///   * outside code, the following patterns get a `\n\n` prefix injected:
+///       - `<≥3 spaces><# >` to `<≥3 spaces><###### >`  → heading
+///       - `<≥3 spaces><\*[^*\n]{1,160}\*>` followed by `<≥3 spaces>`
+///         → italic-anchor section marker (used by FRD / campaign docs
+///         for sub-section headings styled in italic)
+///       - `<≥3 spaces><- >` / `<≥3 spaces><\* >` → bullet list item
+///       - `<≥3 spaces><\d+\. >` → ordered list item
+///       - `<≥3 spaces><\| >` only when followed by another `|` later in
+///         the same span → pipe-table row
+///
+/// The output borrows `md` when no reflow is needed (the common case).
+pub(crate) fn structural_reflow(md: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = md.len() as f64;
+    if bytes < 200.0 {
+        return std::borrow::Cow::Borrowed(md);
+    }
+    let lf = md.bytes().filter(|&b| b == b'\n').count() as f64;
+    let lf_per_kb = 1000.0 * lf / bytes;
+    if lf_per_kb >= 10.0 {
+        return std::borrow::Cow::Borrowed(md);
+    }
+    // Single-line dump confirmed; reflow.
+    let mut out = String::with_capacity(md.len() + md.len() / 8);
+    let mut in_fence = false;
+    let mut fence_marker: &str = "";
+    for line in md.split_inclusive('\n') {
+        // Code-fence detection on a per-line basis: a fence opener / closer
+        // is the trimmed line starting with ``` or ~~~. In a single-line
+        // dump there are very few lines, so fences in the actual content
+        // are rare — but we still respect them defensively.
+        let trimmed = line.trim_start();
+        if !in_fence && (trimmed.starts_with("```") || trimmed.starts_with("~~~")) {
+            in_fence = true;
+            fence_marker = if trimmed.starts_with("```") { "```" } else { "~~~" };
+            out.push_str(line);
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            if trimmed.starts_with(fence_marker) {
+                in_fence = false;
+                fence_marker = "";
+            }
+            continue;
+        }
+        reflow_line_into(&mut out, line);
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Walk one source line, looking for `<≥3 spaces><structural-marker>`
+/// runs and replacing the leading space run with `\n\n`. All other
+/// whitespace runs (1, 2 spaces) and non-space content pass through
+/// unchanged. The first `<structural-marker>` *at line start* is
+/// preserved (already a paragraph boundary).
+fn reflow_line_into(out: &mut String, line: &str) {
+    let bytes = line.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        // Consume the next space run (may be 0 long).
+        let space_start = i;
+        while i < n && bytes[i] == b' ' {
+            i += 1;
+        }
+        let sp = i - space_start;
+        if sp >= 3 && i < n && is_structural_marker(&line[i..]) {
+            // Replace ≥3-space run preceding a structural marker with
+            // `\n\n` — but only mid-line; if we're still at the very
+            // start of the line, the line itself already provides a
+            // paragraph boundary so just keep the original spaces.
+            if space_start > 0 {
+                out.push_str("\n\n");
+            } else {
+                out.push_str(&line[space_start..i]);
+            }
+        } else if sp > 0 {
+            // Plain space run (or ≥3 spaces not followed by a marker) —
+            // emit verbatim.
+            out.push_str(&line[space_start..i]);
+        }
+        // Now consume up to the next space run; emit non-space content
+        // (and any trailing CR/LF) as one slice.
+        let nonspace_start = i;
+        while i < n && bytes[i] != b' ' {
+            i += 1;
+        }
+        if i > nonspace_start {
+            out.push_str(&line[nonspace_start..i]);
+        }
+    }
+}
+
+/// True if `s` starts with a markdown structural marker that should
+/// open a new block when preceded by a `<≥3 spaces>` run inside a
+/// flattened single-line dump.
+fn is_structural_marker(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    // ATX heading: # … ###### followed by a space.
+    if b[0] == b'#' {
+        let mut k = 0;
+        while k < b.len() && k < 6 && b[k] == b'#' {
+            k += 1;
+        }
+        if k >= 1 && k <= 6 && b.get(k) == Some(&b' ') {
+            return true;
+        }
+    }
+    // Bullet list: - or * followed by space (asterisk handled cautiously —
+    // bare `*` opens italic, but `* ` at a paragraph boundary is a list).
+    if (b[0] == b'-' || b[0] == b'+') && b.get(1) == Some(&b' ') {
+        return true;
+    }
+    if b[0] == b'*' && b.get(1) == Some(&b' ') {
+        return true;
+    }
+    // Ordered list: <digits>. or <digits>) followed by a space.
+    let mut k = 0;
+    while k < b.len() && b[k].is_ascii_digit() {
+        k += 1;
+    }
+    if k >= 1 && k < b.len() && (b[k] == b'.' || b[k] == b')') && b.get(k + 1) == Some(&b' ') {
+        return true;
+    }
+    // Pipe-table row: leading `|` AND another `|` somewhere later in the
+    // same line span. Restrict to the first 200 chars to keep the scan
+    // cheap.
+    if b[0] == b'|' && s[1..s.len().min(200)].contains('|') {
+        return true;
+    }
+    // Italic-anchor section marker: `*<word>...<word>*` followed by a
+    // run of ≥3 spaces (the FRD / campaign style for italic
+    // sub-headings). Tolerant of CRLF.
+    if b[0] == b'*' && b.len() >= 3 && b[1] != b' ' && b[1] != b'*' {
+        // Look for closing `*` within 160 chars.
+        let close = s[1..s.len().min(161)].find('*');
+        if let Some(c) = close {
+            let after = c + 2;
+            if after < s.len() && b.get(after) == Some(&b' ') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn options() -> Options {
     let mut o = Options::empty();
     o.insert(Options::ENABLE_TABLES);
@@ -549,6 +717,135 @@ fn options() -> Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ====================================================================
+    // ADR-0063 structural-reflow tests (#410, 2026-06-08).
+    // Lock the behaviour of the pre-parse pass that restores paragraph
+    // breaks on flattened single-line markdown dumps (the Jun-6 cycle-
+    // close regression).
+    // ====================================================================
+
+    #[test]
+    fn reflow_borrows_clean_multi_line_input() {
+        // Above the 10 LF/kB threshold → no reflow → Cow::Borrowed.
+        let clean = "# Title\n\nBody paragraph one.\n\nBody paragraph two.\n\n## Sub\n\nMore body.\n";
+        let out = structural_reflow(clean);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(out.as_ref(), clean);
+    }
+
+    #[test]
+    fn reflow_short_input_is_borrowed() {
+        // Inputs under 200 B are always borrowed (not worth the work).
+        let short = "# Tiny doc with a heading and a flat single line of body text content xx";
+        let out = structural_reflow(short);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn reflow_restores_heading_after_three_spaces() {
+        // Build a flattened dump > 200 B with LF density << 10 LF/kB.
+        let prose = "Body paragraph one with a lot of content to make sure we are well above the 200 byte minimum threshold for reflow to even attempt to fire on this input. ".repeat(3);
+        let flat = format!("# Title    {}   ## Sub    {}", prose, prose);
+        let out = structural_reflow(&flat);
+        assert!(matches!(out, std::borrow::Cow::Owned(_)), "should reflow");
+        let s: &str = out.as_ref();
+        // ## Sub must now be preceded by a blank line so pulldown-cmark
+        // treats it as a heading, not as a `## Sub` literal mid-paragraph.
+        assert!(
+            s.contains("\n\n## Sub"),
+            "expected `\\n\\n## Sub` in reflowed output; got: {s}"
+        );
+    }
+
+    #[test]
+    fn reflow_restores_bullet_list_after_three_spaces() {
+        let prose = "Body content to push us past the size threshold for reflow. ".repeat(8);
+        let flat = format!("# Title    {}   - first item   - second item   - third item", prose);
+        let out = structural_reflow(&flat);
+        let s: &str = out.as_ref();
+        assert!(s.contains("\n\n- first item"));
+        assert!(s.contains("\n\n- second item"));
+        assert!(s.contains("\n\n- third item"));
+    }
+
+    #[test]
+    fn reflow_restores_pipe_table_after_three_spaces() {
+        let prose = "Body content to push us past the threshold. ".repeat(8);
+        let flat = format!("# Title    {}   | Col A | Col B |   | --- | --- |   | 1 | 2 |", prose);
+        let out = structural_reflow(&flat);
+        let s: &str = out.as_ref();
+        assert!(s.contains("\n\n| Col A | Col B |"));
+        assert!(s.contains("\n\n| --- | --- |"));
+    }
+
+    #[test]
+    fn reflow_restores_ordered_list_after_three_spaces() {
+        let prose = "Body content padding past the byte threshold. ".repeat(8);
+        let flat = format!("# Title    {}   1. first   2. second   3. third", prose);
+        let out = structural_reflow(&flat);
+        let s: &str = out.as_ref();
+        assert!(s.contains("\n\n1. first"));
+        assert!(s.contains("\n\n3. third"));
+    }
+
+    #[test]
+    fn reflow_preserves_content_inside_code_fence() {
+        // A fenced block with 4-space-indented content INSIDE it must
+        // survive unchanged. We need the fence on its own line for the
+        // detector — that's the realistic case for clean intermediate
+        // documents.
+        let prose = "Body content padding for size threshold. ".repeat(8);
+        let flat = format!("# Title    {}\n```\n    indented code    # not a heading\n```\nAfter the fence.", prose);
+        let out = structural_reflow(&flat);
+        let s: &str = out.as_ref();
+        // Heading inside code fence must NOT have been promoted.
+        assert!(
+            s.contains("    indented code    # not a heading"),
+            "code-block content must pass through unchanged; got: {s}"
+        );
+    }
+
+    #[test]
+    fn reflow_does_not_break_blob_with_existing_headings_at_line_starts() {
+        // Mixed shape: real newlines AND some inline-space-prefixed
+        // markers. The real headings (at line start) must NOT get an
+        // extra `\n\n`; only the in-line ones do.
+        let body = "Paragraph A. ".repeat(20);
+        let flat = format!("# Top heading\n{}   ## Inline sub heading", body);
+        let lf_per_kb = 1000.0 * (flat.bytes().filter(|&b| b == b'\n').count() as f64) / (flat.len() as f64);
+        assert!(
+            lf_per_kb < 10.0,
+            "constructed input should still be below threshold to trigger reflow; got {lf_per_kb} LF/kB"
+        );
+        let out = structural_reflow(&flat);
+        let s: &str = out.as_ref();
+        assert!(s.starts_with("# Top heading\n"));
+        assert!(s.contains("\n\n## Inline sub heading"));
+    }
+
+    #[test]
+    fn to_docx_blocks_recovers_headings_from_flat_dump() {
+        // End-to-end: feed a flattened campaign-style dump through the
+        // public docx-blocks entry point and confirm headings are
+        // recognised. Pre-reflow, this dump would have produced a
+        // single big paragraph and ZERO headings.
+        let prose = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ".repeat(4);
+        let flat = format!(
+            "# Campaign 01: Autonomous CVE Self-Patch   {}   ## Goal   {}   ## Plan   {}",
+            prose, prose, prose
+        );
+        let blocks = to_docx_blocks(&flat);
+        let heading_count = blocks
+            .iter()
+            .filter(|b| matches!(b, DocxBlock::Heading { .. }))
+            .count();
+        assert!(
+            heading_count >= 3,
+            "expected ≥3 headings recovered from flat dump; got {heading_count} (blocks: {})",
+            blocks.len()
+        );
+    }
 
     #[test]
     fn heading_maps_to_typst_equal_signs() {
