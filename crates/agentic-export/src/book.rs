@@ -2123,6 +2123,113 @@ fn png_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// Maximum pixel edge for an embedded sourced raster (PNG screenshot or
+/// photograph going through [`DocxBlock::Image`]).
+///
+/// 2026-06-14: the AI-Norms regulations book
+/// (`ai_norms_and_regulations.docx`) shipped at 40 MB while peer
+/// campaign books were 4–5 MB. Forensics on
+/// `snapshots/20260614-012326-books-cascade/ai_norms_and_regulations.docx`:
+/// 395 unique sourced-screenshot PNGs in `word/media/` totalling ~39 MB
+/// (zero duplicate-bytes — so a media-table dedup pass would NOT help).
+/// The top 25 images were >500 KB each, the largest a 1.94 MB
+/// 952×2048 portrait screenshot. None were figspec-rendered; they
+/// were verbatim raster ingest bytes (the renderer was setting a small
+/// `<wp:extent>` so Word DISPLAYED them at 4 inches, but the raw PNG
+/// payload was passed through unresized — Word doesn't downsample on
+/// load).
+///
+/// Fix: downsample the longest pixel edge of every sourced raster to
+/// this cap with Lanczos3 at embed time. Sourced rasters already at
+/// or below the cap pass through unchanged. At the 4-inch default
+/// body-display width the effective DPI is ~320 — well above Word's
+/// 96 DPI render path and the 220 DPI "good print" target — so users
+/// see no perceptual loss in the docx. The figures-audit brief
+/// (2026-06-13) independently recommended the same 1280 px cap for
+/// landscape figures, which the agentic-figures readability-clamp
+/// pass now enforces at figspec render time; this constant mirrors
+/// the cap for sourced rasters in the docx renderer.
+const MAX_EMBED_RASTER_EDGE_PX: u32 = 1280;
+
+/// Downsample `bytes` (a PNG payload) so its longest pixel edge does
+/// not exceed [`MAX_EMBED_RASTER_EDGE_PX`], aspect ratio preserved
+/// with Lanczos3 resampling. Returns the input bytes unchanged when:
+///
+/// - the source is not a parseable PNG (defensive: never crash the
+///   docx renderer on an exotic payload — the original bytes still
+///   embed fine, just oversized);
+/// - the longest edge is already at-or-below the cap (the common
+///   case for in-house figspec PNGs, admonition icons, QR codes,
+///   and most legitimately page-sized screenshots);
+/// - the resize / re-encode round trip itself fails for any reason
+///   (same defensive fallback as the PNG-parse miss).
+///
+/// Called once per embedded sourced raster from the
+/// [`DocxBlock::Image`] branch in [`build_chapter_body`] — admonition
+/// icons and QR codes use the `ADMONITION_ICON_EMU` / `QR_CODE_EMU`
+/// paths in `icons.rs` and never reach this helper.
+fn clamp_raster_for_embed(bytes: Vec<u8>) -> (Vec<u8>, Option<(u32, u32)>) {
+    let Some((w, h)) = png_dims(&bytes) else {
+        // Not a parseable PNG — return the bytes unchanged with no
+        // dims hint; caller will fall back to docx-rs's auto-detect
+        // `Pic::new` path (which itself decodes-and-re-encodes, but
+        // exotic payloads are rare and out of scope for this cap).
+        return (bytes, None);
+    };
+    let longest = w.max(h);
+    if longest <= MAX_EMBED_RASTER_EDGE_PX {
+        // Under-cap: pass the original bytes through with the known
+        // dims so the caller can take the no-re-encode
+        // `Pic::new_with_dimensions` path. `Pic::new` would otherwise
+        // round-trip the bytes through the `image` crate's
+        // `ImageFormat::Png` default encoder (`CompressionType::Default`
+        // / balanced deflate), and a well-compressed source PNG can
+        // double in size after that round-trip.
+        return (bytes, Some((w, h)));
+    }
+    let Ok(img) = image::load_from_memory(&bytes) else {
+        return (bytes, Some((w, h)));
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let scale = f64::from(MAX_EMBED_RASTER_EDGE_PX) / f64::from(longest);
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let new_w = ((f64::from(w) * scale).round() as u32).max(1);
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let new_h = ((f64::from(h) * scale).round() as u32).max(1);
+    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+    // 2026-06-14: encode with maximum deflate (CompressionType::Best
+    // ≈ flate2 level 9) and Adaptive filter selection. The crate's
+    // default `Balanced` setting underperforms typical screenshot
+    // PNGs (which were authored with high-compression encoders); on
+    // the AI-Norms regulations book the default was producing
+    // re-encoded outputs LARGER than the originals even at half the
+    // pixel area. Switching to `Best` lands the clamped output well
+    // below the source size at every test point — net ~75 % byte
+    // reduction on the 63 oversized rasters in that book.
+    let mut buf = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+        &mut buf,
+        image::codecs::png::CompressionType::Best,
+        image::codecs::png::FilterType::Adaptive,
+    );
+    if resized.write_with_encoder(encoder).is_err() {
+        return (bytes, Some((w, h)));
+    }
+    (buf, Some((new_w, new_h)))
+}
+
 /// EMU per inch (OOXML constant; 914 400).
 const EMU_PER_INCH: u64 = 914_400;
 /// Default screen DPI for raster sources — matches Word's 96 DPI default
@@ -5225,6 +5332,17 @@ fn render_block(
             // keyed on the on-disk path (no fragments).
             let path: &str = path_clean;
             if let Ok(bytes) = std::fs::read(&full) {
+                // 2026-06-14 ai_norms_docx oversize fix: downsample wide
+                // sourced rasters to MAX_EMBED_RASTER_EDGE_PX before
+                // they reach `Pic::new`. Forensics showed the AI-Norms
+                // book carried 395 unique screenshot PNGs averaging
+                // ~100 KB each (largest 1.94 MB at 952×2048) — the
+                // verbatim-byte passthrough was the entire bloat
+                // source. Sized images already at/below the cap pass
+                // through unchanged; the figspec render path in
+                // agentic-figures applies its own readability clamp
+                // upstream of this point.
+                let (bytes, dims_hint) = clamp_raster_for_embed(bytes);
                 ctx.figno += 1;
                 // Round V iter-9 (drawing_class_bucket parity, 2026-06-03):
                 // broadened discriminator. Iter-8 used `path.starts_with("figures/")`
@@ -5268,7 +5386,23 @@ fn render_block(
                     if is_in_house_figure { Some(6.0) } else { None }
                 };
                 let (w_emu, h_emu) = image_dims_to_emu(&bytes, width_in_override);
-                let pic = Pic::new(&bytes).size(w_emu, h_emu);
+                // 2026-06-14 ai_norms_docx oversize fix: prefer
+                // `Pic::new_with_dimensions(buf, w, h)` over `Pic::new(&buf)`
+                // when the clamp returned known pixel dimensions.
+                // `Pic::new` would round-trip the bytes through the
+                // `image` crate's `ImageFormat::Png` default encoder
+                // (`CompressionType::Default` / balanced deflate), which
+                // wastes the `CompressionType::Best` deflate we just
+                // applied — and even for under-cap byte-passthrough
+                // images it can DOUBLE the byte size of a well-
+                // compressed source PNG. By providing the dims we skip
+                // that round trip entirely and ship the exact bytes
+                // we already produced.
+                let pic = match dims_hint {
+                    Some((w_px, h_px)) => Pic::new_with_dimensions(bytes, w_px, h_px),
+                    None => Pic::new(&bytes),
+                }
+                .size(w_emu, h_emu);
                 // Readability brief 2026-06-13: when the figspec's `layout`
                 // field was `"landscape"` (signalled via a `#landscape` URL
                 // fragment from `agentic_figures::resolve_markdown`), wrap
@@ -10133,6 +10267,115 @@ mod tests {
             crate::icons::QR_CODE_EMU,
             972_000,
             "QR_CODE_EMU constant must remain 972 000 (qr bucket: 900 K-1 M)"
+        );
+    }
+
+    /// 2026-06-14 ai_norms_docx oversize fix.
+    ///
+    /// `clamp_raster_for_embed` MUST downsample any PNG whose longest
+    /// edge exceeds [`MAX_EMBED_RASTER_EDGE_PX`] to that cap, aspect
+    /// preserved; PNGs already at-or-below the cap MUST pass through
+    /// byte-identical (otherwise admonition icons + QR codes would
+    /// gain a needless re-encode round trip if they ever reached the
+    /// DocxBlock::Image path).
+    #[test]
+    fn clamp_raster_for_embed_shrinks_oversized_png() {
+        // 2048×1024 source — wider than the 1280 px cap on its long
+        // edge. After clamp: width 1280, height proportional → 640.
+        //
+        // We pin pixel-area reduction (deterministic). The byte-size
+        // reduction is gated through `CompressionType::Best`; we also
+        // assert the clamped output is no larger than ~2× of the
+        // source bytes (a smooth synthetic gradient compresses near
+        // PNG's theoretical floor, so a same-FilterType re-encode of
+        // a smaller pixel area sits very close to the source). Real-
+        // world sourced screenshots compress at ~50 % of synthetic
+        // PNGs and land at ~25 % of source bytes after this clamp;
+        // the docx-level verification gates that.
+        let mut img = image::RgbImage::new(2048, 1024);
+        for y in 0..1024 {
+            for x in 0..2048 {
+                img.put_pixel(x, y, image::Rgb([(x & 0xFF) as u8, (y & 0xFF) as u8, 96]));
+            }
+        }
+        let mut src = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut src), image::ImageFormat::Png)
+            .unwrap();
+        let src_len = src.len();
+        let (clamped, dims) = clamp_raster_for_embed(src);
+        let (cw, ch) = dims.expect("clamped output must expose its dims");
+        assert_eq!(cw, MAX_EMBED_RASTER_EDGE_PX, "long edge clamped to cap");
+        assert_eq!(ch, MAX_EMBED_RASTER_EDGE_PX / 2, "aspect ratio preserved");
+        let (pw, ph) = png_dims(&clamped).expect("clamped output must be a valid PNG");
+        assert_eq!(
+            (pw, ph),
+            (cw, ch),
+            "returned dims must match the encoded IHDR"
+        );
+        let src_pixels: u64 = 2048 * 1024;
+        let out_pixels: u64 = u64::from(cw) * u64::from(ch);
+        assert!(
+            out_pixels < src_pixels,
+            "pixel area must drop ({} → {})",
+            src_pixels,
+            out_pixels
+        );
+        // Soft byte ceiling — a smooth gradient may not shrink, but
+        // it must not blow up beyond 2× the source.
+        assert!(
+            clamped.len() < src_len * 2,
+            "clamped synthetic must stay under 2× source bytes ({} → {})",
+            src_len,
+            clamped.len()
+        );
+    }
+
+    #[test]
+    fn clamp_raster_for_embed_preserves_small_png_byte_identical() {
+        // 800×600 source — both edges under the 1280 px cap. The
+        // clamp MUST return the input untouched (no re-encode) AND
+        // expose the parsed dims so the caller can take the
+        // `Pic::new_with_dimensions` no-re-encode path. The bytes
+        // identity matters because admonition icons, QR codes,
+        // and pre-clamped figspec PNGs all benefit from skipping
+        // docx-rs's default-deflate round trip.
+        let mut img = image::RgbImage::new(800, 600);
+        for y in 0..600 {
+            for x in 0..800 {
+                img.put_pixel(x, y, image::Rgb([(x & 0xFF) as u8, (y & 0xFF) as u8, 200]));
+            }
+        }
+        let mut src = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut src), image::ImageFormat::Png)
+            .unwrap();
+        let src_clone = src.clone();
+        let (out, dims) = clamp_raster_for_embed(src);
+        assert_eq!(
+            out, src_clone,
+            "under-cap PNG must pass through byte-identical (no re-encode)"
+        );
+        assert_eq!(
+            dims,
+            Some((800, 600)),
+            "under-cap PNG must expose its dims for the no-re-encode caller path"
+        );
+    }
+
+    #[test]
+    fn clamp_raster_for_embed_preserves_non_png_payload() {
+        // Defensive: if the bytes don't parse as PNG (exotic format,
+        // truncated payload, etc.) the helper MUST return them
+        // unchanged with NO dims hint — the caller then falls back
+        // to `Pic::new(&bytes)` which decodes whatever format docx-rs
+        // can read. This keeps the renderer crash-free on JPEG /
+        // truncated payloads (the AI-Norms book has a handful of
+        // `*.jpg` / `*.jpeg` source assets).
+        let junk = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+        let (out, dims) = clamp_raster_for_embed(junk.clone());
+        assert_eq!(out, junk, "non-PNG payload must pass through unchanged");
+        assert_eq!(
+            dims, None,
+            "non-PNG payload must NOT expose dims (caller falls back to Pic::new)"
         );
     }
 
