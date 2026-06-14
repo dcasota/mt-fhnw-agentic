@@ -198,9 +198,16 @@ pub(crate) fn fig_seed(s: &str) -> u64 {
 /// the figure paragraph with `<w:sectPr>` blocks that flip the page to
 /// landscape and then back to portrait, so an oversized figure can
 /// breathe on its own page instead of forcing a body-cap. Optional /
-/// defaults to `Portrait`; only the renderer in [`crate::resolve_markdown`]
-/// and downstream docx export consume the value — the PNG rasterisation
-/// itself is layout-agnostic.
+/// defaults to `Portrait`; consumed by [`resolve_markdown`] + the
+/// downstream docx export.
+///
+/// Readability brief follow-up (2026-06-14): the post-render
+/// [`apply_readability_clamp`] pass MAY auto-promote a `Portrait`
+/// default to `Landscape` when the natural canvas aspect ratio exceeds
+/// [`AUTO_LANDSCAPE_ASPECT`] (~1.6×). The promotion is observable on
+/// the same `FigSpec` instance (the field is mutated in place), so
+/// [`resolve_markdown`] picks up the post-pass layout when it decides
+/// whether to append the `#landscape` URL fragment to the image ref.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Layout {
@@ -239,6 +246,12 @@ impl FigSpec {
     /// Page-orientation hint parsed from the figspec's optional
     /// `"layout"` field (`"landscape"` | `"portrait"`; defaults to
     /// `Portrait`).
+    ///
+    /// Readability brief follow-up (2026-06-14): after
+    /// [`render_and_clamp`] runs, this accessor reflects the *effective*
+    /// layout — which may differ from the parsed JSON if the auto-
+    /// landscape pre-pass promoted a wide-aspect canvas (see
+    /// [`AUTO_LANDSCAPE_ASPECT`]).
     pub fn layout(&self) -> Layout {
         self.layout
     }
@@ -272,35 +285,152 @@ pub fn parse(spec_json: &str) -> Result<FigSpec> {
     })
 }
 
-/// Render one figspec to a PNG at `out_path`.
-pub fn render_figspec(spec_json: &str, out_path: &Path) -> Result<()> {
-    let spec = parse(spec_json)?;
+// ---- Readability clamp (2026-06-14 follow-up to the 2026-06-13 brief) ----
+// Evidence: `figure_verify_v2.tsv` showed 132 figures across 17 books
+// rendering body text at 2.9–6.5 pt on the printed page — well below the
+// 7 pt floor — because PNG canvases up to 3188 px were being embedded at
+// the fixed 5.91 in portrait body width. The on-page pt formula is
+//
+//     on_page_pt = renderer_pt * display_in * 72 / png_width_px
+//
+// Inverting for `png_width_px` at the renderers' smallest font size
+// (13 pt — the flow box-label / matrix cell-value floor) and the 7 pt
+// on-page minimum yields the cap below. Anything wider gets resized
+// with Lanczos3 to the cap; anything with a wide natural aspect gets
+// promoted to landscape so the docx renderer rotates the page first.
+
+/// Minimum on-page text size in points required by the figure-audit
+/// gate. Below this, rendered glyphs are unreadable at Word's body
+/// width.
+const MIN_ON_PAGE_PT: f64 = 7.0;
+/// Smallest font size used by any PNG renderer (flow box labels,
+/// matrix cell values, …). Back-solves the maximum PNG width allowed
+/// for a given page-display width.
+const MIN_RENDERER_FONT_PT: f64 = 13.0;
+/// Word body-text width on portrait A4 with the project's margins, in
+/// inches. (`fhnw_paper.docx` reference template.)
+const PORTRAIT_DISPLAY_IN: f64 = 5.91;
+/// Word body-text width on a landscape A4 sectPr — the figure breathes
+/// on its own page — in inches.
+const LANDSCAPE_DISPLAY_IN: f64 = 9.41;
+/// Natural canvas aspect (width / height) above which a `Portrait`
+/// figspec is auto-promoted to `Landscape`. Empirically: wider-than-1.6
+/// portraits stay below the 7 pt on-page floor even after the width
+/// clamp, because the clamp shrinks glyphs proportionally; flipping the
+/// page gives them ~60% more horizontal real estate and lets the clamp
+/// do less work (or no work at all).
+const AUTO_LANDSCAPE_ASPECT: f64 = 1.6;
+
+/// Maximum PNG width (in pixels) for a figure that will be embedded at
+/// the body-text width of `layout`. Derived from
+/// `MIN_RENDERER_FONT_PT * display_in * 72 / MIN_ON_PAGE_PT`, so a
+/// 13 pt glyph in the source PNG never shrinks below 7 pt on the
+/// rendered page. At the current constants (integer truncation):
+///
+/// | layout    | cap     |
+/// |-----------|---------|
+/// | Portrait  |  790 px (`floor(13 × 5.91 × 72 / 7) = 790`) |
+/// | Landscape | 1258 px (`floor(13 × 9.41 × 72 / 7) = 1258`) |
+pub(crate) fn max_png_width_px(layout: Layout) -> u32 {
+    let display_in = match layout {
+        Layout::Portrait => PORTRAIT_DISPLAY_IN,
+        Layout::Landscape => LANDSCAPE_DISPLAY_IN,
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let v = (MIN_RENDERER_FONT_PT * display_in * 72.0 / MIN_ON_PAGE_PT) as u32;
+    v
+}
+
+/// Post-render: reopen `out_path`, auto-promote `spec.layout` to
+/// `Landscape` if the natural canvas aspect exceeds
+/// [`AUTO_LANDSCAPE_ASPECT`] (and the spec didn't already opt into
+/// landscape), then resize the PNG with Lanczos3 to fit within
+/// [`max_png_width_px`] for the effective layout. The spec is mutated
+/// in place so [`resolve_markdown`] sees the post-pass layout when it
+/// decides whether to append the `#landscape` URL fragment.
+///
+/// This pass is the renderer-side enforcement of the 7 pt on-page text
+/// floor (figure_verify_v2.tsv, 132-figure gap across 17 books). The
+/// resize is honest about loss of glyph clarity — but at the cap, even
+/// the smallest 13 pt renderer text lands at exactly 7 pt on the page,
+/// which is the threshold the figure-audit gate enforces.
+pub(crate) fn apply_readability_clamp(spec: &mut FigSpec, out_path: &Path) -> Result<()> {
+    let img = image::open(out_path)
+        .with_context(|| format!("reopen rendered PNG for clamp: {}", out_path.display()))?;
+    let w = img.width();
+    let h = img.height().max(1);
+    let aspect = f64::from(w) / f64::from(h);
+    // Auto-landscape pre-pass (T2): only fires when the spec defaulted
+    // to Portrait. An explicit `"layout": "landscape"` is already
+    // Landscape and skips this branch; an explicit `"layout":
+    // "portrait"` parses as Portrait and may still be promoted — the
+    // FigSpec layer can't distinguish "missing field" from "explicit
+    // portrait", and we prefer the audit-driven default (promote if
+    // wide) over respecting a flag that would force unreadable text.
+    if matches!(spec.layout, Layout::Portrait) && aspect > AUTO_LANDSCAPE_ASPECT {
+        spec.layout = Layout::Landscape;
+    }
+    let cap = max_png_width_px(spec.layout);
+    if w > cap {
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let new_h = ((f64::from(h) * f64::from(cap) / f64::from(w)).round() as u32).max(1);
+        let resized = img.resize_exact(cap, new_h, image::imageops::FilterType::Lanczos3);
+        resized
+            .save(out_path)
+            .with_context(|| format!("save clamped PNG: {}", out_path.display()))?;
+    }
+    Ok(())
+}
+
+/// Internal: dispatch `spec` to the per-kind renderer, then apply the
+/// post-render readability clamp + auto-landscape pass. Mutates
+/// `spec.layout` if the figure was auto-promoted, so callers
+/// ([`resolve_markdown`]) can read the effective layout off the same
+/// instance.
+pub(crate) fn render_and_clamp(spec: &mut FigSpec, out_path: &Path) -> Result<()> {
     if let Some(p) = out_path.parent() {
         std::fs::create_dir_all(p)?;
     }
     match spec.kind.as_str() {
-        "bar" => render_bar(&spec, out_path, false),
-        "hbar" => render_bar(&spec, out_path, true),
-        "line" => render_line(&spec, out_path),
-        "matrix" => render_matrix(&spec, out_path),
-        "quadrant" => render_quadrant(&spec, out_path),
-        "flow" => render_flow(&spec, out_path),
-        "icon" => render_icon(&spec, out_path),
-        "heatmap" => render_heatmap(&spec, out_path),
-        "regstack" => render_regstack(&spec, out_path),
-        "govmap" => render_govmap(&spec, out_path),
-        "treemap" => render_treemap(&spec, out_path),
-        "procmap" => render_procmap(&spec, out_path),
+        "bar" => render_bar(spec, out_path, false)?,
+        "hbar" => render_bar(spec, out_path, true)?,
+        "line" => render_line(spec, out_path)?,
+        "matrix" => render_matrix(spec, out_path)?,
+        "quadrant" => render_quadrant(spec, out_path)?,
+        "flow" => render_flow(spec, out_path)?,
+        "icon" => render_icon(spec, out_path)?,
+        "heatmap" => render_heatmap(spec, out_path)?,
+        "regstack" => render_regstack(spec, out_path)?,
+        "govmap" => render_govmap(spec, out_path)?,
+        "treemap" => render_treemap(spec, out_path)?,
+        "procmap" => render_procmap(spec, out_path)?,
         // ---- Wave 1 parity types (AI Norms reference book) ----
-        "image-embed" => render_image_embed::render(&spec, out_path),
-        "sankey" => render_sankey::render(&spec, out_path),
-        "wheel" => render_wheel::render(&spec, out_path),
-        "tier-matrix" => render_tier_matrix::render(&spec, out_path),
-        "callout-diagram" => render_callout::render(&spec, out_path),
-        "comparison-overlay" => render_overlay::render(&spec, out_path),
-        "table" => render_table::render(&spec, out_path),
-        other => Err(anyhow!("unknown figspec type '{other}'")),
+        "image-embed" => render_image_embed::render(spec, out_path)?,
+        "sankey" => render_sankey::render(spec, out_path)?,
+        "wheel" => render_wheel::render(spec, out_path)?,
+        "tier-matrix" => render_tier_matrix::render(spec, out_path)?,
+        "callout-diagram" => render_callout::render(spec, out_path)?,
+        "comparison-overlay" => render_overlay::render(spec, out_path)?,
+        "table" => render_table::render(spec, out_path)?,
+        other => return Err(anyhow!("unknown figspec type '{other}'")),
     }
+    apply_readability_clamp(spec, out_path)
+}
+
+/// Render one figspec to a PNG at `out_path`.
+///
+/// Runs the post-render readability clamp + auto-landscape pass (see
+/// [`apply_readability_clamp`]) so callers that bypass
+/// [`resolve_markdown`] still get the 7 pt on-page floor enforced. The
+/// effective layout (after auto-promotion) is discarded; use
+/// [`render_and_clamp`] directly if you need to observe it.
+pub fn render_figspec(spec_json: &str, out_path: &Path) -> Result<()> {
+    let mut spec = parse(spec_json)?;
+    render_and_clamp(&mut spec, out_path)
 }
 
 /// Replace each ```figspec block in `md` with an image reference, writing PNGs
@@ -342,7 +472,7 @@ pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(Stri
             .find("```")
             .ok_or_else(|| anyhow!("unterminated figspec block"))?;
         let json = &after[body_start..body_start + end_rel];
-        let spec = parse(json)?;
+        let mut spec = parse(json)?;
         if spec.kind == "table" {
             // Native-Word-table path: emit a markdown pipe table so the
             // downstream DocxBlock::Table renderer applies TableGrid and
@@ -354,15 +484,20 @@ pub fn resolve_markdown(md: &str, fig_base: &Path, subdir: &str) -> Result<(Stri
             let png = figdir.join(format!("{}.png", spec.id));
             // Surface a render failure instead of silently dropping the figure: a
             // deliverable must never lose a figspec without a trace (non-repudiation).
-            render_figspec(json, &png)
+            // `render_and_clamp` (rather than `render_figspec` which would
+            // re-parse + drop the layout signal) lets us observe the
+            // post-pass `spec.layout` — the auto-landscape pre-pass may
+            // have promoted a wide-aspect Portrait → Landscape, and the
+            // markdown image-ref fragment below must reflect that.
+            render_and_clamp(&mut spec, &png)
                 .map_err(|e| anyhow!("rendering figspec '{}': {e}", spec.id))?;
-            // Readability brief 2026-06-13: when the figspec opts into
-            // landscape, append a `#landscape` URL fragment to the image
-            // ref. The docx renderer detects + strips the fragment in the
-            // `DocxBlock::Image` arm and wraps the figure paragraph with
-            // portrait→landscape→portrait section breaks. The fragment is
-            // never part of the on-disk path; the markdown parser
-            // preserves it verbatim through `dest_url`.
+            // Readability brief 2026-06-13: when the (effective) layout
+            // is landscape, append a `#landscape` URL fragment to the
+            // image ref. The docx renderer detects + strips the fragment
+            // in the `DocxBlock::Image` arm and wraps the figure
+            // paragraph with portrait→landscape→portrait section breaks.
+            // The fragment is never part of the on-disk path; the
+            // markdown parser preserves it verbatim through `dest_url`.
             let suffix = match spec.layout {
                 Layout::Landscape => "#landscape",
                 Layout::Portrait => "",
@@ -2155,8 +2290,11 @@ mod tests {
         let dir = std::env::temp_dir().join("agentic_fig_resolvetest");
         std::fs::create_dir_all(&dir).unwrap();
         // Two figspec blocks with NO newlines between the opener and the
-        // JSON, then trailing prose.
-        let single_line = "prose ```figspec{\"id\":\"a\",\"type\":\"bar\",\"title\":\"A\",\"caption\":\"c\",\"data\":{\"labels\":[\"x\"],\"values\":[1]}}``` more prose ```figspec{\"id\":\"b\",\"type\":\"bar\",\"title\":\"B\",\"caption\":\"c\",\"data\":{\"labels\":[\"y\"],\"values\":[2]}}``` end";
+        // JSON, then trailing prose. Uses tall 6-row matrices (aspect
+        // ~0.79) so the 2026-06-14 readability clamp does NOT auto-
+        // promote them to landscape — the image-ref shape this test
+        // asserts is the bare `figures/.../X.png` form.
+        let single_line = "prose ```figspec{\"id\":\"a\",\"type\":\"matrix\",\"title\":\"A\",\"caption\":\"c\",\"data\":{\"rows\":[\"r1\",\"r2\",\"r3\",\"r4\",\"r5\",\"r6\"],\"cols\":[\"c1\"],\"cells\":[[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"]]}}``` more prose ```figspec{\"id\":\"b\",\"type\":\"matrix\",\"title\":\"B\",\"caption\":\"c\",\"data\":{\"rows\":[\"r1\",\"r2\",\"r3\",\"r4\",\"r5\",\"r6\"],\"cols\":[\"c1\"],\"cells\":[[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"]]}}``` end";
         let (resolved, n) =
             resolve_markdown(single_line, &dir, "resolvetest").expect("must not fail");
         assert_eq!(n, 2, "both figspec blocks must resolve");
@@ -2168,8 +2306,9 @@ mod tests {
             resolved.contains("![c](figures/resolvetest/b.png)"),
             "second replaced"
         );
-        // Multi-line markdown still works (the legacy form).
-        let multi_line = "prose\n```figspec\n{\"id\":\"c\",\"type\":\"bar\",\"title\":\"C\",\"caption\":\"cap\",\"data\":{\"labels\":[\"z\"],\"values\":[3]}}\n```\nmore";
+        // Multi-line markdown still works (the legacy form). Tall
+        // matrix here too, same auto-promote rationale.
+        let multi_line = "prose\n```figspec\n{\"id\":\"c\",\"type\":\"matrix\",\"title\":\"C\",\"caption\":\"cap\",\"data\":{\"rows\":[\"r1\",\"r2\",\"r3\",\"r4\",\"r5\",\"r6\"],\"cols\":[\"c1\"],\"cells\":[[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"]]}}\n```\nmore";
         let (resolved2, n2) =
             resolve_markdown(multi_line, &dir, "resolvetest").expect("multi-line still works");
         assert_eq!(n2, 1);
@@ -2286,7 +2425,12 @@ mod tests {
     #[test]
     fn resolves_markdown_block() {
         let dir = std::env::temp_dir().join("agentic_fig_md");
-        let md = "Intro\n\n```figspec\n{\"id\":\"m1\",\"type\":\"matrix\",\"title\":\"M\",\"caption\":\"cap\",\"data\":{\"rows\":[\"r1\"],\"cols\":[\"c1\"],\"cells\":[[\"x\"]]}}\n```\n\nOutro\n";
+        // 6-row × 1-col matrix → 430×544 canvas (aspect 0.79), well
+        // below the auto-landscape threshold so the image ref stays
+        // bare. (Pre-2026-06-14 this test used a 1-row matrix
+        // [430×224, aspect 1.92] that the readability clamp now
+        // auto-promotes to landscape.)
+        let md = "Intro\n\n```figspec\n{\"id\":\"m1\",\"type\":\"matrix\",\"title\":\"M\",\"caption\":\"cap\",\"data\":{\"rows\":[\"r1\",\"r2\",\"r3\",\"r4\",\"r5\",\"r6\"],\"cols\":[\"c1\"],\"cells\":[[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"]]}}\n```\n\nOutro\n";
         let (out, n) = resolve_markdown(md, &dir, "sub").unwrap();
         assert_eq!(n, 1);
         assert!(out.contains("![cap](figures/sub/m1.png)"), "got: {out}");
@@ -2386,8 +2530,12 @@ mod tests {
     fn resolve_markdown_appends_landscape_fragment() {
         let dir = std::env::temp_dir().join("agentic_fig_landscape_md");
         std::fs::create_dir_all(&dir).unwrap();
-        // Portrait figspec: no fragment.
-        let md_portrait = "x\n\n```figspec\n{\"id\":\"lp\",\"type\":\"bar\",\"title\":\"T\",\"caption\":\"cap\",\"data\":{\"labels\":[\"a\"],\"values\":[1]}}\n```\n";
+        // Portrait figspec: a tall 6-row matrix whose natural aspect
+        // (~0.79) stays below the 2026-06-14 auto-landscape threshold
+        // (1.6), so the image ref stays bare. (A 1-label bar would now
+        // be auto-promoted by the readability clamp because its
+        // 1040×420 canvas has aspect 2.48.)
+        let md_portrait = "x\n\n```figspec\n{\"id\":\"lp\",\"type\":\"matrix\",\"title\":\"T\",\"caption\":\"cap\",\"data\":{\"rows\":[\"r1\",\"r2\",\"r3\",\"r4\",\"r5\",\"r6\"],\"cols\":[\"c1\"],\"cells\":[[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"],[\"x\"]]}}\n```\n";
         let (out, _n) = resolve_markdown(md_portrait, &dir, "lsub").unwrap();
         assert!(
             out.contains("![cap](figures/lsub/lp.png)"),
@@ -2433,5 +2581,76 @@ mod tests {
         let md = "x\n\n```figspec\n{\"id\":\"t2\",\"type\":\"table\",\"title\":\"\",\"caption\":\"\",\"data\":{\"header\":[\"A\",\"B\"],\"rows\":[[\"x|y\",\"q\"]]}}\n```\n";
         let (out, _n) = resolve_markdown(md, &dir, "sub").unwrap();
         assert!(out.contains("x\\|y"), "literal pipe must be escaped: {out}");
+    }
+
+    /// Readability brief follow-up (2026-06-14): T1 — PNG width cap.
+    /// A 12-node flow chain naturally produces a >2000 px wide canvas
+    /// (the layered Kahn placement gives 12 columns × ~190 px box +
+    /// ~110 px gap). After [`render_and_clamp`] runs, the PNG width
+    /// must be ≤ [`max_png_width_px`] for the effective layout so the
+    /// embedded 13 pt renderer text stays ≥ 7 pt on the printed page
+    /// (figure_verify_v2.tsv evidence; 132 figures across 17 books).
+    #[test]
+    fn png_width_clamped_to_portrait_max_at_13pt() {
+        let dir = std::env::temp_dir().join("agentic_fig_widthcap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("flow_clamped.png");
+        // Build a 12-node chain spec by hand (JSON-as-string).
+        let nodes: Vec<String> = (0..12).map(|i| format!("\"N{i}\"")).collect();
+        let edges: Vec<String> = (0..11)
+            .map(|i| format!("[\"N{}\",\"N{}\",\"\"]", i, i + 1))
+            .collect();
+        let spec_json = format!(
+            r#"{{"id":"fc","type":"flow","title":"T","caption":"c","data":{{"nodes":[{}],"edges":[{}]}}}}"#,
+            nodes.join(","),
+            edges.join(","),
+        );
+        let mut spec = parse(&spec_json).unwrap();
+        render_and_clamp(&mut spec, &p).unwrap();
+        let img = image::open(&p).unwrap();
+        let cap = max_png_width_px(spec.layout);
+        // Sanity: the cap must match the documented table — 790 for
+        // Portrait, 1258 for Landscape (integer truncation of the
+        // formula). Locks the formula against drift.
+        assert!(
+            cap == 790 || cap == 1258,
+            "max_png_width_px cap unexpected: {cap}",
+        );
+        assert!(
+            img.width() <= cap,
+            "PNG width {} exceeds cap {} (layout={:?}); 7 pt floor would break",
+            img.width(),
+            cap,
+            spec.layout,
+        );
+    }
+
+    /// Readability brief follow-up (2026-06-14): T2 — auto-landscape.
+    /// A horizontally chained flow has a natural aspect ratio well
+    /// above [`AUTO_LANDSCAPE_ASPECT`] (`1.6`). [`render_and_clamp`]
+    /// must promote a defaulted Portrait spec to Landscape so the
+    /// docx renderer rotates the page and the figure breathes at
+    /// ~9.41 in instead of ~5.91 in. The promotion is observable on
+    /// the mutated `FigSpec` instance.
+    #[test]
+    fn flow_auto_promotes_to_landscape_when_aspect_exceeds_1_6() {
+        let dir = std::env::temp_dir().join("agentic_fig_autoland");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("flow_autoland.png");
+        // 6-node horizontal chain: 6 columns × ~190 px box + ~110 px
+        // gap, ~92 px box height → aspect ≈ 2000/200 = 10× > 1.6.
+        let spec_json = r#"{"id":"fw","type":"flow","title":"Wide","caption":"c","data":{"nodes":["A","B","C","D","E","F"],"edges":[["A","B",""],["B","C",""],["C","D",""],["D","E",""],["E","F",""]]}}"#;
+        let mut spec = parse(spec_json).unwrap();
+        assert_eq!(
+            spec.layout(),
+            Layout::Portrait,
+            "pre-render: defaulted Portrait",
+        );
+        render_and_clamp(&mut spec, &p).unwrap();
+        assert_eq!(
+            spec.layout(),
+            Layout::Landscape,
+            "wide-aspect flow must auto-promote to Landscape after the clamp pass",
+        );
     }
 }
