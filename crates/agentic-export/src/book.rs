@@ -3176,6 +3176,20 @@ fn postprocess_docx_inner_layout(
                 // (the docx-rs default-empty header parts that Word
                 // would otherwise render as a blank running header).
                 s = drop_refs_to_empty_parts(&s, &dropped_rids);
+                // 2026-06-14 (#413 follow-up) — propagate the surviving
+                // header/footer references from the document-level
+                // sectPr to every per-chapter / per-section sectPr.
+                // docx-rs 0.4.20 attaches the Footer to the document-
+                // level sectPr only, leaving per-chapter section breaks
+                // without a `<w:footerReference>`. Word does NOT inherit
+                // footer references across sections, so every section
+                // whose sectPr lacks a reference rendered with NO page
+                // number — every campaign/dimension book and the bookkit
+                // thesis itself shipped with page numbers only on the
+                // final section's pages. This pass clones the existing
+                // default (and `even` / `first` if present) references
+                // into any sectPr that has none.
+                s = propagate_section_chrome_refs(&s);
                 // Round V zone C fwc-05 (AI-Norms parity, 2026-06-03):
                 // strip `<w:bCs/>`, `<w:iCs/>`, and redundant `<w:szCs>`
                 // from runs whose text content is pure ASCII. docx-rs
@@ -3379,6 +3393,14 @@ pub fn collapse_empty_header_footer_parts(docx: Vec<u8>) -> anyhow::Result<Vec<u
                 // the original docx. Re-apply the schema-order fix here
                 // so the post-finalize bytes are still schema-clean.
                 let s = fix_ppr_schema_order(&s);
+                // 2026-06-14 (#413 follow-up) — Word COM's save can also
+                // regenerate per-chapter sectPr blocks without copying
+                // the document-level footerReference into them. Re-run
+                // the propagation pass on the finalized bytes so every
+                // section keeps its page-number footer after a Word
+                // round-trip. Idempotent when every sectPr already has
+                // the reference.
+                let s = propagate_section_chrome_refs(&s);
                 zout.start_file(name, zip::write::SimpleFileOptions::default())
                     .context("start document.xml")?;
                 zout.write_all(s.as_bytes()).context("write document.xml")?;
@@ -4452,6 +4474,170 @@ fn collapse_empty_header_refs(doc: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// 2026-06-14 (#413 follow-up) — clone the surviving
+/// `<w:footerReference>` and `<w:headerReference>` tags from any sectPr
+/// that has them into every sectPr that doesn't.
+///
+/// Why: docx-rs 0.4.20 only emits a single `Footer` part, attached to
+/// the document-level (final) sectPr. Per-chapter section breaks emitted
+/// via `per_chapter_sectpr_paragraph` (Wave-3 iter-D) carry their own
+/// `<w:sectPr>` with no `<w:footerReference>`. Word's section model does
+/// NOT inherit header/footer references across sections — a sectPr
+/// without a reference renders with NO footer for that section's pages.
+/// Before this pass, every campaign book, dimension book, the bookkit
+/// thesis and the AI-Norms book shipped with page numbers visible only
+/// on pages controlled by the document-level sectPr (i.e., the very
+/// last section). A 200-page campaign book ended up with a number on
+/// p.200 only.
+///
+/// Algorithm: scan once for an existing reference per type
+/// (`default` / `even` / `first`); then for each sectPr that lacks a
+/// reference of that type, splice the existing tag in immediately after
+/// the opening `<w:sectPr …>`. OOXML schema (CT_SectPr) requires
+/// headerReference / footerReference to be the FIRST children of
+/// sectPr, so the insertion point is the byte right after the opening
+/// tag's `>`. The pass is a no-op when no reference exists anywhere in
+/// the document (e.g. a document with neither header nor footer).
+fn propagate_section_chrome_refs(doc: &str) -> String {
+    let footer_default = find_first_ref(doc, "footerReference", Some("default"));
+    let footer_even = find_first_ref(doc, "footerReference", Some("even"));
+    let footer_first = find_first_ref(doc, "footerReference", Some("first"));
+    let header_default = find_first_ref(doc, "headerReference", Some("default"));
+    let header_even = find_first_ref(doc, "headerReference", Some("even"));
+    let header_first = find_first_ref(doc, "headerReference", Some("first"));
+    if footer_default.is_none()
+        && footer_even.is_none()
+        && footer_first.is_none()
+        && header_default.is_none()
+        && header_even.is_none()
+        && header_first.is_none()
+    {
+        return doc.to_string();
+    }
+    let mut out = String::with_capacity(doc.len() + 256);
+    let mut rest = doc;
+    while let Some(open) = rest.find("<w:sectPr") {
+        out.push_str(&rest[..open]);
+        let after_open = open + "<w:sectPr".len();
+        let Some(close_rel) = rest[after_open..].find("</w:sectPr>") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let block_end = after_open + close_rel + "</w:sectPr>".len();
+        let block = &rest[open..block_end];
+        out.push_str(&inject_missing_chrome_refs(
+            block,
+            header_default.as_deref(),
+            header_even.as_deref(),
+            header_first.as_deref(),
+            footer_default.as_deref(),
+            footer_even.as_deref(),
+            footer_first.as_deref(),
+        ));
+        rest = &rest[block_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Return the first `<w:{tag} … w:type="{ty}" … />` self-closing tag in
+/// `doc` (or any `<w:{tag} … />` when `ty` is `None`). Returns the full
+/// tag text including the angle brackets so callers can splice it
+/// verbatim into another sectPr. Returns `None` if no such tag exists.
+fn find_first_ref(doc: &str, tag: &str, ty: Option<&str>) -> Option<String> {
+    let needle = format!("<w:{tag}");
+    let type_match = ty.map(|t| format!("w:type=\"{t}\""));
+    let mut pos = 0usize;
+    while let Some(rel) = doc[pos..].find(&needle) {
+        let abs = pos + rel;
+        let end = doc[abs..].find("/>")?;
+        let tag_str = &doc[abs..abs + end + 2];
+        match &type_match {
+            Some(needle) if tag_str.contains(needle.as_str()) => {
+                return Some(tag_str.to_string());
+            }
+            None => return Some(tag_str.to_string()),
+            _ => {}
+        }
+        pos = abs + end + 2;
+    }
+    None
+}
+
+/// Splice the missing `<w:{header,footer}Reference>` tags into a single
+/// sectPr block. Each donor tag is injected only if a tag of the same
+/// element + `w:type` is not already present in the block. The donor
+/// tags are inserted as the FIRST children of the sectPr (right after
+/// the opening `<w:sectPr …>` tag) so they satisfy OOXML CT_SectPr's
+/// child-order requirement.
+#[allow(clippy::too_many_arguments)]
+fn inject_missing_chrome_refs(
+    block: &str,
+    header_default: Option<&str>,
+    header_even: Option<&str>,
+    header_first: Option<&str>,
+    footer_default: Option<&str>,
+    footer_even: Option<&str>,
+    footer_first: Option<&str>,
+) -> String {
+    let pairs: [(Option<&str>, &str, &str); 6] = [
+        (header_default, "headerReference", "default"),
+        (header_even, "headerReference", "even"),
+        (header_first, "headerReference", "first"),
+        (footer_default, "footerReference", "default"),
+        (footer_even, "footerReference", "even"),
+        (footer_first, "footerReference", "first"),
+    ];
+    // Build the injection payload, preserving header-before-footer +
+    // default-before-even-before-first ordering — Word accepts any order
+    // among references, but the chosen order matches the donor pattern.
+    let mut injection = String::new();
+    for (donor, tag, ty) in pairs {
+        let Some(donor) = donor else { continue };
+        if has_ref_of_type(block, tag, ty) {
+            continue;
+        }
+        injection.push_str(donor);
+    }
+    if injection.is_empty() {
+        return block.to_string();
+    }
+    // Locate the end of the opening `<w:sectPr …>` tag. The opening tag
+    // can be either `<w:sectPr>` (no attrs) or `<w:sectPr w:rsid="…">`
+    // (with attrs). Find the first `>` after the `<w:sectPr` token,
+    // skipping any `/>` (which would mean an empty self-closing sectPr,
+    // not the case for us but defensive).
+    let after_token = "<w:sectPr".len();
+    let Some(close_rel) = block[after_token..].find('>') else {
+        return block.to_string();
+    };
+    let insert_at = after_token + close_rel + 1;
+    let mut out = String::with_capacity(block.len() + injection.len());
+    out.push_str(&block[..insert_at]);
+    out.push_str(&injection);
+    out.push_str(&block[insert_at..]);
+    out
+}
+
+/// Does `block` already contain a `<w:{tag} … w:type="{ty}" … />` tag?
+fn has_ref_of_type(block: &str, tag: &str, ty: &str) -> bool {
+    let needle = format!("<w:{tag}");
+    let type_match = format!("w:type=\"{ty}\"");
+    let mut pos = 0usize;
+    while let Some(rel) = block[pos..].find(&needle) {
+        let abs = pos + rel;
+        let Some(end) = block[abs..].find("/>") else {
+            return false;
+        };
+        let tag_str = &block[abs..abs + end + 2];
+        if tag_str.contains(type_match.as_str()) {
+            return true;
+        }
+        pos = abs + end + 2;
+    }
+    false
 }
 
 /// Curated index terms (bookkit.py port). Matched case-insensitively in body
@@ -6637,6 +6823,128 @@ mod tests {
         assert!(
             !tail.contains("w:num=\"2\""),
             "CLOSE sectPr must restore 1-col (no num=2): {tail}"
+        );
+    }
+
+    /// 2026-06-14 (#413 follow-up) — `propagate_section_chrome_refs`
+    /// must clone the existing `<w:footerReference>` (and header
+    /// references) from any sectPr that has them into every sectPr
+    /// that lacks one. Without this, multi-section docs render page
+    /// numbers only on pages controlled by the document-level sectPr.
+    #[test]
+    fn propagate_section_chrome_refs_copies_footer_into_bare_sectprs() {
+        // Two per-chapter sectPrs (no footer ref) + one doc-level
+        // sectPr (with the canonical footerReference). After the pass,
+        // all three should carry the footerReference.
+        let doc = "<w:body>\
+            <w:p><w:pPr><w:sectPr w:rsidR=\"00\"><w:pgSz w:w=\"11906\" w:h=\"16838\"/></w:sectPr></w:pPr></w:p>\
+            <w:p><w:pPr><w:sectPr w:rsidR=\"01\"><w:pgSz w:w=\"11906\" w:h=\"16838\"/></w:sectPr></w:pPr></w:p>\
+            <w:sectPr w:rsidR=\"02\"><w:footerReference w:type=\"default\" r:id=\"rId99\"/><w:pgSz w:w=\"11906\" w:h=\"16838\"/></w:sectPr>\
+            </w:body>";
+        let out = propagate_section_chrome_refs(doc);
+        // Every sectPr now carries the default footerReference.
+        let ref_count = out.matches("<w:footerReference w:type=\"default\" r:id=\"rId99\"/>").count();
+        assert_eq!(
+            ref_count, 3,
+            "expected the default footerReference in all 3 sectPrs after propagation: {out}"
+        );
+        // Donor sectPr must still have exactly one (no double-inject).
+        let donor_block_idx = out.find("w:rsidR=\"02\"").unwrap();
+        let donor_tail = &out[donor_block_idx..];
+        let donor_end = donor_tail.find("</w:sectPr>").unwrap();
+        let donor_block = &donor_tail[..donor_end];
+        assert_eq!(
+            donor_block.matches("<w:footerReference").count(),
+            1,
+            "donor sectPr must not be re-injected: {donor_block}"
+        );
+        // No-op on docs without any reference at all.
+        let bare = "<w:body><w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/></w:sectPr></w:body>";
+        assert_eq!(propagate_section_chrome_refs(bare), bare);
+    }
+
+    /// 2026-06-14 (#413 follow-up) — end-to-end: render a tiny thesis-
+    /// profile book with the bookkit per-chapter sectPr opt-in, then
+    /// unzip the docx and assert (a) `word/footer*.xml` contains the
+    /// PAGE field, and (b) EVERY `<w:sectPr>` in `word/document.xml`
+    /// carries a `<w:footerReference>`. Before the propagation pass,
+    /// only the document-level (last) sectPr did, so every per-chapter
+    /// section rendered with no page number — the user-reported defect
+    /// (`campaign_01.docx has NO PAGE NUMBERING`, 2026-06-14). The
+    /// `thesis_profile` path is the one that honours
+    /// `emit_per_chapter_sectpr` and therefore produces the multi-
+    /// section docx layout that triggered the bug.
+    #[test]
+    fn render_book_attaches_footer_ref_to_every_section() {
+        use std::io::Read;
+        let chapters: Vec<(String, String)> = (1..=3)
+            .map(|i| (format!("ch{i}"), format!("# Chapter {i}\n\nBody paragraph.\n")))
+            .collect();
+        let meta = BookMeta {
+            title: "T".into(),
+            subtitle: "S".into(),
+            author: "A".into(),
+            context: "C".into(),
+            // Thesis profile + per-chapter sectPr opt-in is the
+            // combination that produced 9-25 sectPrs in the shipped
+            // books (master_thesis_bookkit had 25). Without the fix,
+            // 24/25 of those rendered with no footer.
+            thesis_profile: true,
+            emit_per_chapter_sectpr: true,
+            ..Default::default()
+        };
+        let bytes = render_book(&meta, &chapters, Path::new(".")).expect("render");
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+
+        // (a) footer part exists and carries PAGE field.
+        let mut footer_xml = String::new();
+        let mut found_footer = false;
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            if is_footer_part(&name) {
+                found_footer = true;
+                let _ = entry.read_to_string(&mut footer_xml);
+                break;
+            }
+        }
+        assert!(found_footer, "expected at least one word/footer*.xml part");
+        assert!(
+            footer_xml.contains("<w:instrText>PAGE</w:instrText>")
+                || footer_xml.contains("<w:instrText xml:space=\"preserve\"> PAGE </w:instrText>")
+                || footer_xml.contains("w:instr=\"PAGE\""),
+            "footer must carry the PAGE field: {footer_xml}"
+        );
+
+        // (b) every <w:sectPr> in document.xml has a footerReference.
+        let mut doc = String::new();
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut doc)
+            .unwrap();
+        let sectpr_count = doc.matches("<w:sectPr").count();
+        assert!(
+            sectpr_count >= 2,
+            "test must exercise multi-section docs; got only {sectpr_count} sectPrs"
+        );
+        // Walk every sectPr block and assert it carries a footerReference.
+        let mut bad: Vec<String> = Vec::new();
+        let mut rest = doc.as_str();
+        while let Some(open) = rest.find("<w:sectPr") {
+            let after_open = open + "<w:sectPr".len();
+            let Some(close_rel) = rest[after_open..].find("</w:sectPr>") else {
+                break;
+            };
+            let block_end = after_open + close_rel + "</w:sectPr>".len();
+            let block = &rest[open..block_end];
+            if !block.contains("<w:footerReference") {
+                bad.push(block.to_string());
+            }
+            rest = &rest[block_end..];
+        }
+        assert!(
+            bad.is_empty(),
+            "every sectPr must carry a footerReference; missing in: {bad:?}"
         );
     }
 
