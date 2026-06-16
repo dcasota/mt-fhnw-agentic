@@ -193,6 +193,10 @@ pub async fn run_report(
             agentic_checks::figure_quality_gate::run(&conn, &project)?,
             Some(project),
         ),
+        CheckAction::FigureSizing { project, root } => (
+            agentic_checks::figure_sizing_gate::run(&conn, &project, &root)?,
+            Some(project),
+        ),
         CheckAction::Disclosure { project, venue } => (
             agentic_checks::disclosure_gate::run(&conn, &project, venue.as_deref())?,
             Some(project),

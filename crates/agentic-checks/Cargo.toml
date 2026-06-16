@@ -13,7 +13,9 @@ path = "src/lib.rs"
 
 [dependencies]
 agentic-core      = { workspace = true }
+agentic-figures   = { workspace = true }
 agentic-providers = { workspace = true }
+image             = { workspace = true }
 rusqlite          = { workspace = true }
 anyhow            = { workspace = true }
 serde             = { workspace = true }

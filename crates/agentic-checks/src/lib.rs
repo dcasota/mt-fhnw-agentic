@@ -26,6 +26,7 @@ pub mod disclosure_gate;
 pub mod docs_gate;
 pub mod facts_gate;
 pub mod figure_quality_gate;
+pub mod figure_sizing_gate;
 pub mod freshness_gate;
 pub mod ground_truth_gate;
 pub mod heading_typos;

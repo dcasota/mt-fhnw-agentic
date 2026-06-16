@@ -302,7 +302,15 @@ pub fn parse(spec_json: &str) -> Result<FigSpec> {
 /// Minimum on-page text size in points required by the figure-audit
 /// gate. Below this, rendered glyphs are unreadable at Word's body
 /// width.
-const MIN_ON_PAGE_PT: f64 = 7.0;
+///
+/// Bumped 7.0 → 8.0 (2026-06-16): user reported flow-figure box labels
+/// rendering at sub-readable sizes even on landscape pages. The 7-pt
+/// floor was sometimes only nominally met (the resize compounding
+/// destroyed the post-clamp on-page size for wide canvases); 8.0 is
+/// the new floor and the new canvas-budget logic in [`render_flow`] /
+/// [`fit_to_landscape_cap`] forces source canvases to stay within the
+/// cap so the floor is *actually* met, not just nominally.
+const MIN_ON_PAGE_PT: f64 = 8.0;
 /// Smallest font size used by any PNG renderer (flow box labels,
 /// matrix cell values, …). Back-solves the maximum PNG width allowed
 /// for a given page-display width.
@@ -324,13 +332,24 @@ const AUTO_LANDSCAPE_ASPECT: f64 = 1.6;
 /// Maximum PNG width (in pixels) for a figure that will be embedded at
 /// the body-text width of `layout`. Derived from
 /// `MIN_RENDERER_FONT_PT * display_in * 72 / MIN_ON_PAGE_PT`, so a
-/// 13 pt glyph in the source PNG never shrinks below 7 pt on the
-/// rendered page. At the current constants (integer truncation):
+/// 13 pt glyph in the source PNG never shrinks below the on-page
+/// floor (8.0 pt as of 2026-06-16). At the current constants (integer
+/// truncation):
 ///
 /// | layout    | cap     |
 /// |-----------|---------|
-/// | Portrait  |  790 px (`floor(13 × 5.91 × 72 / 7) = 790`) |
-/// | Landscape | 1258 px (`floor(13 × 9.41 × 72 / 7) = 1258`) |
+/// | Portrait  |  691 px (`floor(13 × 5.91 × 72 / 8) = 691`) |
+/// | Landscape | 1100 px (`floor(13 × 9.41 × 72 / 8) = 1100`) |
+///
+/// IMPORTANT: this cap is a SUFFICIENT condition (PNG ≤ cap ⇒ on-page
+/// font ≥ floor), NOT a guarantee given an arbitrary source canvas.
+/// If a renderer produces a canvas wider than the cap, the post-clamp
+/// resize shrinks text *proportionally*, compounding with the page-
+/// display scale and pushing the actual on-page pt well below the
+/// floor. That is the bug fixed by [`fit_to_landscape_cap`] in
+/// `render_flow` / `render_matrix` / `render_quadrant`: budget the
+/// canvas at render time so it stays ≤ the landscape cap, then no
+/// shrink-compounding can happen.
 pub(crate) fn max_png_width_px(layout: Layout) -> u32 {
     let display_in = match layout {
         Layout::Portrait => PORTRAIT_DISPLAY_IN,
@@ -339,6 +358,94 @@ pub(crate) fn max_png_width_px(layout: Layout) -> u32 {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let v = (MIN_RENDERER_FONT_PT * display_in * 72.0 / MIN_ON_PAGE_PT) as u32;
     v
+}
+
+/// Effective on-page font size (pt) for a renderer-pt glyph in a PNG
+/// of width `png_w_px` displayed at the body width of `layout`.
+///
+/// Formula: `on_page_pt = renderer_pt * display_in * 72 / png_w_px`.
+/// This is the readability-clamp invariant in its honest form — it
+/// makes no assumption about source-canvas vs. cap relationships and
+/// can be applied uniformly to any rendered PNG by the figure-sizing
+/// audit gate.
+#[must_use]
+pub fn expected_on_page_pt(layout: Layout, png_w_px: u32, renderer_pt: f64) -> f64 {
+    let display_in = match layout {
+        Layout::Portrait => PORTRAIT_DISPLAY_IN,
+        Layout::Landscape => LANDSCAPE_DISPLAY_IN,
+    };
+    if png_w_px == 0 {
+        return 0.0;
+    }
+    renderer_pt * display_in * 72.0 / f64::from(png_w_px)
+}
+
+/// On-page floor enforced by the figure-sizing gate (alias of the
+/// internal [`MIN_ON_PAGE_PT`] constant; exposed so downstream crates
+/// can audit rendered PNGs without re-declaring the constant).
+#[must_use]
+pub fn on_page_pt_floor() -> f64 {
+    MIN_ON_PAGE_PT
+}
+
+/// Renderer-pt used by every PNG renderer for its smallest text. Used
+/// by [`expected_on_page_pt`] to back-solve the on-page size.
+#[must_use]
+pub fn renderer_min_pt() -> f64 {
+    MIN_RENDERER_FONT_PT
+}
+
+/// Fit a projected canvas width to the Landscape PNG cap. Returns the
+/// pair `(box_w, col_gap)` to use, and mutates `spec.layout` to
+/// `Landscape` when the natural width would have exceeded the
+/// `Portrait` cap (since at that point the figure WILL need the wider
+/// page width to render at the on-page floor regardless of the
+/// renderer's box dimensions).
+///
+/// `nominal_box_w` and `nominal_col_gap` are the renderer's natural
+/// choices; if they fit within the Landscape cap, this returns them
+/// unchanged. Otherwise it allocates the per-column budget at the
+/// natural ratio (`nominal_box_w : nominal_col_gap`) and shrinks both
+/// to fit, with a minimum `box_w ≥ 80 px` and `col_gap ≥ 20 px` so the
+/// renderer doesn't degenerate into unreadable slivers.
+///
+/// 2026-06-16: introduced to fix the `figPTC081_01`-class bug where
+/// 7-layer flows with long node labels produced ~3.3 kpx canvases that
+/// got Lanczos-clamped down to ~1.1 kpx, shrinking 13-pt source font
+/// to 2.6 pt on the rendered page.
+pub(crate) fn fit_to_landscape_cap(
+    spec: &mut FigSpec,
+    nominal_w_px: i32,
+    margin_px: i32,
+    n_columns: i32,
+    nominal_box_w: i32,
+    nominal_col_gap: i32,
+) -> (i32, i32) {
+    let portrait_cap = max_png_width_px(Layout::Portrait) as i32;
+    let landscape_cap = max_png_width_px(Layout::Landscape) as i32;
+    if nominal_w_px > portrait_cap && matches!(spec.layout, Layout::Portrait) {
+        spec.layout = Layout::Landscape;
+    }
+    if nominal_w_px <= landscape_cap {
+        return (nominal_box_w, nominal_col_gap);
+    }
+    spec.layout = Layout::Landscape;
+    let n = n_columns.max(1);
+    let usable = (landscape_cap - margin_px * 2).max(160);
+    let ratio_box = nominal_box_w.max(1);
+    let ratio_gap = nominal_col_gap.max(1);
+    let unit = ratio_box + ratio_gap;
+    let slot = usable / n;
+    let mut new_box_w = (slot * ratio_box / unit).max(80).min(nominal_box_w);
+    let mut new_col_gap = (slot - new_box_w).max(20).min(nominal_col_gap);
+    let projected = margin_px * 2 + n * new_box_w + (n - 1) * new_col_gap;
+    if projected > landscape_cap {
+        let over = projected - landscape_cap;
+        let trim_each = over / n.max(1) + 1;
+        new_box_w = (new_box_w - trim_each / 2).max(80);
+        new_col_gap = (new_col_gap - trim_each / 2).max(20);
+    }
+    (new_box_w, new_col_gap)
 }
 
 /// Post-render: reopen `out_path`, auto-promote `spec.layout` to
@@ -802,7 +909,7 @@ fn render_line(spec: &FigSpec, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
+fn render_matrix(spec: &mut FigSpec, path: &Path) -> Result<()> {
     let rows = strs(&spec.data, "rows");
     let cols = strs(&spec.data, "cols");
     let cells: Vec<Vec<String>> = spec
@@ -835,6 +942,16 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
         rowlab_w + nc as i32 * cell_w + 40,
         70 + head_h + nr as i32 * cell_h + 30 + legend_h,
     );
+    // Canvas-budget enforcement (2026-06-16). Matrices wider than the
+    // Portrait cap (691 px at the 8.0-pt floor) would otherwise get
+    // Lanczos-clamped down with the 16-pt cell-text shrinking
+    // proportionally. Force Landscape so the embedder rotates the page
+    // and the body width is 9.41 in — Landscape cap (1 100 px) absorbs
+    // every realistic matrix without further shrink.
+    let portrait_cap = max_png_width_px(Layout::Portrait) as i32;
+    if w > portrait_cap && matches!(spec.layout, Layout::Portrait) {
+        spec.layout = Layout::Landscape;
+    }
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
     draw_title(&root, &spec.title, w)?;
@@ -918,9 +1035,19 @@ fn render_matrix(spec: &FigSpec, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn render_quadrant(spec: &FigSpec, path: &Path) -> Result<()> {
+fn render_quadrant(spec: &mut FigSpec, path: &Path) -> Result<()> {
     let q = spec.data.get("quadrants").cloned().unwrap_or(Value::Null);
     let (w, h) = (1000i32, 760i32);
+    // 2026-06-16: quadrant canvases are 1 000 × 760 by construction —
+    // wider than the Portrait cap (691 px at the 8.0-pt floor), so they
+    // would clamp-shrink to 691 × 525 with 12-pt items shrinking to
+    // ~5 pt on page. Force Landscape so the embedder rotates the page;
+    // 1 000 ≤ Landscape cap (1 100 px) means no clamp, 12 pt × 678 /
+    // 1 000 = 8.14 pt on page, just above the floor.
+    let portrait_cap = max_png_width_px(Layout::Portrait) as i32;
+    if w > portrait_cap && matches!(spec.layout, Layout::Portrait) {
+        spec.layout = Layout::Landscape;
+    }
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
     draw_title(&root, &spec.title, w)?;
@@ -998,7 +1125,7 @@ pub(crate) fn arrow(a: &Area<'_>, start: (i32, i32), end: (i32, i32), c: &RGBCol
     Ok(())
 }
 
-fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
+fn render_flow(spec: &mut FigSpec, path: &Path) -> Result<()> {
     use std::collections::HashMap;
     let nodes: Vec<String> = strs(&spec.data, "nodes");
     let nodes = if nodes.is_empty() {
@@ -1107,20 +1234,10 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
     // wrapping stays inside the box. ~7 px per character at the 13-pt
     // box-label size.
     let max_label_chars = nodes.iter().map(|s| s.chars().count()).max().unwrap_or(0);
-    let wrap_chars = max_label_chars.div_ceil(4).clamp(22, 36);
+    let mut wrap_chars = max_label_chars.div_ceil(4).clamp(22, 36);
     let approx_text_w = wrap_chars as i32 * 7 + 16;
-    let box_w = approx_text_w.clamp(190, 280);
-    // #408 (2026-06-08): box_h grows to the actual wrapped line count so
-    // long labels are no longer silently dropped by the prior `take(4)`
-    // cap. 17 px per line + 28 px padding (14 top + 14 bottom);
-    // baseline ≥ 92 px so simple flows stay visually identical.
+    let mut box_w = approx_text_w.clamp(190, 280);
     const BOX_LINE_H: i32 = 17;
-    let box_max_lines = nodes
-        .iter()
-        .map(|s| wrap(s, wrap_chars).len())
-        .max()
-        .unwrap_or(1);
-    let box_h = (box_max_lines as i32 * BOX_LINE_H + 28).max(92);
     // #408 (2026-06-08): col_gap scales to the longest edge label so the
     // edge text fits in ≤2 lines at the natural per-line budget instead
     // of being truncated with "…". `target_per_line` chars per line at
@@ -1134,10 +1251,42 @@ fn render_flow(spec: &FigSpec, path: &Path) -> Result<()> {
         .unwrap_or(0);
     let target_per_line = max_edge_chars.div_ceil(2).max(20);
     let needed_gap = target_per_line as i32 * 6 + 16;
-    let col_gap = needed_gap.clamp(110, 220);
+    let mut col_gap = needed_gap.clamp(110, 220);
     let row_gap = 38i32;
     let (mx, my) = (32i32, 70i32);
-    let w = mx * 2 + nlayers as i32 * box_w + (nlayers as i32 - 1) * col_gap;
+    let nlayers_i32 = nlayers as i32;
+    // Canvas-budget enforcement (2026-06-16). Project the natural canvas
+    // width; if it exceeds the Landscape PNG cap (the only cap that can
+    // actually keep 13-pt source font at ≥ 8.0 pt on the rendered page),
+    // (a) force `spec.layout` to Landscape, (b) shrink box_w + col_gap
+    // proportionally to fit. Re-wrap text to the narrower box; box_h
+    // grows to absorb the extra lines (height is uncapped since
+    // landscape A4 has ~6 in usable height).
+    //
+    // This replaces the silent "natural canvas > cap → post-clamp resize
+    // squishes text to 2-3 pt" failure mode that hit figPTC081_01-class
+    // figures (7 layers × 280 px box × 220 px gap ≈ 3 344 px canvas →
+    // clamped to 1 100 → 13 pt × 1 100 / 3 344 = 4.3 source-px → 2.6 pt
+    // on page, six points below the 8.0-pt floor).
+    let nominal_w = mx * 2 + nlayers_i32 * box_w + (nlayers_i32 - 1) * col_gap;
+    let (fit_box_w, fit_col_gap) =
+        fit_to_landscape_cap(spec, nominal_w, mx, nlayers_i32, box_w, col_gap);
+    box_w = fit_box_w;
+    col_gap = fit_col_gap;
+    if box_w < approx_text_w {
+        wrap_chars = (((box_w - 16) / 7).max(8)) as usize;
+    }
+    // #408 (2026-06-08): box_h grows to the actual wrapped line count so
+    // long labels are no longer silently dropped by the prior `take(4)`
+    // cap. 17 px per line + 28 px padding (14 top + 14 bottom);
+    // baseline ≥ 92 px so simple flows stay visually identical.
+    let box_max_lines = nodes
+        .iter()
+        .map(|s| wrap(s, wrap_chars).len())
+        .max()
+        .unwrap_or(1);
+    let box_h = (box_max_lines as i32 * BOX_LINE_H + 28).max(92);
+    let w = mx * 2 + nlayers_i32 * box_w + (nlayers_i32 - 1) * col_gap;
     let inner_h = max_rows * box_h + (max_rows - 1) * row_gap;
     let h = my + inner_h + 36;
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
@@ -2609,16 +2758,17 @@ mod tests {
         render_and_clamp(&mut spec, &p).unwrap();
         let img = image::open(&p).unwrap();
         let cap = max_png_width_px(spec.layout);
-        // Sanity: the cap must match the documented table — 790 for
-        // Portrait, 1258 for Landscape (integer truncation of the
-        // formula). Locks the formula against drift.
+        // Sanity: the cap must match the documented table — 691 for
+        // Portrait, 1100 for Landscape (integer truncation of the
+        // formula at the 8.0 pt on-page floor as of 2026-06-16).
+        // Locks the formula against drift.
         assert!(
-            cap == 790 || cap == 1258,
+            cap == 691 || cap == 1100,
             "max_png_width_px cap unexpected: {cap}",
         );
         assert!(
             img.width() <= cap,
-            "PNG width {} exceeds cap {} (layout={:?}); 7 pt floor would break",
+            "PNG width {} exceeds cap {} (layout={:?}); 8 pt floor would break",
             img.width(),
             cap,
             spec.layout,

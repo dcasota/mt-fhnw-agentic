@@ -52,11 +52,13 @@ name = "agentic-checks"
 version = "0.1.20"
 dependencies = [
  "agentic-core",
+ "agentic-figures",
  "agentic-providers",
  "anyhow",
  "async-trait",
  "chrono",
  "hex",
+ "image 0.25.10",
  "pretty_assertions",
  "regex",
  "reqwest",

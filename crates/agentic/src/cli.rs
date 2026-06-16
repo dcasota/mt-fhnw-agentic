@@ -1358,6 +1358,18 @@ pub enum CheckAction {
         #[arg(long)]
         project: String,
     },
+    /// On-page font-size floor gate (2026-06-16). Walks every rendered PNG
+    /// under `out/figures/**`, computes the effective on-page font size
+    /// (renderer_pt × display_in × 72 / png_width_px), and FAILs when the
+    /// floor (8.0 pt) is breached or when a wide PNG is embedded without
+    /// the `#landscape` URL fragment.
+    FigureSizing {
+        #[arg(long)]
+        project: String,
+        /// Worktree root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
+    },
     /// AI-disclosure presence + venue match (ADR-0044): a named venue/track
     /// without a disclosure statement is an ERROR.
     Disclosure {
