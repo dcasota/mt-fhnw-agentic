@@ -517,10 +517,7 @@ pub const REGS: &[Regulation] = &[
         pub_year: 2024,
         applies_year: 2027,
         sunset_year: Some(2033),
-        milestones: &[
-            (2027, "2027: start"),
-            (2033, "2033: PQC-only target"),
-        ],
+        milestones: &[(2027, "2027: start"), (2033, "2033: PQC-only target")],
         note: "CA/Browser-Forum cert lifetime",
         sector: &["HOR"],
         et: true,
@@ -638,26 +635,106 @@ pub struct MutualRecognition {
 }
 
 pub const MUTUAL: &[MutualRecognition] = &[
-    MutualRecognition { src: "ISO/IEC 42001:2023 (AIMS)", tgt: "EU AI Act", strength: 3 },
-    MutualRecognition { src: "ISO/IEC 42001:2023 (AIMS)", tgt: "NIST AI RMF 1.0 (NIST AI 100-1)", strength: 2 },
-    MutualRecognition { src: "ISO/IEC 42001:2023 (AIMS)", tgt: "FINMA Guidance 05/2025", strength: 2 },
-    MutualRecognition { src: "NIST AI RMF 1.0 (NIST AI 100-1)", tgt: "EU AI Act", strength: 2 },
-    MutualRecognition { src: "NIST AI 100-2 (adversarial-ML)", tgt: "EU AI Act", strength: 2 },
-    MutualRecognition { src: "FIPS 140-3 + ESV (mandatory)", tgt: "BSI VS-NfD", strength: 2 },
-    MutualRecognition { src: "FIPS 140-3 + ESV (mandatory)", tgt: "ANSSI CSPN", strength: 2 },
-    MutualRecognition { src: "FIPS 140-3 + ESV (mandatory)", tgt: "FedRAMP High", strength: 3 },
-    MutualRecognition { src: "CNSA 2.0", tgt: "BSI TR-02102 KRITIS hybrid-by-2030", strength: 2 },
-    MutualRecognition { src: "CNSA 2.0", tgt: "NIST IR 8547", strength: 3 },
-    MutualRecognition { src: "NIST IR 8547", tgt: "BSI TR-02102 KRITIS hybrid-by-2030", strength: 2 },
-    MutualRecognition { src: "NIST IR 8547", tgt: "TLS 47-day certificate lifetime", strength: 2 },
-    MutualRecognition { src: "EU CRA (Reg 2024/2847)", tgt: "EU NIS Coop crypto-inventory", strength: 2 },
-    MutualRecognition { src: "EU CRA (Reg 2024/2847)", tgt: "CERT-In v2.0", strength: 1 },
-    MutualRecognition { src: "EU CRA (Reg 2024/2847)", tgt: "PCI DSS v4.0.1", strength: 1 },
-    MutualRecognition { src: "US EO 14028", tgt: "EU CRA (Reg 2024/2847)", strength: 1 },
-    MutualRecognition { src: "US EO 14028", tgt: "CERT-In v2.0", strength: 1 },
-    MutualRecognition { src: "EU DORA (Reg 2022/2554)", tgt: "FINMA Circular 2023/1", strength: 3 },
-    MutualRecognition { src: "EU DORA (Reg 2022/2554)", tgt: "FINMA Guidance 05/2025", strength: 2 },
-    MutualRecognition { src: "GDPR (Reg 2016/679)", tgt: "Swiss revFADP", strength: 3 },
+    MutualRecognition {
+        src: "ISO/IEC 42001:2023 (AIMS)",
+        tgt: "EU AI Act",
+        strength: 3,
+    },
+    MutualRecognition {
+        src: "ISO/IEC 42001:2023 (AIMS)",
+        tgt: "NIST AI RMF 1.0 (NIST AI 100-1)",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "ISO/IEC 42001:2023 (AIMS)",
+        tgt: "FINMA Guidance 05/2025",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "NIST AI RMF 1.0 (NIST AI 100-1)",
+        tgt: "EU AI Act",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "NIST AI 100-2 (adversarial-ML)",
+        tgt: "EU AI Act",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "FIPS 140-3 + ESV (mandatory)",
+        tgt: "BSI VS-NfD",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "FIPS 140-3 + ESV (mandatory)",
+        tgt: "ANSSI CSPN",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "FIPS 140-3 + ESV (mandatory)",
+        tgt: "FedRAMP High",
+        strength: 3,
+    },
+    MutualRecognition {
+        src: "CNSA 2.0",
+        tgt: "BSI TR-02102 KRITIS hybrid-by-2030",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "CNSA 2.0",
+        tgt: "NIST IR 8547",
+        strength: 3,
+    },
+    MutualRecognition {
+        src: "NIST IR 8547",
+        tgt: "BSI TR-02102 KRITIS hybrid-by-2030",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "NIST IR 8547",
+        tgt: "TLS 47-day certificate lifetime",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "EU CRA (Reg 2024/2847)",
+        tgt: "EU NIS Coop crypto-inventory",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "EU CRA (Reg 2024/2847)",
+        tgt: "CERT-In v2.0",
+        strength: 1,
+    },
+    MutualRecognition {
+        src: "EU CRA (Reg 2024/2847)",
+        tgt: "PCI DSS v4.0.1",
+        strength: 1,
+    },
+    MutualRecognition {
+        src: "US EO 14028",
+        tgt: "EU CRA (Reg 2024/2847)",
+        strength: 1,
+    },
+    MutualRecognition {
+        src: "US EO 14028",
+        tgt: "CERT-In v2.0",
+        strength: 1,
+    },
+    MutualRecognition {
+        src: "EU DORA (Reg 2022/2554)",
+        tgt: "FINMA Circular 2023/1",
+        strength: 3,
+    },
+    MutualRecognition {
+        src: "EU DORA (Reg 2022/2554)",
+        tgt: "FINMA Guidance 05/2025",
+        strength: 2,
+    },
+    MutualRecognition {
+        src: "GDPR (Reg 2016/679)",
+        tgt: "Swiss revFADP",
+        strength: 3,
+    },
 ];
 
 // ===========================================================================
@@ -676,20 +753,60 @@ pub struct ConflictMarker {
 /// making the pairing visible in Panel C.
 pub const CONFLICTS: &[ConflictMarker] = &[
     // 1. EU CRA transparency ↔ BSI VS-NfD classified secrecy (in force 2027)
-    ConflictMarker { label: "EU CRA (Reg 2024/2847)", year: 2027, text: "transparency ↔ classified secrecy (BSI VS-NfD)" },
-    ConflictMarker { label: "BSI VS-NfD", year: 2027, text: "classified secrecy ↔ CRA transparency" },
+    ConflictMarker {
+        label: "EU CRA (Reg 2024/2847)",
+        year: 2027,
+        text: "transparency ↔ classified secrecy (BSI VS-NfD)",
+    },
+    ConflictMarker {
+        label: "BSI VS-NfD",
+        year: 2027,
+        text: "classified secrecy ↔ CRA transparency",
+    },
     // 2. GDPR data sovereignty ↔ US CLOUD Act reach (in force 2018)
-    ConflictMarker { label: "GDPR (Reg 2016/679)", year: 2018, text: "data sovereignty ↔ US CLOUD Act reach" },
-    ConflictMarker { label: "US CLOUD Act", year: 2018, text: "US extraterritorial reach ↔ GDPR sovereignty" },
+    ConflictMarker {
+        label: "GDPR (Reg 2016/679)",
+        year: 2018,
+        text: "data sovereignty ↔ US CLOUD Act reach",
+    },
+    ConflictMarker {
+        label: "US CLOUD Act",
+        year: 2018,
+        text: "US extraterritorial reach ↔ GDPR sovereignty",
+    },
     // 3. EU AI Act provenance ↔ EU Trade Secrets Directive (in force 2026)
-    ConflictMarker { label: "EU AI Act", year: 2026, text: "provenance ↔ trade-secret protection" },
-    ConflictMarker { label: "EU Trade Secrets Directive (2016/943)", year: 2026, text: "trade-secret protection ↔ AI Act provenance" },
+    ConflictMarker {
+        label: "EU AI Act",
+        year: 2026,
+        text: "provenance ↔ trade-secret protection",
+    },
+    ConflictMarker {
+        label: "EU Trade Secrets Directive (2016/943)",
+        year: 2026,
+        text: "trade-secret protection ↔ AI Act provenance",
+    },
     // 4. CNSA 2.0 PQC-only ↔ BSI KRITIS hybrid (in force 2033)
-    ConflictMarker { label: "CNSA 2.0", year: 2033, text: "PQC-only ↔ DE hybrid-only (KRITIS)" },
-    ConflictMarker { label: "BSI TR-02102 KRITIS hybrid-by-2030", year: 2033, text: "DE hybrid-only ↔ US CNSA PQC-only" },
+    ConflictMarker {
+        label: "CNSA 2.0",
+        year: 2033,
+        text: "PQC-only ↔ DE hybrid-only (KRITIS)",
+    },
+    ConflictMarker {
+        label: "BSI TR-02102 KRITIS hybrid-by-2030",
+        year: 2033,
+        text: "DE hybrid-only ↔ US CNSA PQC-only",
+    },
     // 5. PCI DSS retention ↔ GDPR right-to-erasure (in force 2025)
-    ConflictMarker { label: "PCI DSS v4.0.1", year: 2025, text: "retention ↔ GDPR right-to-erasure" },
-    ConflictMarker { label: "GDPR (Reg 2016/679)", year: 2025, text: "right-to-erasure ↔ PCI DSS retention" },
+    ConflictMarker {
+        label: "PCI DSS v4.0.1",
+        year: 2025,
+        text: "retention ↔ GDPR right-to-erasure",
+    },
+    ConflictMarker {
+        label: "GDPR (Reg 2016/679)",
+        year: 2025,
+        text: "right-to-erasure ↔ PCI DSS retention",
+    },
 ];
 
 // ===========================================================================
@@ -705,13 +822,13 @@ pub const CONFLICTS: &[ConflictMarker] = &[
 /// teal, green, slate, or warm brown so the legend doesn't collide with cue
 /// meaning.
 pub const COLOURS: &[(&str, &str)] = &[
-    ("EU",     "#1f4e79"), // deep blue
-    ("US",     "#6a1b9a"), // purple
-    ("DE",     "#b8860b"), // dark gold
-    ("FR",     "#3b5998"), // mid blue
-    ("CH",     "#00838f"), // teal
-    ("IN",     "#388e3c"), // forest green
-    ("Intl",   "#37474f"), // dark blue-slate
+    ("EU", "#1f4e79"),     // deep blue
+    ("US", "#6a1b9a"),     // purple
+    ("DE", "#b8860b"),     // dark gold
+    ("FR", "#3b5998"),     // mid blue
+    ("CH", "#00838f"),     // teal
+    ("IN", "#388e3c"),     // forest green
+    ("Intl", "#37474f"),   // dark blue-slate
     ("Global", "#6d4c41"), // warm brown
 ];
 
@@ -733,12 +850,84 @@ pub const CUE_MUTUAL_ARC: &str = "#444444";
 ///
 /// Layout: `JUR_PREFIX[i] = (lang, &[(jur, label)])`.
 pub const JUR_PREFIX: &[(&str, &[(&str, &str)])] = &[
-    ("en", &[("EU","EU"), ("US","US"), ("DE","Germany"), ("FR","France"), ("CH","Swiss"), ("IN","India"), ("Intl","International"), ("Global","Global")]),
-    ("de", &[("EU","EU"), ("US","USA"), ("DE","Deutschland"), ("FR","Frankreich"), ("CH","Schweiz"), ("IN","Indien"), ("Intl","International"), ("Global","Global")]),
-    ("fr", &[("EU","UE"), ("US","USA"), ("DE","Allemagne"), ("FR","France"), ("CH","Suisse"), ("IN","Inde"), ("Intl","International"), ("Global","Global")]),
-    ("it", &[("EU","UE"), ("US","USA"), ("DE","Germania"), ("FR","Francia"), ("CH","Svizzera"), ("IN","India"), ("Intl","Internazionale"), ("Global","Globale")]),
-    ("rm", &[("EU","UE"), ("US","USA"), ("DE","Germania"), ("FR","Frantscha"), ("CH","Svizra"), ("IN","India"), ("Intl","Internaziunal"), ("Global","Global")]),
-    ("hi", &[("EU","यूरोपीय"), ("US","अमेरिका"), ("DE","जर्मनी"), ("FR","फ्रांस"), ("CH","स्विट्जरलैंड"), ("IN","भारत"), ("Intl","अंतरराष्ट्रीय"), ("Global","वैश्विक")]),
+    (
+        "en",
+        &[
+            ("EU", "EU"),
+            ("US", "US"),
+            ("DE", "Germany"),
+            ("FR", "France"),
+            ("CH", "Swiss"),
+            ("IN", "India"),
+            ("Intl", "International"),
+            ("Global", "Global"),
+        ],
+    ),
+    (
+        "de",
+        &[
+            ("EU", "EU"),
+            ("US", "USA"),
+            ("DE", "Deutschland"),
+            ("FR", "Frankreich"),
+            ("CH", "Schweiz"),
+            ("IN", "Indien"),
+            ("Intl", "International"),
+            ("Global", "Global"),
+        ],
+    ),
+    (
+        "fr",
+        &[
+            ("EU", "UE"),
+            ("US", "USA"),
+            ("DE", "Allemagne"),
+            ("FR", "France"),
+            ("CH", "Suisse"),
+            ("IN", "Inde"),
+            ("Intl", "International"),
+            ("Global", "Global"),
+        ],
+    ),
+    (
+        "it",
+        &[
+            ("EU", "UE"),
+            ("US", "USA"),
+            ("DE", "Germania"),
+            ("FR", "Francia"),
+            ("CH", "Svizzera"),
+            ("IN", "India"),
+            ("Intl", "Internazionale"),
+            ("Global", "Globale"),
+        ],
+    ),
+    (
+        "rm",
+        &[
+            ("EU", "UE"),
+            ("US", "USA"),
+            ("DE", "Germania"),
+            ("FR", "Frantscha"),
+            ("CH", "Svizra"),
+            ("IN", "India"),
+            ("Intl", "Internaziunal"),
+            ("Global", "Global"),
+        ],
+    ),
+    (
+        "hi",
+        &[
+            ("EU", "यूरोपीय"),
+            ("US", "अमेरिका"),
+            ("DE", "जर्मनी"),
+            ("FR", "फ्रांस"),
+            ("CH", "स्विट्जरलैंड"),
+            ("IN", "भारत"),
+            ("Intl", "अंतरराष्ट्रीय"),
+            ("Global", "वैश्विक"),
+        ],
+    ),
 ];
 
 /// Two-character jurisdiction abbreviations for Panel-B annotation
@@ -746,25 +935,177 @@ pub const JUR_PREFIX: &[(&str, &[(&str, &str)])] = &[
 /// ISO-3166-1 alpha-2 codes (UE in fr/it/rm for European Union); Hindi
 /// uses Devanagari short forms (2-3 Devanagari syllables each).
 pub const JUR_ABBREV: &[(&str, &[(&str, &str)])] = &[
-    ("en", &[("EU","EU"), ("US","US"), ("DE","DE"), ("FR","FR"), ("CH","CH"), ("IN","IN"), ("Intl","IS"), ("Global","GL")]),
-    ("de", &[("EU","EU"), ("US","US"), ("DE","DE"), ("FR","FR"), ("CH","CH"), ("IN","IN"), ("Intl","IS"), ("Global","GL")]),
-    ("fr", &[("EU","UE"), ("US","US"), ("DE","DE"), ("FR","FR"), ("CH","CH"), ("IN","IN"), ("Intl","IS"), ("Global","GL")]),
-    ("it", &[("EU","UE"), ("US","US"), ("DE","DE"), ("FR","FR"), ("CH","CH"), ("IN","IN"), ("Intl","IS"), ("Global","GL")]),
-    ("rm", &[("EU","UE"), ("US","US"), ("DE","DE"), ("FR","FR"), ("CH","CH"), ("IN","IN"), ("Intl","IS"), ("Global","GL")]),
-    ("hi", &[("EU","ईयू"), ("US","यूएस"), ("DE","डीई"), ("FR","फ्रा"), ("CH","स्वि"), ("IN","भा"), ("Intl","अं"), ("Global","वै")]),
+    (
+        "en",
+        &[
+            ("EU", "EU"),
+            ("US", "US"),
+            ("DE", "DE"),
+            ("FR", "FR"),
+            ("CH", "CH"),
+            ("IN", "IN"),
+            ("Intl", "IS"),
+            ("Global", "GL"),
+        ],
+    ),
+    (
+        "de",
+        &[
+            ("EU", "EU"),
+            ("US", "US"),
+            ("DE", "DE"),
+            ("FR", "FR"),
+            ("CH", "CH"),
+            ("IN", "IN"),
+            ("Intl", "IS"),
+            ("Global", "GL"),
+        ],
+    ),
+    (
+        "fr",
+        &[
+            ("EU", "UE"),
+            ("US", "US"),
+            ("DE", "DE"),
+            ("FR", "FR"),
+            ("CH", "CH"),
+            ("IN", "IN"),
+            ("Intl", "IS"),
+            ("Global", "GL"),
+        ],
+    ),
+    (
+        "it",
+        &[
+            ("EU", "UE"),
+            ("US", "US"),
+            ("DE", "DE"),
+            ("FR", "FR"),
+            ("CH", "CH"),
+            ("IN", "IN"),
+            ("Intl", "IS"),
+            ("Global", "GL"),
+        ],
+    ),
+    (
+        "rm",
+        &[
+            ("EU", "UE"),
+            ("US", "US"),
+            ("DE", "DE"),
+            ("FR", "FR"),
+            ("CH", "CH"),
+            ("IN", "IN"),
+            ("Intl", "IS"),
+            ("Global", "GL"),
+        ],
+    ),
+    (
+        "hi",
+        &[
+            ("EU", "ईयू"),
+            ("US", "यूएस"),
+            ("DE", "डीई"),
+            ("FR", "फ्रा"),
+            ("CH", "स्वि"),
+            ("IN", "भा"),
+            ("Intl", "अं"),
+            ("Global", "वै"),
+        ],
+    ),
 ];
 
 /// Three-letter sector codes stay as-is in Latin-script languages
 /// (legend expands them); Hindi switches to Devanagari short forms.
 pub const SECTOR_TRANSLATIONS: &[(&str, &[(&str, &str)])] = &[
-    ("HOR", &[("en","HOR"), ("de","HOR"), ("fr","HOR"), ("it","HOR"), ("rm","HOR"), ("hi","क्षै")]),
-    ("FIN", &[("en","FIN"), ("de","FIN"), ("fr","FIN"), ("it","FIN"), ("rm","FIN"), ("hi","वित्त")]),
-    ("IND", &[("en","IND"), ("de","IND"), ("fr","IND"), ("it","IND"), ("rm","IND"), ("hi","उद्य")]),
-    ("EMB", &[("en","EMB"), ("de","EMB"), ("fr","EMB"), ("it","EMB"), ("rm","EMB"), ("hi","एम्ब")]),
-    ("DEF", &[("en","DEF"), ("de","DEF"), ("fr","DEF"), ("it","DIF"), ("rm","DEF"), ("hi","रक्षा")]),
-    ("GOV", &[("en","GOV"), ("de","GOV"), ("fr","GOV"), ("it","GOV"), ("rm","GOV"), ("hi","सर")]),
-    ("RET", &[("en","RET"), ("de","RET"), ("fr","RET"), ("it","RET"), ("rm","RET"), ("hi","खुद")]),
-    ("RES", &[("en","RES"), ("de","RES"), ("fr","RES"), ("it","RES"), ("rm","RES"), ("hi","अनुस")]),
+    (
+        "HOR",
+        &[
+            ("en", "HOR"),
+            ("de", "HOR"),
+            ("fr", "HOR"),
+            ("it", "HOR"),
+            ("rm", "HOR"),
+            ("hi", "क्षै"),
+        ],
+    ),
+    (
+        "FIN",
+        &[
+            ("en", "FIN"),
+            ("de", "FIN"),
+            ("fr", "FIN"),
+            ("it", "FIN"),
+            ("rm", "FIN"),
+            ("hi", "वित्त"),
+        ],
+    ),
+    (
+        "IND",
+        &[
+            ("en", "IND"),
+            ("de", "IND"),
+            ("fr", "IND"),
+            ("it", "IND"),
+            ("rm", "IND"),
+            ("hi", "उद्य"),
+        ],
+    ),
+    (
+        "EMB",
+        &[
+            ("en", "EMB"),
+            ("de", "EMB"),
+            ("fr", "EMB"),
+            ("it", "EMB"),
+            ("rm", "EMB"),
+            ("hi", "एम्ब"),
+        ],
+    ),
+    (
+        "DEF",
+        &[
+            ("en", "DEF"),
+            ("de", "DEF"),
+            ("fr", "DEF"),
+            ("it", "DIF"),
+            ("rm", "DEF"),
+            ("hi", "रक्षा"),
+        ],
+    ),
+    (
+        "GOV",
+        &[
+            ("en", "GOV"),
+            ("de", "GOV"),
+            ("fr", "GOV"),
+            ("it", "GOV"),
+            ("rm", "GOV"),
+            ("hi", "सर"),
+        ],
+    ),
+    (
+        "RET",
+        &[
+            ("en", "RET"),
+            ("de", "RET"),
+            ("fr", "RET"),
+            ("it", "RET"),
+            ("rm", "RET"),
+            ("hi", "खुद"),
+        ],
+    ),
+    (
+        "RES",
+        &[
+            ("en", "RES"),
+            ("de", "RES"),
+            ("fr", "RES"),
+            ("it", "RES"),
+            ("rm", "RES"),
+            ("hi", "अनुस"),
+        ],
+    ),
 ];
 
 // ===========================================================================
@@ -780,8 +1121,17 @@ pub const FONT_FALLBACKS: &[(&str, &[&str])] = &[
     ("fr", &["DejaVu Sans"]),
     ("it", &["DejaVu Sans"]),
     ("rm", &["DejaVu Sans"]),
-    ("hi", &["Nirmala UI", "Mangal", "Noto Sans Devanagari",
-             "Lohit Devanagari", "Sanskrit Text", "DejaVu Sans"]),
+    (
+        "hi",
+        &[
+            "Nirmala UI",
+            "Mangal",
+            "Noto Sans Devanagari",
+            "Lohit Devanagari",
+            "Sanskrit Text",
+            "DejaVu Sans",
+        ],
+    ),
 ];
 
 // ===========================================================================
@@ -832,9 +1182,7 @@ pub fn jur_abbrev<'a>(lang: &str, jur: &'a str) -> &'a str {
 /// to English, then to the raw sector code.
 #[must_use]
 pub fn sector_label<'a>(lang: &str, sector: &'a str) -> &'a str {
-    let row = SECTOR_TRANSLATIONS
-        .iter()
-        .find(|(k, _)| *k == sector);
+    let row = SECTOR_TRANSLATIONS.iter().find(|(k, _)| *k == sector);
     let Some((_, translations)) = row else {
         return sector;
     };
@@ -994,19 +1342,33 @@ mod tests {
 
     #[test]
     fn mutual_count_matches_python_reference() {
-        assert_eq!(MUTUAL.len(), 20, "MUTUAL count drifted from python (was 20)");
+        assert_eq!(
+            MUTUAL.len(),
+            20,
+            "MUTUAL count drifted from python (was 20)"
+        );
     }
 
     #[test]
     fn mutual_endpoints_resolve_to_regs() {
         let labels: HashSet<&&str> = REGS.iter().map(|r| &r.label).collect();
         for m in MUTUAL {
-            assert!(labels.contains(&m.src), "MUTUAL src '{}' not in REGS", m.src);
-            assert!(labels.contains(&m.tgt), "MUTUAL tgt '{}' not in REGS", m.tgt);
+            assert!(
+                labels.contains(&m.src),
+                "MUTUAL src '{}' not in REGS",
+                m.src
+            );
+            assert!(
+                labels.contains(&m.tgt),
+                "MUTUAL tgt '{}' not in REGS",
+                m.tgt
+            );
             assert!(
                 (1..=3).contains(&m.strength),
                 "MUTUAL ({}, {}): strength {} must be 1..=3",
-                m.src, m.tgt, m.strength,
+                m.src,
+                m.tgt,
+                m.strength,
             );
         }
     }
@@ -1014,18 +1376,29 @@ mod tests {
     #[test]
     fn conflicts_count_matches_python_reference() {
         // 5 conflict pairs × 2 sides each = 10 markers.
-        assert_eq!(CONFLICTS.len(), 10, "CONFLICTS count drifted from python (was 10)");
+        assert_eq!(
+            CONFLICTS.len(),
+            10,
+            "CONFLICTS count drifted from python (was 10)"
+        );
     }
 
     #[test]
     fn conflicts_endpoints_resolve_to_regs() {
         let labels: HashSet<&&str> = REGS.iter().map(|r| &r.label).collect();
         for c in CONFLICTS {
-            assert!(labels.contains(&c.label), "CONFLICTS label '{}' not in REGS", c.label);
+            assert!(
+                labels.contains(&c.label),
+                "CONFLICTS label '{}' not in REGS",
+                c.label
+            );
             assert!(
                 (X_LO..=X_HI).contains(&c.year),
                 "CONFLICTS ({}): year {} outside [{}..={}]",
-                c.label, c.year, X_LO, X_HI,
+                c.label,
+                c.year,
+                X_LO,
+                X_HI,
             );
         }
     }
@@ -1043,7 +1416,8 @@ mod tests {
             assert!(
                 labels.len() % 2 == 0,
                 "CONFLICTS year {}: odd label count {} (each conflict needs both sides)",
-                year, labels.len(),
+                year,
+                labels.len(),
             );
         }
     }
@@ -1063,7 +1437,10 @@ mod tests {
     fn jur_prefix_covers_six_languages() {
         let langs: HashSet<&&str> = JUR_PREFIX.iter().map(|(k, _)| k).collect();
         for expected in ["en", "de", "fr", "it", "rm", "hi"] {
-            assert!(langs.contains(&expected), "JUR_PREFIX missing lang '{expected}'");
+            assert!(
+                langs.contains(&expected),
+                "JUR_PREFIX missing lang '{expected}'"
+            );
         }
     }
 
@@ -1071,7 +1448,10 @@ mod tests {
     fn jur_abbrev_covers_six_languages() {
         let langs: HashSet<&&str> = JUR_ABBREV.iter().map(|(k, _)| k).collect();
         for expected in ["en", "de", "fr", "it", "rm", "hi"] {
-            assert!(langs.contains(&expected), "JUR_ABBREV missing lang '{expected}'");
+            assert!(
+                langs.contains(&expected),
+                "JUR_ABBREV missing lang '{expected}'"
+            );
         }
     }
 
@@ -1079,13 +1459,22 @@ mod tests {
     fn font_fallbacks_cover_six_languages_and_hindi_is_devanagari_capable() {
         let langs: HashSet<&&str> = FONT_FALLBACKS.iter().map(|(k, _)| k).collect();
         for expected in ["en", "de", "fr", "it", "rm", "hi"] {
-            assert!(langs.contains(&expected), "FONT_FALLBACKS missing lang '{expected}'");
+            assert!(
+                langs.contains(&expected),
+                "FONT_FALLBACKS missing lang '{expected}'"
+            );
         }
         // Hindi specifically must list a Devanagari-capable family
         // before the DejaVu fallback (otherwise the renderer silently
         // produces box glyphs).
         let (_, hi_chain) = FONT_FALLBACKS.iter().find(|(k, _)| *k == "hi").unwrap();
-        let devanagari = ["Nirmala UI", "Mangal", "Noto Sans Devanagari", "Lohit Devanagari", "Sanskrit Text"];
+        let devanagari = [
+            "Nirmala UI",
+            "Mangal",
+            "Noto Sans Devanagari",
+            "Lohit Devanagari",
+            "Sanskrit Text",
+        ];
         assert!(
             hi_chain.iter().any(|f| devanagari.contains(f)),
             "FONT_FALLBACKS['hi'] must include at least one Devanagari-capable family, got {hi_chain:?}"

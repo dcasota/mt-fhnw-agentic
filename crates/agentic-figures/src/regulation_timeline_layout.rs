@@ -105,10 +105,24 @@ pub fn render_ab(out_png: &Path, lang: &str) -> Result<()> {
     let panel_a_y1 = panel_a_y0 + a_h;
     let panel_b_y0 = panel_a_y1 + PANEL_GAP;
     let panel_b_y1 = panel_b_y0 + b_h;
-    render_panel_a(&root, lang, SIDE_PAD, panel_a_y0, W as i32 - SIDE_PAD, panel_a_y1)
-        .with_context(|| "compose panel A")?;
-    render_panel_b(&root, lang, SIDE_PAD, panel_b_y0, W as i32 - SIDE_PAD, panel_b_y1)
-        .with_context(|| "compose panel B")?;
+    render_panel_a(
+        &root,
+        lang,
+        SIDE_PAD,
+        panel_a_y0,
+        W as i32 - SIDE_PAD,
+        panel_a_y1,
+    )
+    .with_context(|| "compose panel A")?;
+    render_panel_b(
+        &root,
+        lang,
+        SIDE_PAD,
+        panel_b_y0,
+        W as i32 - SIDE_PAD,
+        panel_b_y1,
+    )
+    .with_context(|| "compose panel B")?;
     root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
@@ -121,8 +135,15 @@ pub fn render_c_only(out_png: &Path, lang: &str) -> Result<()> {
     let root = BitMapBackend::new(out_png, (W, h)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("fill: {e}"))?;
     draw_suptitle(&root, lang)?;
-    render_panel_c(&root, lang, SIDE_PAD, TITLE_H, W as i32 - SIDE_PAD, TITLE_H + c_h)
-        .with_context(|| "compose panel C")?;
+    render_panel_c(
+        &root,
+        lang,
+        SIDE_PAD,
+        TITLE_H,
+        W as i32 - SIDE_PAD,
+        TITLE_H + c_h,
+    )
+    .with_context(|| "compose panel C")?;
     root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }

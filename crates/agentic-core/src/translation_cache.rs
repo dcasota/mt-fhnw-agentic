@@ -276,9 +276,7 @@ mod tests {
             .unwrap();
         assert_eq!(got.target_text, "GLOBAL das System");
         // Lookup with no project hint returns the global entry.
-        let got = get(&conn, "en", "de", "the system", None)
-            .unwrap()
-            .unwrap();
+        let got = get(&conn, "en", "de", "the system", None).unwrap().unwrap();
         assert_eq!(got.target_text, "GLOBAL das System");
     }
 

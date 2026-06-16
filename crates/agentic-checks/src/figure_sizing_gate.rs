@@ -42,8 +42,7 @@ use crate::{CheckReport, Finding, Severity};
 /// Markdown image syntax. Captures `(alt, src)`; `src` may carry a
 /// `#landscape` URL fragment that signals the docx exporter to rotate
 /// the page for this image.
-static IMG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").unwrap());
+static IMG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").unwrap());
 
 /// Portrait PNG cap (back-solved from the 8.0 pt on-page floor + 13 pt
 /// renderer text at 5.91 in body width). Hard-coded to avoid making
@@ -128,10 +127,7 @@ fn worst_on_page_pt(p: &AuditedPng) -> f64 {
 /// (the rendered cache produced by `agentic cascade run`), measures
 /// each PNG's width, and joins against the markdown references so the
 /// `#landscape` fragment is observable.
-fn audit_pngs(
-    root: &Path,
-    image_refs: &[ImgRef],
-) -> Result<Vec<AuditedPng>> {
+fn audit_pngs(root: &Path, image_refs: &[ImgRef]) -> Result<Vec<AuditedPng>> {
     let mut by_basename: HashMap<String, AuditedPng> = HashMap::new();
     // Index references by basename → (any_landscape, any_ref)
     let mut ref_landscape: HashMap<String, bool> = HashMap::new();
@@ -177,7 +173,9 @@ fn audit_pngs(
 }
 
 fn walk_pngs(dir: &Path, cb: &mut dyn FnMut(&Path)) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in rd.flatten() {
         let p = entry.path();
         if p.is_dir() {
@@ -298,8 +296,9 @@ mod tests {
             referenced: true,
         };
         let f = sizing_findings(&p);
-        assert!(f.iter().any(|x| x.category == "FIGURE_SIZING_OVER_CAP"
-            && matches!(x.severity, Severity::Error)));
+        assert!(f.iter().any(
+            |x| x.category == "FIGURE_SIZING_OVER_CAP" && matches!(x.severity, Severity::Error)
+        ));
     }
 
     #[test]
@@ -313,9 +312,7 @@ mod tests {
             referenced: true,
         };
         let f = sizing_findings(&p);
-        assert!(f
-            .iter()
-            .any(|x| x.category == "FIGURE_SIZING_NEEDS_LAND"));
+        assert!(f.iter().any(|x| x.category == "FIGURE_SIZING_NEEDS_LAND"));
     }
 
     #[test]
@@ -346,18 +343,17 @@ mod tests {
         // needs-land DO NOT fire on unreferenced PNGs because they
         // don't reach a rendered docx.
         let f = sizing_findings(&p);
-        assert!(f
-            .iter()
-            .any(|x| x.category == "FIGURE_SIZING_OVER_CAP"));
-        assert!(f
-            .iter()
-            .all(|x| x.category != "FIGURE_SIZING_NEEDS_LAND"
-                && x.category != "FIGURE_SIZING_SUB_FLOOR"));
+        assert!(f.iter().any(|x| x.category == "FIGURE_SIZING_OVER_CAP"));
+        assert!(
+            f.iter().all(|x| x.category != "FIGURE_SIZING_NEEDS_LAND"
+                && x.category != "FIGURE_SIZING_SUB_FLOOR")
+        );
     }
 
     #[test]
     fn parses_landscape_fragment() {
-        let md = "x\n\n![cap](out/figures/sub/foo.png#landscape)\n\n![cap2](out/figures/sub/bar.png)\n";
+        let md =
+            "x\n\n![cap](out/figures/sub/foo.png#landscape)\n\n![cap2](out/figures/sub/bar.png)\n";
         let refs = parse_image_refs(md, "c.md");
         assert_eq!(refs.len(), 2);
         assert!(refs[0].is_landscape);

@@ -6671,8 +6671,7 @@ mod tests {
 
     #[test]
     fn fix_ppr_schema_order_moves_pstyle_to_front() {
-        let broken =
-            "<w:p><w:pPr><w:rPr /><w:pStyle w:val=\"Heading1\" /><w:spacing w:after=\"120\" /></w:pPr></w:p>";
+        let broken = "<w:p><w:pPr><w:rPr /><w:pStyle w:val=\"Heading1\" /><w:spacing w:after=\"120\" /></w:pPr></w:p>";
         let fixed = fix_ppr_schema_order(broken);
         // pStyle must precede rPr.
         let p_pos = fixed.find("<w:pStyle").expect("pStyle present");
@@ -6977,7 +6976,9 @@ mod tests {
             </w:body>";
         let out = propagate_section_chrome_refs(doc);
         // Every sectPr now carries the default footerReference.
-        let ref_count = out.matches("<w:footerReference w:type=\"default\" r:id=\"rId99\"/>").count();
+        let ref_count = out
+            .matches("<w:footerReference w:type=\"default\" r:id=\"rId99\"/>")
+            .count();
         assert_eq!(
             ref_count, 3,
             "expected the default footerReference in all 3 sectPrs after propagation: {out}"
@@ -7012,7 +7013,12 @@ mod tests {
     fn render_book_attaches_footer_ref_to_every_section() {
         use std::io::Read;
         let chapters: Vec<(String, String)> = (1..=3)
-            .map(|i| (format!("ch{i}"), format!("# Chapter {i}\n\nBody paragraph.\n")))
+            .map(|i| {
+                (
+                    format!("ch{i}"),
+                    format!("# Chapter {i}\n\nBody paragraph.\n"),
+                )
+            })
             .collect();
         let meta = BookMeta {
             title: "T".into(),

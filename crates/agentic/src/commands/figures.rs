@@ -44,9 +44,7 @@ fn regulation_timeline(out: &Path, target: &str, mode: &str, json_out: bool) -> 
         "ab" => agentic_figures::regulation_timeline_layout::render_ab(out, target)?,
         "c" => agentic_figures::regulation_timeline_layout::render_c_only(out, target)?,
         other => {
-            return Err(anyhow!(
-                "unknown --mode '{other}'; valid: abc | ab | c"
-            ));
+            return Err(anyhow!("unknown --mode '{other}'; valid: abc | ab | c"));
         }
     }
     let size = fs::metadata(out).map(|m| m.len()).unwrap_or(0);

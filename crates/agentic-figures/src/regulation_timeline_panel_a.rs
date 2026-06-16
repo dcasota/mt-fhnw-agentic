@@ -69,19 +69,10 @@ const TODAY_X_VAL: f64 = 2026.42;
 /// the kit's reference `regulation_timeline_v3.png`.
 pub fn render_panel_a_only(out_png: &Path, lang: &str) -> Result<()> {
     let root = BitMapBackend::new(out_png, (STANDALONE_W, STANDALONE_H)).into_drawing_area();
-    root.fill(&WHITE)
-        .map_err(|e| anyhow!("fill canvas: {e}"))?;
-    render_panel_a(
-        &root,
-        lang,
-        0,
-        0,
-        STANDALONE_W as i32,
-        STANDALONE_H as i32,
-    )
-    .with_context(|| "render_panel_a")?;
-    root.present()
-        .map_err(|e| anyhow!("present: {e}"))?;
+    root.fill(&WHITE).map_err(|e| anyhow!("fill canvas: {e}"))?;
+    render_panel_a(&root, lang, 0, 0, STANDALONE_W as i32, STANDALONE_H as i32)
+        .with_context(|| "render_panel_a")?;
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
 
@@ -129,8 +120,12 @@ pub fn render_panel_a(
         .into_font()
         .style(FontStyle::Bold)
         .color(&INK);
-    area.draw_text(t(lang, "panel_a_title"), &title_style, (geom.plot_x0, y0 + 6))
-        .map_err(|e| anyhow!("title: {e}"))?;
+    area.draw_text(
+        t(lang, "panel_a_title"),
+        &title_style,
+        (geom.plot_x0, y0 + 6),
+    )
+    .map_err(|e| anyhow!("title: {e}"))?;
 
     // 4. Y-axis label (top-left of the panel; multi-line preserved
     //    because `regs_entering` contains a literal '\n').
@@ -261,7 +256,10 @@ impl Geometry {
     }
 }
 
-fn draw_grid(area: &DrawingArea<BitMapBackend<'_>, plotters::coord::Shift>, g: &Geometry) -> Result<()> {
+fn draw_grid(
+    area: &DrawingArea<BitMapBackend<'_>, plotters::coord::Shift>,
+    g: &Geometry,
+) -> Result<()> {
     for yr in X_LO..=X_HI {
         let px = g.year_to_x(yr as f64);
         let (colour, width) = if yr % 5 == 0 {
@@ -385,7 +383,10 @@ mod tests {
         let out = tmp.path().join("panel_a_de.png");
         render_panel_a_only(&out, "de").expect("DE render should succeed");
         let size = std::fs::metadata(&out).expect("file exists").len();
-        assert!(size > 4_000, "DE panel A png suspiciously small: {size} bytes");
+        assert!(
+            size > 4_000,
+            "DE panel A png suspiciously small: {size} bytes"
+        );
     }
 
     #[test]
@@ -394,7 +395,10 @@ mod tests {
         let out = tmp.path().join("panel_a_hi.png");
         render_panel_a_only(&out, "hi").expect("HI render should succeed");
         let size = std::fs::metadata(&out).expect("file exists").len();
-        assert!(size > 4_000, "HI panel A png suspiciously small: {size} bytes");
+        assert!(
+            size > 4_000,
+            "HI panel A png suspiciously small: {size} bytes"
+        );
     }
 
     #[test]
@@ -406,6 +410,9 @@ mod tests {
         let out = tmp.path().join("panel_a_ja.png");
         render_panel_a_only(&out, "ja").expect("unknown-lang render should succeed");
         let size = std::fs::metadata(&out).expect("file exists").len();
-        assert!(size > 4_000, "ja panel A png suspiciously small: {size} bytes");
+        assert!(
+            size > 4_000,
+            "ja panel A png suspiciously small: {size} bytes"
+        );
     }
 }

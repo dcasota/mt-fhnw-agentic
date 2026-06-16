@@ -68,12 +68,10 @@ const MARKER_R: i32 = 5;
 /// against the middle region of the kit's `regulation_timeline_v3.png`.
 pub fn render_panel_b_only(out_png: &Path, lang: &str) -> Result<()> {
     let root = BitMapBackend::new(out_png, (STANDALONE_W, STANDALONE_H)).into_drawing_area();
-    root.fill(&WHITE)
-        .map_err(|e| anyhow!("fill: {e}"))?;
+    root.fill(&WHITE).map_err(|e| anyhow!("fill: {e}"))?;
     render_panel_b(&root, lang, 0, 0, STANDALONE_W as i32, STANDALONE_H as i32)
         .with_context(|| "render_panel_b")?;
-    root.present()
-        .map_err(|e| anyhow!("present: {e}"))?;
+    root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
 
@@ -105,8 +103,12 @@ pub fn render_panel_b(
         .into_font()
         .style(FontStyle::Bold)
         .color(&INK);
-    area.draw_text(t(lang, "panel_b_title"), &title_style, (geom.plot_x0, y0 + 6))
-        .map_err(|e| anyhow!("title: {e}"))?;
+    area.draw_text(
+        t(lang, "panel_b_title"),
+        &title_style,
+        (geom.plot_x0, y0 + 6),
+    )
+    .map_err(|e| anyhow!("title: {e}"))?;
 
     // 4. Per-goal rows.
     let goal_label_style = ("sans-serif", 9)
@@ -160,8 +162,7 @@ pub fn render_panel_b(
         };
         let lo_px = geom.year_to_x(span_lo as f64);
         let hi_px = geom.year_to_x(span_hi as f64);
-        let span_style =
-            ShapeStyle::from(&span_colour.mix(span_alpha)).stroke_width(span_w);
+        let span_style = ShapeStyle::from(&span_colour.mix(span_alpha)).stroke_width(span_w);
         area.draw(&PathElement::new(
             vec![(lo_px, row_y), (hi_px, row_y)],
             span_style,
@@ -194,10 +195,7 @@ pub fn render_panel_b(
             v.sort();
             v
         };
-        let jurs_displayed: Vec<&str> = jurs_sorted
-            .iter()
-            .map(|j| jur_abbrev(lang, j))
-            .collect();
+        let jurs_displayed: Vec<&str> = jurs_sorted.iter().map(|j| jur_abbrev(lang, j)).collect();
         let flag = if is_hot { t(lang, "hot_flag") } else { "" };
         let annot = format!(
             "{}\u{2013}{} \u{00B7} {} {} ({}){}",
@@ -362,13 +360,19 @@ mod tests {
         let g = Geometry::new(0, 0, 1450, 460);
         let top = g.row_y(0);
         let bottom = g.row_y(GOAL_KEYS.len() - 1);
-        assert!(top < bottom, "row 0 must be at top (smaller y): {top} < {bottom}");
+        assert!(
+            top < bottom,
+            "row 0 must be at top (smaller y): {top} < {bottom}"
+        );
         assert!(top >= g.plot_y0 && bottom <= g.plot_y1, "rows fit in plot");
     }
 
     #[test]
     fn goal_key_to_lookup_prefixes_with_goal_underscore() {
-        assert_eq!(goal_key_to_lookup("data_protection"), "goal_data_protection");
+        assert_eq!(
+            goal_key_to_lookup("data_protection"),
+            "goal_data_protection"
+        );
         assert_eq!(goal_key_to_lookup("pqc_migration"), "goal_pqc_migration");
     }
 
@@ -380,7 +384,11 @@ mod tests {
         let bytes = std::fs::read(&out).unwrap();
         assert_eq!(&bytes[0..4], &[0x89, 0x50, 0x4E, 0x47]);
         // Should be meaningfully larger than blank canvas.
-        assert!(bytes.len() > 8_000, "panel B png suspiciously small: {} bytes", bytes.len());
+        assert!(
+            bytes.len() > 8_000,
+            "panel B png suspiciously small: {} bytes",
+            bytes.len()
+        );
     }
 
     #[test]

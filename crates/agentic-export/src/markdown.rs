@@ -590,7 +590,11 @@ pub(crate) fn structural_reflow(md: &str) -> std::borrow::Cow<'_, str> {
         let trimmed = line.trim_start();
         if !in_fence && (trimmed.starts_with("```") || trimmed.starts_with("~~~")) {
             in_fence = true;
-            fence_marker = if trimmed.starts_with("```") { "```" } else { "~~~" };
+            fence_marker = if trimmed.starts_with("```") {
+                "```"
+            } else {
+                "~~~"
+            };
             out.push_str(line);
             continue;
         }
@@ -728,7 +732,8 @@ mod tests {
     #[test]
     fn reflow_borrows_clean_multi_line_input() {
         // Above the 10 LF/kB threshold → no reflow → Cow::Borrowed.
-        let clean = "# Title\n\nBody paragraph one.\n\nBody paragraph two.\n\n## Sub\n\nMore body.\n";
+        let clean =
+            "# Title\n\nBody paragraph one.\n\nBody paragraph two.\n\n## Sub\n\nMore body.\n";
         let out = structural_reflow(clean);
         assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
         assert_eq!(out.as_ref(), clean);
@@ -761,7 +766,10 @@ mod tests {
     #[test]
     fn reflow_restores_bullet_list_after_three_spaces() {
         let prose = "Body content to push us past the size threshold for reflow. ".repeat(8);
-        let flat = format!("# Title    {}   - first item   - second item   - third item", prose);
+        let flat = format!(
+            "# Title    {}   - first item   - second item   - third item",
+            prose
+        );
         let out = structural_reflow(&flat);
         let s: &str = out.as_ref();
         assert!(s.contains("\n\n- first item"));
@@ -772,7 +780,10 @@ mod tests {
     #[test]
     fn reflow_restores_pipe_table_after_three_spaces() {
         let prose = "Body content to push us past the threshold. ".repeat(8);
-        let flat = format!("# Title    {}   | Col A | Col B |   | --- | --- |   | 1 | 2 |", prose);
+        let flat = format!(
+            "# Title    {}   | Col A | Col B |   | --- | --- |   | 1 | 2 |",
+            prose
+        );
         let out = structural_reflow(&flat);
         let s: &str = out.as_ref();
         assert!(s.contains("\n\n| Col A | Col B |"));
@@ -796,7 +807,10 @@ mod tests {
         // detector — that's the realistic case for clean intermediate
         // documents.
         let prose = "Body content padding for size threshold. ".repeat(8);
-        let flat = format!("# Title    {}\n```\n    indented code    # not a heading\n```\nAfter the fence.", prose);
+        let flat = format!(
+            "# Title    {}\n```\n    indented code    # not a heading\n```\nAfter the fence.",
+            prose
+        );
         let out = structural_reflow(&flat);
         let s: &str = out.as_ref();
         // Heading inside code fence must NOT have been promoted.
@@ -813,7 +827,8 @@ mod tests {
         // extra `\n\n`; only the in-line ones do.
         let body = "Paragraph A. ".repeat(20);
         let flat = format!("# Top heading\n{}   ## Inline sub heading", body);
-        let lf_per_kb = 1000.0 * (flat.bytes().filter(|&b| b == b'\n').count() as f64) / (flat.len() as f64);
+        let lf_per_kb =
+            1000.0 * (flat.bytes().filter(|&b| b == b'\n').count() as f64) / (flat.len() as f64);
         assert!(
             lf_per_kb < 10.0,
             "constructed input should still be below threshold to trigger reflow; got {lf_per_kb} LF/kB"

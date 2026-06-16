@@ -519,9 +519,13 @@ async fn translate_with_cache<F>(
 where
     F: Fn(&str) -> Result<String>,
 {
-    if let Some(hit) =
-        agentic_core::translation_cache::get(conn, source_lang, target_lang, source_text, Some(project))?
-    {
+    if let Some(hit) = agentic_core::translation_cache::get(
+        conn,
+        source_lang,
+        target_lang,
+        source_text,
+        Some(project),
+    )? {
         return Ok(CacheOutcome {
             cached: true,
             provider: hit.provider,
@@ -609,30 +613,18 @@ const DEFLATION_MAP: &[(&str, &str)] = &[
         "FHNW 60-page body cap with EN-core thesis policy",
     ),
     // ADR-0039: ML-DSA-87 signed-audit-report seal (FIPS 204).
-    (
-        "ADR-0039",
-        "ML-DSA-87 signed-audit-report seal (FIPS 204)",
-    ),
+    ("ADR-0039", "ML-DSA-87 signed-audit-report seal (FIPS 204)"),
     // ADR-0047: irreversible-action discipline (push / tag / publish gates).
-    (
-        "ADR-0047",
-        "irreversible-action authorisation discipline",
-    ),
+    ("ADR-0047", "irreversible-action authorisation discipline"),
     // ADR-0062: multi-language translation pipeline shakedown.
-    (
-        "ADR-0062",
-        "multi-language translation pipeline shakedown",
-    ),
+    ("ADR-0062", "multi-language translation pipeline shakedown"),
     // ADR-0013: claim-audit-result records (score + placement + justification).
     (
         "ADR-0013",
         "claim-audit-result records (score + placement + justification)",
     ),
     // ADR-0016: material passport (per-item provenance ledger).
-    (
-        "ADR-0016",
-        "material-passport per-item provenance ledger",
-    ),
+    ("ADR-0016", "material-passport per-item provenance ledger"),
     // ADR-0032: Rust runtime replaces the Python tooling.
     (
         "ADR-0032",
@@ -644,15 +636,9 @@ const DEFLATION_MAP: &[(&str, &str)] = &[
         "scan-artefact persistence cap (100 MB Snyk-export bound)",
     ),
     // ADR-0052: enforced_by frontmatter on every ADR.
-    (
-        "ADR-0052",
-        "machine-enforced frontmatter on every ADR",
-    ),
+    ("ADR-0052", "machine-enforced frontmatter on every ADR"),
     // ADR-0051: SDD chain entry-point checklist.
-    (
-        "ADR-0051",
-        "SDD chain entry-point checklist",
-    ),
+    ("ADR-0051", "SDD chain entry-point checklist"),
     // ADR-0009: adversarial arbitration protocol (HITL when gates disagree).
     (
         "ADR-0009",
@@ -661,7 +647,10 @@ const DEFLATION_MAP: &[(&str, &str)] = &[
     // FRD-C09 / C10 / C11 — three campaign feature definitions referenced
     // across the campaign book and the Snyk evidence figures.
     ("FRD-C09", "Sovereign Photon OS campaign brief"),
-    ("FRD-C10", "Deterministic Dependency Constraint (DDC) Pilot brief"),
+    (
+        "FRD-C10",
+        "Deterministic Dependency Constraint (DDC) Pilot brief",
+    ),
     ("FRD-C11", "ISO 5230 OpenChain licence-compliance brief"),
     ("FRD-C01", "claim-audit-discipline campaign brief"),
     ("FRD-C02", "least-privilege service-account campaign brief"),
@@ -742,10 +731,7 @@ fn collapse_nested_corruption(text: &str) -> String {
                 continue;
             }
             let after_inner = cursor + inner.len();
-            let close_count = out[after_inner..]
-                .chars()
-                .take_while(|c| *c == ')')
-                .count();
+            let close_count = out[after_inner..].chars().take_while(|c| *c == ')').count();
             if close_count < depth {
                 search_start = start + outer_open.len();
                 continue;
@@ -890,9 +876,8 @@ pub fn run_deflate(
             println!("  · would deflate {path}");
             continue;
         }
-        let commit_msg = format!(
-            "deflate-identifiers: {path} (ADR/CWE collapsed to audience-friendly forms)"
-        );
+        let commit_msg =
+            format!("deflate-identifiers: {path} (ADR/CWE collapsed to audience-friendly forms)");
         agentic_core::worktree::put_at(
             &conn,
             project,
@@ -984,9 +969,7 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
         );
     }
     if source == target {
-        anyhow::bail!(
-            "source and target must differ ({source} == {target}); nothing to translate"
-        );
+        anyhow::bail!("source and target must differ ({source} == {target}); nothing to translate");
     }
     let scope_enum = Scope::parse(&scope, id.as_deref())?;
     let conn = agentic_core::db::open(db_path).context("open db")?;
@@ -1135,9 +1118,8 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
     // rather than the EN corpus markdown.
     if let Scope::Figure { id } = &scope_enum {
         let (source_path, figspec_json) = if source == "en" {
-            find_figspec_by_id(&conn, &project, id)?.ok_or_else(|| {
-                anyhow!("no figspec with id='{id}' found in the corpus")
-            })?
+            find_figspec_by_id(&conn, &project, id)?
+                .ok_or_else(|| anyhow!("no figspec with id='{id}' found in the corpus"))?
         } else {
             let sidecar_src = format!("out/figures/{id}_{source}.json");
             let blob = agentic_core::worktree::read_at(&conn, &project, &sidecar_src)
@@ -1185,7 +1167,11 @@ pub async fn run(db_path: &Path, action: TranslateAction, json_out: bool) -> Res
             "agentic-translate",
             &commit_msg,
         )?;
-        let cache_tag = if outcome.cached { "CACHE-HIT" } else { "cache-miss" };
+        let cache_tag = if outcome.cached {
+            "CACHE-HIT"
+        } else {
+            "cache-miss"
+        };
         println!(
             "  ✓ figure id={id} translated to {target} via {} ({}) [{cache_tag}] \
              ({} bytes) → {sidecar_path} (commit {})",
@@ -1582,8 +1568,10 @@ mod tests {
                          (CWE-327))))) crypto)";
         let repaired = collapse_nested_corruption(corrupted);
         assert!(
-            !repaired.contains("(Use of Broken or Risky Cryptographic Algorithm \
-                                (Use of Broken or Risky"),
+            !repaired.contains(
+                "(Use of Broken or Risky Cryptographic Algorithm \
+                                (Use of Broken or Risky"
+            ),
             "nested-chain prefix not collapsed: {repaired}"
         );
         assert!(

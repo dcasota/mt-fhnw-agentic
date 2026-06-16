@@ -80,15 +80,8 @@ const COL_NOTE: f64 = 14.5;
 pub fn render_panel_c_only(out_png: &Path, lang: &str) -> Result<()> {
     let root = BitMapBackend::new(out_png, (STANDALONE_W, STANDALONE_H)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("fill: {e}"))?;
-    render_panel_c(
-        &root,
-        lang,
-        0,
-        0,
-        STANDALONE_W as i32,
-        STANDALONE_H as i32,
-    )
-    .with_context(|| "render_panel_c")?;
+    render_panel_c(&root, lang, 0, 0, STANDALONE_W as i32, STANDALONE_H as i32)
+        .with_context(|| "render_panel_c")?;
     root.present().map_err(|e| anyhow!("present: {e}"))?;
     Ok(())
 }
@@ -138,8 +131,11 @@ fn render_detail(
         )
     });
 
-    let label_to_row: HashMap<&str, usize> =
-        detail.iter().enumerate().map(|(i, r)| (r.label, i)).collect();
+    let label_to_row: HashMap<&str, usize> = detail
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.label, i))
+        .collect();
 
     let geom = Geometry::new(x0, y0, x1, y1, detail.len());
 
@@ -218,9 +214,7 @@ fn render_detail(
         }
 
         // 5c. In-force band (applies_year → end) at 0.85 alpha.
-        let end = r
-            .sunset_year
-            .map_or((X_HI as f64) - 0.2, |s| s as f64);
+        let end = r.sunset_year.map_or((X_HI as f64) - 0.2, |s| s as f64);
         if end > r.applies_year as f64 {
             let x_left = geom.year_to_x(r.applies_year as f64);
             let x_right = geom.year_to_x(end);
@@ -273,8 +267,7 @@ fn render_detail(
             .map_err(|e| anyhow!("ET: {e}"))?;
         }
 
-        let dots = "\u{25CF}".repeat(r.teeth as usize)
-            + &"\u{25CB}".repeat(3 - r.teeth as usize);
+        let dots = "\u{25CF}".repeat(r.teeth as usize) + &"\u{25CB}".repeat(3 - r.teeth as usize);
         let teeth_colour = match r.teeth {
             1 => RGBColor(0x88, 0x88, 0x88),
             2 => RGBColor(0xC0, 0x80, 0x20),
