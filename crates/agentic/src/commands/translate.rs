@@ -751,6 +751,35 @@ fn collapse_nested_corruption(text: &str) -> String {
         while let Some(pos) = out.find(&dup) {
             out.replace_range(pos..pos + dup.len(), name);
         }
+        // Bare-`(needle)` pass: strip the inner parenthetical even
+        // when the chain matcher could not engage because the outer
+        // open-paren was preceded by other prose (e.g. the K=1 form
+        // `(1,385 NAME (CWE-327) crypto)` from a buggy deflate pass —
+        // the outer `(1,385 ` is not `(NAME `, so the chain matcher
+        // sees no match, but `(CWE-327)` is still corruption residue).
+        // Safe on clean text: legitimate references use the bare
+        // identifier `CWE-327`, never the parenthesised form
+        // `(CWE-327)`. See `collapse_leaves_clean_text_untouched`.
+        // Two variants: with a leading space (the common case —
+        // collapse it cleanly so adjacent words don't end up with
+        // a double space) and without (start-of-string or after a
+        // newline).
+        let bare_with_space = format!(" ({needle})");
+        while let Some(pos) = out.find(&bare_with_space) {
+            out.replace_range(pos..pos + bare_with_space.len(), "");
+        }
+        let bare = format!("({needle})");
+        while let Some(pos) = out.find(&bare) {
+            // Trim a trailing space too if present, so we don't
+            // leave a `  ` double-space behind.
+            let end = pos + bare.len();
+            let trailing = if out.as_bytes().get(end).copied() == Some(b' ') {
+                1
+            } else {
+                0
+            };
+            out.replace_range(pos..end + trailing, "");
+        }
     }
     out
 }
