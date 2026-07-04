@@ -48,6 +48,10 @@ pub const KEYS: &[&str] = &[
     "glossary",                  // optional glossary heading
     "fig_caption_sep_colon",     // separator between "Figure N" and caption text in Colon format
     "fig_caption_sep_period",    // separator between "Figure N" and caption text in Period format
+    // ── ADR-0064: FHNW MT-Template consolidation (2026-07-03) ───────────────
+    "chapter_prefix",            // "Chapter " label above numbered main-matter H1s (Palatino 17pt bold, ChapterNumber style)
+    "imprint_heading",           // "Imprint" heading of the synthesised chapter emitted between title page and Declaration
+    "school_of_business",        // "School of Business" line on the FHNW MT-Template title-page prelude
 ];
 
 /// Supported language codes, English first.
@@ -246,6 +250,31 @@ fn lookup(lang: &str, key: &str) -> Option<&'static str> {
         ],
         "fig_caption_sep_colon" => [": ", ": ", ": ", ": ", ": ", ": "],
         "fig_caption_sep_period" => [". ", ". ", ". ", ". ", ". ", ". "],
+        // ── ADR-0064: FHNW MT-Template consolidation (2026-07-03) ─────────
+        "chapter_prefix" => [
+            "Chapter ",
+            "Kapitel ",
+            "Chapitre ",
+            "Capitolo ",
+            "Chapitel ",
+            "अध्याय ",
+        ],
+        "imprint_heading" => [
+            "Imprint",
+            "Impressum",
+            "Colophon",
+            "Colophon",
+            "Impressum",
+            "प्रकाशन विवरण",
+        ],
+        "school_of_business" => [
+            "School of Business",
+            "Hochschule für Wirtschaft",
+            "Haute école de gestion",
+            "Scuola universitaria di economia",
+            "Scola auta d'economia",
+            "व्यवसाय विद्यालय",
+        ],
         _ => return None,
     };
     let idx = match lang {

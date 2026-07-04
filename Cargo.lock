@@ -102,6 +102,7 @@ name = "agentic-export"
 version = "0.1.20"
 dependencies = [
  "agentic-core",
+ "agentic-thesis-template",
  "anyhow",
  "chrono",
  "docx-rs",
@@ -180,6 +181,15 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "agentic-thesis-template"
+version = "0.1.20"
+dependencies = [
+ "anyhow",
+ "hex",
+ "sha2",
 ]
 
 [[package]]

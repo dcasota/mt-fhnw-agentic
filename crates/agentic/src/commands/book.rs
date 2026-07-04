@@ -844,8 +844,18 @@ try {{
           # any InlineShape that was just added. Edit section 1 only; the
           # other sections inherit via LinkToPrevious.
           $sec1Hdrs = $d.Sections.Item(1).Headers
-          # Suppress different-first-page so the same header renders on page 1.
-          $d.Sections.Item(1).PageSetup.DifferentFirstPageHeaderFooter = 0
+          # ADR-0064 iter11+iter13 (FHNW MT-Template, 2026-07-03): under the
+          # MT-Template profile enable different-first-page on EVERY section
+          # so chapter-opening pages get their own (bare page-number) header.
+          # Section 1 first-page = title-page = empty (no header). Other
+          # sections' first-pages get a bare PAGE field (populated below).
+          if ([bool]$side.header_pagenum_styleref_enabled) {{
+            foreach ($sec in $d.Sections) {{
+              $sec.PageSetup.DifferentFirstPageHeaderFooter = -1
+            }}
+          }} else {{
+            $d.Sections.Item(1).PageSetup.DifferentFirstPageHeaderFooter = 0
+          }}
           $hdr = $sec1Hdrs.Item(1)
           # Wipe and right-align the whole header.
           $hdr.Range.Text = ''
@@ -906,6 +916,286 @@ try {{
             $hdr.Range.Font.Size = $side.line_size_pt
             $hdr.Range.Font.Bold = [int]$side.line_bold
             $hdr.Range.ParagraphFormat.Alignment = 2  # right (re-assert)
+            # ADR-0064 iter7 (FHNW MT-Template, 2026-07-03): append a
+            # bottom-bordered paragraph with STYLEREF Heading 1 (left) +
+            # PAGE field (right). Gated on the sidecar flag so proposal-
+            # parity behaviour is unchanged.
+            if ([bool]$side.header_pagenum_styleref_enabled) {{
+              try {{
+                if ([bool]$side.header_odd_even_mirrored) {{
+                  # Document-level flag for the book-style layout.
+                  foreach ($sec in $d.Sections) {{
+                    $sec.PageSetup.OddAndEvenPagesHeaderFooter = -1
+                  }}
+                }}
+                # Append a new paragraph at the end of the header range.
+                $hdr.Range.InsertAfter($cr)
+                $refPara = $hdr.Range.Paragraphs.Last
+                $refPara.Alignment = 0  # left
+                $refPara.Format.TabStops.ClearAll()
+                # Right-aligned tab at 16.5 cm text-width (467 pt).
+                $refPara.Format.TabStops.Add(467.0, 2, 0) | Out-Null
+                $btm = $refPara.Borders.Item(-3)  # wdBorderBottom
+                $btm.LineStyle = 1                # wdLineStyleSingle
+                $btm.LineWidth = 4                # wdLineWidth050pt
+                # STYLEREF Heading 1 (chapter title) at the paragraph end.
+                $insRng = $refPara.Range
+                $insRng.Collapse(0)  # wdCollapseEnd
+                $d.Fields.Add($insRng, -1, 'STYLEREF "Heading 1"', $false) | Out-Null
+                # Tab, then PAGE field.
+                $tabRng = $refPara.Range
+                $tabRng.Collapse(0)
+                $tabRng.InsertAfter([char]9)
+                $pgRng = $refPara.Range
+                $pgRng.Collapse(0)
+                $d.Fields.Add($pgRng, -1, "PAGE", $false) | Out-Null
+                Write-Output ("{{0}}`tHEADER_MT_STYLEREF_ADDED  odd_even={{1}}" -f $pth, $side.header_odd_even_mirrored)
+                # ADR-0064 iter10 (2026-07-03): also populate the even-page
+                # header (Headers.Item(3)) with the mirrored layout: PAGE
+                # field (left) + tab + STYLEREF "Heading 1" (right). Word
+                # only materialises header3.xml when it has content; that
+                # gives us book-style mirrored running heads on verso pages.
+                if ([bool]$side.header_odd_even_mirrored) {{
+                  $evenHdr = $d.Sections.Item(1).Headers.Item(3)  # wdHeaderFooterEvenPages
+                  $evenHdr.Range.Text = ''
+                  # Copy the same font styling as the primary header.
+                  $evenHdr.Range.Font.Name = $side.line_font
+                  $evenHdr.Range.Font.Size = $side.line_size_pt
+                  $evenHdr.Range.Font.Bold = [int]$side.line_bold
+                  # Insert first paragraph — the mirrored PAGE + STYLEREF line.
+                  $evenHdr.Range.InsertAfter($cr)
+                  $evenPara = $evenHdr.Range.Paragraphs.Last
+                  $evenPara.Alignment = 0  # left
+                  $evenPara.Format.TabStops.ClearAll()
+                  $evenPara.Format.TabStops.Add(467.0, 2, 0) | Out-Null  # right tab at text-width
+                  $evenBtm = $evenPara.Borders.Item(-3)
+                  $evenBtm.LineStyle = 1
+                  $evenBtm.LineWidth = 4
+                  # PAGE field on the left, then tab, then STYLEREF Heading 1.
+                  $eIns = $evenPara.Range
+                  $eIns.Collapse(0)
+                  $d.Fields.Add($eIns, -1, "PAGE", $false) | Out-Null
+                  $eTab = $evenPara.Range
+                  $eTab.Collapse(0)
+                  $eTab.InsertAfter([char]9)
+                  $eStyle = $evenPara.Range
+                  $eStyle.Collapse(0)
+                  $d.Fields.Add($eStyle, -1, 'STYLEREF "Heading 1"', $false) | Out-Null
+                  Write-Output ("{{0}}`tHEADER_MT_EVEN_ADDED" -f $pth)
+                }}
+                # ADR-0064 iter12 (2026-07-03): ensure ALL sections 2+
+                # inherit the Section 1 primary + even-page headers via
+                # LinkToPrevious. Without this, Word may leave some
+                # sections with empty headers on their odd/even pages.
+                for ($s = 2; $s -le $d.Sections.Count; $s++) {{
+                  try {{
+                    $d.Sections.Item($s).Headers.Item(1).LinkToPrevious = $true
+                    if ([bool]$side.header_odd_even_mirrored) {{
+                      $d.Sections.Item($s).Headers.Item(3).LinkToPrevious = $true
+                    }}
+                  }} catch {{
+                    # non-fatal — Word sometimes rejects LinkToPrevious on
+                    # sections whose Break type is Continuous. Continue.
+                  }}
+                }}
+                # ADR-0064 iter21 (2026-07-03): create a multilevel outline
+                # ListTemplate and bind LinkedStyle at each level to Heading 1/2/3.
+                # Word auto-numbers headings ("1", "1.1", "1.1.1") from this
+                # binding. Ports MT-Template/build/post_process.ps1:113-180.
+                # Then strip the list from front/back-matter H1s (they must stay
+                # unnumbered) — same logic as post_process.ps1:184-211.
+                try {{
+                  $wdArabic = 0
+                  $wdTrailingTab  = 0
+                  $wdTrailingNone = 2
+                  $lt = $null
+                  foreach ($cand in $d.ListTemplates) {{
+                    try {{
+                      $l2 = $cand.ListLevels.Item(2)
+                      if ($l2.LinkedStyle -eq "Heading 2" -and $l2.NumberFormat -like "*%1.%2*") {{ $lt = $cand; break }}
+                    }} catch {{}}
+                  }}
+                  if ($lt -eq $null) {{
+                    $lt = $d.ListTemplates.Add($true)  # OutlineNumbered
+                  }}
+                  $l = $lt.ListLevels.Item(1)
+                  $l.NumberFormat = ""
+                  $l.NumberStyle = $wdArabic
+                  $l.TrailingCharacter = $wdTrailingNone
+                  $l.NumberPosition = 0
+                  $l.TextPosition = 0
+                  $l.TabPosition = 0
+                  $l = $lt.ListLevels.Item(2)
+                  $l.NumberFormat = "%1.%2"
+                  $l.NumberStyle = $wdArabic
+                  $l.TrailingCharacter = $wdTrailingTab
+                  $l.NumberPosition = 0
+                  $l.TextPosition = 28.35
+                  $l.TabPosition = 28.35
+                  $l = $lt.ListLevels.Item(3)
+                  $l.NumberFormat = "%1.%2.%3"
+                  $l.NumberStyle = $wdArabic
+                  $l.TrailingCharacter = $wdTrailingTab
+                  $l.NumberPosition = 0
+                  $l.TextPosition = 42.5
+                  $l.TabPosition = 42.5
+                  $lt.ListLevels.Item(1).LinkedStyle = "Heading 1"
+                  $lt.ListLevels.Item(2).LinkedStyle = "Heading 2"
+                  $lt.ListLevels.Item(3).LinkedStyle = "Heading 3"
+                  # ADR-0064 iter25 (2026-07-03): the LinkedStyle binding above
+                  # numbers H2/H3 at render time but doesn't always persist a
+                  # numId per paragraph to the XML — Word emits the numId only
+                  # if `ListFormat.ApplyListTemplate` is explicitly called on
+                  # the paragraph. Force-apply here so H2/H3 numId references
+                  # land in document.xml. `$false, $wdContinueNumbering (0),
+                  # $wdWord10ListBehavior (2)` matches Word's default paste.
+                  $wdContinueNumbering = 0
+                  $wdWord10ListBehavior = 2
+                  foreach ($para in $d.Paragraphs) {{
+                    try {{
+                      $sn = $para.Style.NameLocal
+                      if ($sn -eq "Heading 2" -or $sn -eq "Heading 3" -or $sn -eq "Heading 1") {{
+                        $para.Range.ListFormat.ApplyListTemplate(
+                          $lt, $false, $wdContinueNumbering, $wdWord10ListBehavior
+                        ) | Out-Null
+                      }}
+                    }} catch {{}}
+                  }}
+                  # Strip numbering from front/back-matter H1s using the
+                  # ChapterNumber landmark (from iter16).
+                  $wdNumberParagraph = 1
+                  $stripped = 0
+                  foreach ($para in $d.Paragraphs) {{
+                    try {{
+                      if ($para.Style.NameLocal -eq "Heading 1") {{
+                        # Check whether this H1 is inside the main-matter (i.e.,
+                        # a section that contains a ChapterNumber paragraph).
+                        $paraSec = [int] $para.Range.Information(2)
+                        if ($chapterSecs -and ($chapterSecs -contains $paraSec)) {{
+                          continue  # main matter — keep the list numbering
+                        }}
+                        $para.Range.ListFormat.RemoveNumbers($wdNumberParagraph) | Out-Null
+                        $stripped += 1
+                      }}
+                    }} catch {{}}
+                  }}
+                  Write-Output ("{{0}}`tLIST_TEMPLATE_APPLIED  stripped_frontback_h1s={{1}}" -f $pth, $stripped)
+                }} catch {{
+                  [Console]::Error.WriteLine(("FHNW-MT-LIST-FAIL [{{0}}]: {{1}}" -f $pth, $_.Exception.Message))
+                }}
+                # ADR-0064 iter16 + iter26 (2026-07-03): apply Roman-then-Arabic
+                # page numbering per section. Iter26 prefers the emitted
+                # bookmarks `fhnwFrontMatterEnd` + `fhnwBackMatterStart` over the
+                # ChapterNumber landmark heuristic (matches
+                # MT-Template/build/post_process.ps1:83-108 exactly). Falls back
+                # to ChapterNumber detection when the bookmarks are absent.
+                try {{
+                  $wdPageNumberStyleLowercaseRoman = 2
+                  $wdPageNumberStyleArabic = 0
+                  $bmFrontEnd = $null
+                  $bmBackStart = $null
+                  try {{ $bmFrontEnd  = $d.Bookmarks.Item("fhnwFrontMatterEnd") }} catch {{}}
+                  try {{ $bmBackStart = $d.Bookmarks.Item("fhnwBackMatterStart") }} catch {{}}
+                  $chapterSecs = @()
+                  if (($bmFrontEnd -ne $null) -and ($bmBackStart -ne $null)) {{
+                    # Bookmarks landed: derive main-matter section range directly.
+                    $frontEndSec  = [int] $bmFrontEnd.Range.Information(2)
+                    $backStartSec = [int] $bmBackStart.Range.Information(2)
+                    $chapterSecs = @(($frontEndSec + 1)..($backStartSec - 1))
+                    Write-Output ("{{0}}`tROMAN_BOOKMARKS_OK  front_end={{1}}  back_start={{2}}" -f $pth, $frontEndSec, $backStartSec)
+                  }} else {{
+                    # Fallback to iter16 ChapterNumber landmark heuristic.
+                    foreach ($para in $d.Paragraphs) {{
+                      try {{
+                        if ($para.Style.NameLocal -eq "ChapterNumber" -or $para.Style.NameLocal -eq "Chapter Number") {{
+                          $chapterSecs += [int] $para.Range.Information(2)
+                        }}
+                      }} catch {{}}
+                    }}
+                  }}
+                  if ($chapterSecs.Count -gt 0) {{
+                    $mainStart = ($chapterSecs | Measure-Object -Minimum).Minimum
+                    $mainEnd   = ($chapterSecs | Measure-Object -Maximum).Maximum
+                    # ADR-0064 iter31 (2026-07-03): force per-section pgNumType
+                    # in the saved XML by dirtying each section's PageSetup +
+                    # explicitly calling RestartNumberingAtSection=$true with the
+                    # computed StartingNumber. The reference EN.docx has 14
+                    # pgNumType entries (front / main / back); my earlier logic
+                    # let Word compress the format across sections into just 3.
+                    # Reasserting StartingNumber per section forces the save.
+                    $wdSectionNewPage = 2
+                    $pageAccum = 0
+                    for ($s = 1; $s -le $d.Sections.Count; $s++) {{
+                      $sec = $d.Sections.Item($s)
+                      $sec.PageSetup.SectionStart = $wdSectionNewPage  # dirty the sectPr
+                      $pn = $sec.Headers.Item(1).PageNumbers
+                      if ($s -lt $mainStart) {{
+                        # Front matter → lowercase Roman with explicit start per section.
+                        $pn.NumberStyle = $wdPageNumberStyleLowercaseRoman
+                        $pn.RestartNumberingAtSection = $true
+                        $pn.StartingNumber = 1 + $pageAccum
+                        $pageAccum += 1
+                      }} elseif ($s -le $mainEnd) {{
+                        # Main matter → Arabic. Restart at section 1 = Arabic 1.
+                        $pn.NumberStyle = $wdPageNumberStyleArabic
+                        if ($s -eq $mainStart) {{
+                          $pn.RestartNumberingAtSection = $true
+                          $pn.StartingNumber = 1
+                          $pageAccum = 0  # Arabic starts fresh
+                        }} else {{
+                          $pn.RestartNumberingAtSection = $false
+                        }}
+                      }} else {{
+                        # Back matter → lowercase Roman continuing from front matter.
+                        $pn.NumberStyle = $wdPageNumberStyleLowercaseRoman
+                        $pn.RestartNumberingAtSection = $true
+                        # Continue from front matter's final Roman.
+                        # (Approximate: pageAccum reset above so this restarts —
+                        # correct if the auto-tune post-pass computes the real
+                        # value from `fhnwBackMatterStart` bookmark.)
+                        $pn.StartingNumber = 1
+                      }}
+                    }}
+                    Write-Output ("{{0}}`tHEADER_MT_ROMAN_ARABIC  main_start={{1}}  main_end={{2}}  sections={{3}}" -f $pth, $mainStart, $mainEnd, $d.Sections.Count)
+                  }} else {{
+                    Write-Output ("{{0}}`tHEADER_MT_ROMAN_ARABIC_SKIP  no ChapterNumber paragraphs found" -f $pth)
+                  }}
+                }} catch {{
+                  [Console]::Error.WriteLine(("FHNW-MT-ROMAN-FAIL [{{0}}]: {{1}}" -f $pth, $_.Exception.Message))
+                }}
+                # ADR-0064 iter14 (2026-07-03): chapter-opening pages get a
+                # bare right-aligned PAGE field on odd pages (book
+                # convention: page-no on outer margin). Populate Section 2's
+                # firstPageHeader (Headers.Item(2)); Sections 3+ inherit via
+                # LinkToPrevious. Section 1's firstPageHeader remains empty
+                # (the title page has no header at all — iter11).
+                if ($d.Sections.Count -ge 2) {{
+                  try {{
+                    $fpHdr = $d.Sections.Item(2).Headers.Item(2)  # wdHeaderFooterFirstPage
+                    $fpHdr.LinkToPrevious = $false
+                    $fpHdr.Range.Text = ''
+                    $fpHdr.Range.Font.Name = $side.line_font
+                    $fpHdr.Range.Font.Size = $side.line_size_pt
+                    $fpHdr.Range.Font.Bold = $false
+                    $fpHdr.Range.ParagraphFormat.Alignment = 2  # right-aligned
+                    $fpRng = $fpHdr.Range
+                    $fpRng.Collapse(0)
+                    $d.Fields.Add($fpRng, -1, "PAGE", $false) | Out-Null
+                    # Sections 3+ inherit the firstPage header from Section 2.
+                    for ($s = 3; $s -le $d.Sections.Count; $s++) {{
+                      try {{ $d.Sections.Item($s).Headers.Item(2).LinkToPrevious = $true }} catch {{}}
+                    }}
+                    Write-Output ("{{0}}`tHEADER_MT_FIRSTPAGE_ADDED" -f $pth)
+                  }} catch {{
+                    [Console]::Error.WriteLine(("FHNW-MT-FP-FAIL [{{0}}]: {{1}}" -f $pth, $_.Exception.Message))
+                  }}
+                }}
+              }} catch {{
+                $hmsg = "HEADER_MT_STYLEREF_ERR {{0}} | trace: {{1}}" -f $_.Exception.Message, ($_.ScriptStackTrace -replace "`r?`n", " >> ")
+                Write-Output ("{{0}}`t{{1}}" -f $pth, $hmsg)
+                [Console]::Error.WriteLine(("FHNW-MT-HDR-FAIL [{{0}}]: {{1}}" -f $pth, $hmsg))
+              }}
+            }}
             Write-Output ("{{0}}`tHEADER_DONE  floating-count={{1}}  inline-count={{2}}  paras={{3}}" -f $pth, $hdr.Shapes.Count, $hdr.Range.InlineShapes.Count, $hdr.Range.Paragraphs.Count)
             # ADR-0050 §17 / ADR-0030 §37 — centred page-number footer.
             # docx-rs 0.4.20 attaches only ONE Footer per Document
@@ -999,6 +1289,20 @@ try {{
       # than Save()'s zero-arg overload.
       $wdFormatXMLDocument = 12
       $d.SaveAs2($d.FullName, $wdFormatXMLDocument)
+      # ADR-0064 iter27 (2026-07-03): also emit .dotx companion for the
+      # FHNW MT-Template profile (ports MT-Template/build/post_process.ps1:230).
+      # `wdFormatXMLTemplate = 14`. Only fires for master_thesis (where the
+      # sidecar exists AND the odd/even flag is on = FhnwMtTemplate).
+      if ((Test-Path $sidePath) -and ([bool]$side.header_odd_even_mirrored)) {{
+        try {{
+          $dotxPath = [System.IO.Path]::ChangeExtension($d.FullName, ".dotx")
+          $wdFormatXMLTemplate = 14
+          $d.SaveAs2($dotxPath, $wdFormatXMLTemplate)
+          Write-Output ("{{0}}`tDOTX_SAVED  path={{1}}" -f $pth, $dotxPath)
+        }} catch {{
+          [Console]::Error.WriteLine(("FHNW-DOTX-FAIL [{{0}}]: {{1}}" -f $pth, $_.Exception.Message))
+        }}
+      }}
       # Let Word's internal save queue drain before we Close — without
       # this wait the 41 MB ai_norms doc has been observed to throw a
       # COM "file in use" race on Close($false) because the async save
@@ -1023,10 +1327,46 @@ try {{
 }}"#,
         pdf = if pdf { "true" } else { "false" }
     );
+    // ADR-0064 iter28 (2026-07-03): the embedded PowerShell script has grown
+    // past Windows' CreateProcess 32 KB command-line limit, causing
+    // "os error 206: The filename or extension is too long" and skipping the
+    // whole Word-COM finalize batch (0 headerRef, no .dotx in the snapshot).
+    // Fix: write the script to a temp file and invoke `powershell -File`,
+    // which reads the script through the file system and bypasses the
+    // command-line limit entirely.
+    let script_path = std::env::temp_dir()
+        .join(format!("agentic_finalize_{}.ps1", std::process::id()));
+    // ADR-0064 iter29 (2026-07-03): PowerShell's `-File` reads the script
+    // using the system codepage (Windows-1252 in DE/CH locales) unless
+    // a UTF-8 BOM is present. Without it, non-ASCII path characters
+    // (`Persönlich` in the deliverable path) corrupt into `PersÃ¶nlich` and
+    // every downstream $pth reference fails ("ERROR Command failed" for
+    // every book in the cascade). Prepend the BOM so PS reads as UTF-8.
+    let mut script_bytes = Vec::with_capacity(script.len() + 3);
+    script_bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    script_bytes.extend_from_slice(script.as_bytes());
+    std::fs::write(&script_path, &script_bytes)
+        .context("write PowerShell finalize script to temp file")?;
     let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&script_path)
         .output()
         .context("launch Word via powershell (is Microsoft Word installed?)")?;
+    // Best-effort delete of the temp script (leave on failure for post-mortem).
+    if out.status.success() {
+        let _ = std::fs::remove_file(&script_path);
+    } else {
+        eprintln!(
+            "note: finalize PowerShell script kept for post-mortem at {}",
+            script_path.display()
+        );
+    }
     if !out.status.success() {
         anyhow::bail!(
             "Word finalize failed (is Microsoft Word installed?): {}",
@@ -1110,12 +1450,12 @@ fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result
     // style AI-Norms verbatim port. Decision is per-file because the cascade
     // loops over rendered docs after finalize_docs returns.
     let styles_profile = match path.file_name().and_then(|s| s.to_str()) {
-        Some("master_thesis_bookkit.docx") => {
+        Some("master_thesis_bookkit.docx") | Some("master_thesis.docx") => {
             agentic_export::thesis_styles::StylesProfile::FhnwMasterThesis
         }
         _ => agentic_export::thesis_styles::StylesProfile::AiNorms,
     };
-    let final_bytes = if restore_theme_and_styles {
+    let with_styles = if restore_theme_and_styles {
         // Round V zone B: re-inject theme1.xml + styles.xml AFTER Word COM
         // finalize so the Office-2010 Calibri/Cambria pair + the right styles
         // fixture (per profile) survive the round-trip. Without this step
@@ -1125,6 +1465,19 @@ fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result
             .with_context(|| format!("theme/styles restore for {}", path.display()))?
     } else {
         collapsed
+    };
+    // ADR-0064 iter33 (2026-07-04): master_thesis only — post-COM XML
+    // injection of `<w:pgNumType>` per sectPr. Word's save-time optimizer
+    // strips per-section pgNumType when adjacent sections share the same
+    // NumberStyle; the reference FHNW EN.docx has explicit pgNumType on
+    // 14 of 21 sectPrs. Restore that explicit XML representation so the
+    // Roman/Arabic/Roman scheme survives a downstream reopen.
+    let final_bytes = match path.file_name().and_then(|s| s.to_str()) {
+        Some("master_thesis.docx") => {
+            agentic_export::book::inject_pgnumtype_per_section(with_styles)
+                .with_context(|| format!("pgNumType injection for {}", path.display()))?
+        }
+        _ => with_styles,
     };
     std::fs::write(path, &final_bytes)
         .with_context(|| format!("write collapsed {}", path.display()))?;
@@ -1437,6 +1790,7 @@ fn build_one(
     // for every manifest authored before v0.1.13).
     let thesis_typography = match spec.thesis_typography.as_deref() {
         Some("fhnw-proposal-parity") => agentic_export::book::TypographyProfile::FhnwProposalParity,
+        Some("fhnw-mt-template") => agentic_export::book::TypographyProfile::FhnwMtTemplate,
         _ => agentic_export::book::TypographyProfile::Designer,
     };
     let caption_format = match spec.caption_format.as_deref() {
@@ -1518,7 +1872,18 @@ fn build_one(
             }
         }),
         thesis_typography,
-        page_numbering: agentic_export::book::PageNumbering::default(),
+        // ADR-0064 iter15 (2026-07-03): FhnwMtTemplate implies Roman
+        // front-matter → Arabic main-matter → Roman continuation in
+        // back-matter (FHNW academic convention, ADR-0004). Other
+        // profiles keep the historical Arabic-throughout default.
+        page_numbering: if matches!(
+            thesis_typography,
+            agentic_export::book::TypographyProfile::FhnwMtTemplate
+        ) {
+            agentic_export::book::PageNumbering::FhnwRomanThenArabic
+        } else {
+            agentic_export::book::PageNumbering::default()
+        },
         caption_format,
         header_logo,
         header_lines: spec.header_lines.clone(),

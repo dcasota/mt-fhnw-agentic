@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 agentic-core   = { workspace = true }
+agentic-thesis-template = { workspace = true }
 anyhow         = { workspace = true }
 docx-rs        = { workspace = true }
 pulldown-cmark = { workspace = true }

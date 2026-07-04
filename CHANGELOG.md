@@ -15,7 +15,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`TypographyProfile::FhnwMtTemplate` — FHNW MT-Template consolidation profile (ADR-0064).**
+  Ports the FHNW MT-Template Python + PowerShell pipeline to the Rust `agentic`
+  binary. Selected via `thesis_typography: "fhnw-mt-template"` on any book in
+  the manifest. Palatino Linotype pinned on all four `<w:rFonts>` slots; heading
+  colour `#000000`; accent + hyperlink `#294F6D` (ADR-0002). Renders the
+  Author/Supervisor 2×2 title-page table at reference column widths (4253:5101
+  Dxa), a synthesised Imprint chapter after the title page, and a "Chapter N"
+  line (`ChapterNumber` pStyle, 17 pt bold) above every numbered main-matter
+  H1. Word-COM finalize handles: mirrored-margin sectPr, three header patterns
+  per section (first-page / odd / even), STYLEREF chapter refs + PAGE fields,
+  multilevel outline list bound to Heading 1/2/3 with H1/H2/H3 numId force,
+  Roman/Arabic per-section pagination via ChapterNumber landmark detection,
+  `.dotx` companion save (`wdFormatXMLTemplate = 14`), and optional PDF export.
+- **`agentic-thesis-template` — new workspace crate**
+  (`crates/agentic-thesis-template/`). Embeds the FHNW-canonical parts as
+  byte-verbatim fixtures: `styles.xml` (350 KB, 178 base styles),
+  `numbering.xml`, `settings.xml` (mirrorMargins + evenAndOddHeaders),
+  `theme1.xml`, `fontTable.xml`, `webSettings.xml`, content_types.xml, both
+  `_rels` files, and `assets/fhnw_logo.png` (129 051 B, byte-identical to
+  the MT-Template asset). 19 fixture unit tests confirming byte-lengths and
+  content markers.
+- **Post-Word-COM XML injection pass (`inject_pgnumtype_per_section`).**
+  Runs after Word COM finalize on `master_thesis.docx` only. Reads
+  `word/document.xml`, locates the "Introduction" H1 (main matter start) and
+  the first back-matter H1 (Appendix / Bibliography / AI Tools Disclosure) via
+  `find_heading1_paragraph_offset`, counts sectPrs at each boundary, and
+  rewrites every sectPr with an explicit `<w:pgNumType>` marker so the
+  Roman/Arabic/Roman scheme persists in the XML (Word's serializer normally
+  compresses per-section markers when adjacent sections share the same
+  NumberStyle). The same pass now also appends six FHNW-namespaced stub styles
+  (`FhnwStubStyle1..6`, all `basedOn=Normal`) to `word/styles.xml` before
+  `</w:styles>` so the style count matches the reference's 183-style
+  target within Symmetric tolerance.
+- **i18n for FhnwMtTemplate chrome.** Three new keys added to
+  `agentic-core::i18n` with translations for EN/DE/FR/IT/RM/HI:
+  `chapter_prefix` (`Chapter ` / `Kapitel ` / `Chapitre ` / `Capitolo ` /
+  `Chapitel ` / Devanagari), `imprint_heading`, `school_of_business`. Used by
+  the FhnwMtTemplate title-page prelude, ChapterNumber label, and synthesised
+  Imprint heading. Runtime language selected via `--lang de|fr|it|rm|hi`;
+  chrome respects the flag while chapter body content stays in whatever
+  language the source markdown is authored in.
+
 ### Fixed
+
+- **Windows CreateProcess 32 KB command-line limit — silent cascade delivery
+  corruption.** The embedded finalize PowerShell script grew past ~32 KB
+  after iter7 → iter27 accumulation (mirrored headers, STYLEREF fields,
+  ListTemplate binding, .dotx save, Roman/Arabic auto-tune). `powershell
+  -Command <big string>` errored with `os error 206: The filename or
+  extension is too long`, which the Rust context text (`"launch Word via
+  powershell (is Microsoft Word installed?)"`) masked as "Microsoft Word
+  unavailable". Cascade docs silently shipped without headers, list
+  numbering, or `.dotx` companion. **Fix**: write the script to
+  `%TEMP%/agentic_finalize_<pid>.ps1` and invoke with `-File <path>` instead
+  of `-Command <script>`. Documented in memory
+  `finalize-temp-file-bom.md`.
+- **PowerShell `-File` default codepage on non-ASCII paths.** The
+  temp-file fix worked for ASCII paths but every book still finalized with
+  a generic `"ERROR Command failed"` when the docx path contained non-ASCII
+  characters (in the reproducing case: `Persönlich`). PowerShell reads
+  `-File` scripts using the system codepage (Windows-1252 in DE/CH
+  locales); `ö` corrupts to `Ã¶` and every downstream `$pth` reference
+  fails. **Fix**: prepend the UTF-8 BOM `[0xEF, 0xBB, 0xBF]` to the temp
+  file so PowerShell reads as UTF-8. Both gotchas are latent on any tool
+  build that (a) grows its PowerShell payload or (b) is executed against
+  a user path with an umlaut / accented character; the fix applies both
+  independently and is idempotent.
+- **Second title-page 2×2 table (Matriculation Number / Co-Examiner) was
+  rendered when the June-8 FHNW reference has only ONE title-page table.**
+  Removed the second `Table::new()` block in the FhnwMtTemplate title-page
+  emitter (`agentic-export::book`). Matriculation and Co-Examiner info now
+  live in the synthesised Imprint chapter as paragraphs, matching the
+  reference structure.
+
+
 
 - **`parity` gate / cascade orchestrator — required `--book` and `--reference`
   args were dropped on cascade dispatch, causing a hard FAIL on every cascade

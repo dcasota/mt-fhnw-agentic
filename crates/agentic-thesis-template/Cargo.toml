@@ -1,0 +1,22 @@
+[package]
+name         = "agentic-thesis-template"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+description = "FHNW Master-Thesis Word template — Rust port of MT-Template (generate_template.py + post_process.ps1)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+sha2   = { workspace = true }
+hex    = { workspace = true }
+
+[dev-dependencies]
+# Nothing yet — fixture-driven byte-comparison uses std only.
+
+[lints]
+workspace = true

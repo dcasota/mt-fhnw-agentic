@@ -1037,13 +1037,14 @@ fn render_matrix(spec: &mut FigSpec, path: &Path) -> Result<()> {
 
 fn render_quadrant(spec: &mut FigSpec, path: &Path) -> Result<()> {
     let q = spec.data.get("quadrants").cloned().unwrap_or(Value::Null);
-    let (w, h) = (1000i32, 760i32);
-    // 2026-06-16: quadrant canvases are 1 000 × 760 by construction —
-    // wider than the Portrait cap (691 px at the 8.0-pt floor), so they
-    // would clamp-shrink to 691 × 525 with 12-pt items shrinking to
-    // ~5 pt on page. Force Landscape so the embedder rotates the page;
-    // 1 000 ≤ Landscape cap (1 100 px) means no clamp, 12 pt × 678 /
-    // 1 000 = 8.14 pt on page, just above the floor.
+    // 2026-06-17: bumped from 1000×760 → 1100×820 to use full Landscape
+    // cap (1100 px), giving each quadrant ~520 px width instead of
+    // ~470 px. Item font also bumped 12 → 15 pt (was rendering at
+    // 8.14 pt on page; now 15 × 678 / 1100 = 9.25 pt — readable). Title
+    // font 15 → 18 pt (was 10.2 pt on page; now 18 × 678 / 1100 = 11.1
+    // pt — clear hierarchy). User feedback (campaign_09 figure 2):
+    // SWOT cell text was too small to read.
+    let (w, h) = (1100i32, 820i32);
     let portrait_cap = max_png_width_px(Layout::Portrait) as i32;
     if w > portrait_cap && matches!(spec.layout, Layout::Portrait) {
         spec.layout = Layout::Landscape;
@@ -1051,9 +1052,9 @@ fn render_quadrant(spec: &mut FigSpec, path: &Path) -> Result<()> {
     let root = BitMapBackend::new(path, (w as u32, h as u32)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| anyhow!("{e}"))?;
     draw_title(&root, &spec.title, w)?;
-    let (ox, oy) = (30, 60);
+    let (ox, oy) = (30, 70);
     let qw = (w - 60) / 2;
-    let qh = (h - 90) / 2;
+    let qh = (h - 100) / 2;
     // (key, col, row, swot-tint-index)
     let cells = [
         ("tl", 0, 0, 0),
@@ -1074,29 +1075,33 @@ fn render_quadrant(spec: &mut FigSpec, path: &Path) -> Result<()> {
         text(
             &root,
             title,
-            &centered(font_b(15, &NAVY)),
+            &centered(font_b(18, &NAVY)),
             x0 + qw / 2,
-            y0 + 22,
+            y0 + 26,
         )?;
         let items: Vec<String> = qd
             .and_then(|d| d.get("items"))
             .and_then(Value::as_array)
             .map(|a| a.iter().map(json_str).collect())
             .unwrap_or_default();
-        let mut yy = y0 + 52;
-        for it in items.iter().take(6) {
-            for (li, ln) in wrap(it, 40).iter().take(2).enumerate() {
+        // 2026-06-17: 15-pt font @ ~8 px/char → 36 wrap chars in the
+        // 520-px quadrant minus 36 px padding. take(8) instead of (6)
+        // since the bigger canvas absorbs more list items without
+        // crowding the box margin.
+        let mut yy = y0 + 64;
+        for it in items.iter().take(8) {
+            for (li, ln) in wrap(it, 36).iter().take(2).enumerate() {
                 let pre = if li == 0 { "•  " } else { "   " };
                 text(
                     &root,
                     &format!("{pre}{ln}"),
-                    &font(12).pos(Pos::new(HPos::Left, VPos::Top)),
-                    x0 + 18,
+                    &font(15).pos(Pos::new(HPos::Left, VPos::Top)),
+                    x0 + 24,
                     yy,
                 )?;
-                yy += 17;
+                yy += 21;
             }
-            yy += 3;
+            yy += 4;
         }
     }
     root.present().map_err(|e| anyhow!("present: {e}"))?;
@@ -1237,7 +1242,10 @@ fn render_flow(spec: &mut FigSpec, path: &Path) -> Result<()> {
     let mut wrap_chars = max_label_chars.div_ceil(4).clamp(22, 36);
     let approx_text_w = wrap_chars as i32 * 7 + 16;
     let mut box_w = approx_text_w.clamp(190, 280);
-    const BOX_LINE_H: i32 = 17;
+    // 2026-06-17: line height bumped 17 → 19 to match the 14-pt box
+    // label font (was 13 pt). Keeps text vertical-rhythm consistent
+    // and prevents adjacent lines from touching.
+    const BOX_LINE_H: i32 = 19;
     // #408 (2026-06-08): col_gap scales to the longest edge label so the
     // edge text fits in ≤2 lines at the natural per-line budget instead
     // of being truncated with "…". `target_per_line` chars per line at
@@ -1326,20 +1334,31 @@ fn render_flow(spec: &mut FigSpec, path: &Path) -> Result<()> {
             // #408 (2026-06-08): replaces the prior 2-line cap +
             // ellipsis suffix that produced labels like "names build
             // si…" and "QBOM / CBOM make…" in figs 1 / 3 / 4.
-            const EDGE_FONT_PT: i32 = 13;
-            const EDGE_LINE_H: i32 = 14;
+            // 2026-06-17: edge-label font bumped 13 → 14 pt and line
+            // height 14 → 16 px so labels are clearly legible at the
+            // 9.25 pt-on-page render. Also: when `sy == dy` (same-row
+            // edge, straight horizontal arrow with no vertical leg),
+            // the label was sitting ON the arrow line — the white
+            // background hid the line under the text, visually breaking
+            // the arrow. The new `centre_y` push the label stack 22 px
+            // above the horizontal arrow when the elbow has no vertical
+            // leg, keeping the arrow visually continuous.
+            const EDGE_FONT_PT: i32 = 14;
+            const EDGE_LINE_H: i32 = 16;
             const EDGE_MAX_LINES: usize = 3;
-            let gap_chars = ((col_gap - 16) / 6).max(8) as usize;
+            let gap_chars = ((col_gap - 16) / 7).max(7) as usize;
             let per_line = gap_chars;
             let mut lines = wrap(lbl, per_line);
             lines.truncate(EDGE_MAX_LINES);
             let line_count = lines.len() as i32;
-            // Vertical centre of the label stack on the elbow's vertical
-            // leg, then bias 2 px up so the stack sits clear of the
-            // horizontal arrow segment at `dy`. Each line is EDGE_LINE_H
-            // tall; the label rect grows with line_count so it never
-            // overlaps the arrow line below.
-            let centre_y = (sy + dy) / 2 - 2;
+            let centre_y = if sy == dy {
+                // Same-row edge: push label above the horizontal arrow
+                // line so the arrow remains visually continuous.
+                let stack_h = (line_count - 1) * EDGE_LINE_H + EDGE_LINE_H;
+                sy - stack_h / 2 - 8
+            } else {
+                (sy + dy) / 2 - 2
+            };
             let stack_top = centre_y - (line_count - 1) * EDGE_LINE_H / 2;
             let max_chars = lines
                 .iter()
@@ -1379,14 +1398,15 @@ fn render_flow(spec: &mut FigSpec, path: &Path) -> Result<()> {
             &RGBColor(0xEE, 0xF2, 0xF8),
         )?;
         stroke_rect(&root, x0, y0, x0 + box_w, y0 + box_h, &NAVY, 2)?;
-        // #408 (2026-06-08): no `take(4)` cap — box_h was sized above to
-        // fit `box_max_lines` exactly, so every line renders inside the
-        // box without silent loss.
+        // 2026-06-17: box label font 13 → 14 pt + line height 17 → 19
+        // px for cleaner readability. The cap formula stays calibrated
+        // on MIN_RENDERER_FONT_PT=13 (conservative — 14 pt source at
+        // the cap renders even more comfortably above the 8 pt floor).
         let lines = wrap(label, wrap_chars);
         let total = lines.len() as i32;
         for (li, ln) in lines.iter().enumerate() {
-            let cy = y0 + box_h / 2 - (total - 1) * 9 + li as i32 * 17;
-            text(&root, ln, &centered(font(13)), x0 + box_w / 2, cy)?;
+            let cy = y0 + box_h / 2 - (total - 1) * 10 + li as i32 * 19;
+            text(&root, ln, &centered(font(14)), x0 + box_w / 2, cy)?;
         }
     }
     root.present().map_err(|e| anyhow!("present: {e}"))?;
