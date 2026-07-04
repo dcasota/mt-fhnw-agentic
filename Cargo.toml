@@ -97,7 +97,7 @@ linfa           = "0.7"
 linfa-clustering = "0.7"
 
 # TUI
-ratatui   = "0.29"
+ratatui   = "0.30"
 crossterm = "0.28"
 
 # Misc

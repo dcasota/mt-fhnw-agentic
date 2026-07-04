@@ -1,0 +1,88 @@
+# cargo-audit config — advisory ignores with documented rationale.
+#
+# Each ignored advisory needs a comment explaining WHY the risk is
+# accepted and WHAT the fix path is, so future runs can revisit.
+#
+# Order: vulnerabilities first (higher severity), then warnings.
+# Within each group, alphabetise by crate name.
+#
+# Direct fixes shipped alongside this file (commit d?????? on 2026-07-04):
+#   * anyhow  1.0.102 -> 1.0.103   (RUSTSEC-2026-0190 fixed — no ignore needed)
+#   * lru     0.12.5  -> 0.18.0    (RUSTSEC-2026-0002 fixed via ratatui 0.30)
+#   * memmap2 0.9.10  -> 0.9.11    (RUSTSEC-2026-0186 fixed)
+# Those three are no longer flagged by cargo audit.
+
+[advisories]
+ignore = [
+    # ─────────────────── VULNERABILITIES ───────────────────────────────
+    # RUSTSEC-2026-0187 — lopdf 0.34.0. Reachable only through
+    # pdf-extract v0.7.12 -> lopdf; pdf-extract has not yet released a
+    # version that upgrades to lopdf >= 0.42. We use pdf-extract only for
+    # thesis-input PDFs that we control (no adversarial input). Revisit
+    # when pdf-extract cuts a release with the new lopdf pin.
+    "RUSTSEC-2026-0187",
+
+    # RUSTSEC-2026-0194 — quick-xml 0.36.2 / 0.39.4. Two separate
+    # transitive paths: typst-library -> hayagriva -> citationberg ->
+    # quick-xml 0.36.2, and typst-library -> syntect -> plist ->
+    # quick-xml 0.39.4. Neither hayagriva/citationberg 0.5 nor
+    # syntect/plist has released with quick-xml >= 0.41. The
+    # vulnerability is in quick-xml's XML entity handling on adversarial
+    # input; we only feed it typst-embedded citation/theme XML that ships
+    # inside the crates. Revisit when typst 0.14 lands (expected to bump
+    # both transitive chains).
+    "RUSTSEC-2026-0194",
+
+    # RUSTSEC-2026-0195 — quick-xml 0.36.2 / 0.39.4, same transitive
+    # paths and same input surface as -0194. Ignored together and
+    # revisited together.
+    "RUSTSEC-2026-0195",
+
+    # ─────────────────── UNMAINTAINED WARNINGS ─────────────────────────
+    # RUSTSEC-2025-0012 — backoff 0.4.0 unmaintained. Direct dep on
+    # backoff for the retry loops around HTTP provider calls. Considered
+    # low-risk (no known soundness / security issues; author archived
+    # after release, code is stable). Fix path: migrate to `tokio-retry`
+    # or `backon`. Tracked as follow-up; not urgent.
+    "RUSTSEC-2025-0012",
+
+    # RUSTSEC-2025-0141 — bincode 1.3.3 unmaintained. Transitive through
+    # multiple crates (typst, ort, etc.). No exploit surface: we don't
+    # deserialise untrusted bincode. Upstream fix is bincode 2.x, which
+    # is a breaking API change requiring all our transitive deps to
+    # migrate. Revisit when bincode 2 shows up in the tree.
+    "RUSTSEC-2025-0141",
+
+    # RUSTSEC-2024-0384 — instant 0.1.13 unmaintained. Transitive
+    # through backoff and other older crates. Zero exploit surface
+    # (`instant` provides Instant across wasm/native and has no I/O).
+    # Removed when backoff migration (RUSTSEC-2025-0012) lands.
+    "RUSTSEC-2024-0384",
+
+    # RUSTSEC-2024-0320 — yaml-rust 0.4.5 unmaintained. Transitive
+    # through typst 0.13.1 -> typst-library -> two-face -> syntect 5.3.0.
+    # syntect 5.3's YAML backend operates on crate-embedded syntax
+    # definitions (no user-supplied YAML). Fix path: syntect 6.x or a
+    # typst release that migrates to yaml-rust2; neither is on crates.io
+    # at 2026-07-04.
+    "RUSTSEC-2024-0320",
+
+    # RUSTSEC-2025-0119 — number_prefix 0.4.0 unmaintained. Transitive
+    # through `indicatif` (progress-bar formatting). Zero exploit
+    # surface (const string tables for SI/IEC prefixes). Fix path:
+    # `indicatif` migration to a new formatter, not our concern.
+    "RUSTSEC-2025-0119",
+
+    # RUSTSEC-2024-0436 — paste 1.0.15 unmaintained. Transitive through
+    # many crates; proc-macro only (compile-time expansion, no runtime
+    # surface). Idiomatic pattern for macro-heavy Rust. Fix path: none
+    # required until upstream deprecates.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2026-0192 — ttf-parser 0.20.0 / 0.24.1 unmaintained. Two
+    # copies via the typst font stack. Pure-Rust TTF parser with no
+    # network / process boundaries; adversarial input is bounded by the
+    # font files typst embeds. Fix path: typst 0.14 (expected to unify
+    # onto a single maintained ttf-parser).
+    "RUSTSEC-2026-0192",
+]
