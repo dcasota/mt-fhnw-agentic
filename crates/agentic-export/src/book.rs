@@ -3542,6 +3542,104 @@ fn postprocess_docx_inner_layout(
 /// Only fires on `master_thesis.docx` (routed via filename match at the
 /// call site — same convention as `restore_reference_theme_and_styles`).
 /// Idempotent.
+/// ADR-0064 iter42 (2026-07-04): strip Word's auto-generated `w:num="N"`
+/// attribute from every `<w:cols>` occurrence in `word/document.xml`.
+///
+/// The INDEX field emits its own `<w:sectPr>` around the entries, and
+/// Word's INDEX styling defaults to `<w:cols w:num="2"/>` — visually
+/// jarring against the surrounding single-column body. Every non-thesis
+/// book that renders an INDEX section (14 of 17 in the current cascade)
+/// inherits this two-column artefact. Stripping `w:num` unconditionally
+/// forces every section to single-column full-page layout.
+///
+/// Idempotent: absence of `<w:cols>` is a no-op; already-single-column
+/// `<w:cols w:space="..."/>` is preserved unchanged; `master_thesis.docx`
+/// carries no INDEX field and is therefore untouched.
+pub fn strip_multi_column_from_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let mut zin = zip::ZipArchive::new(Cursor::new(docx))
+        .context("open docx zip for strip_multi_column")?;
+    let mut document_xml: Option<String> = None;
+    let mut out = Cursor::new(Vec::<u8>::new());
+    let mut order: Vec<(String, bool)> = Vec::with_capacity(zin.len());
+    let mut entries: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    {
+        let mut zout = zip::ZipWriter::new(&mut out);
+        for i in 0..zin.len() {
+            let mut f = zin.by_index(i).context("read zip entry (strip_multi_column pass)")?;
+            let name = f.name().to_string();
+            if name == "word/document.xml" {
+                let mut s = String::new();
+                f.read_to_string(&mut s)
+                    .context("read document.xml (strip_multi_column pass)")?;
+                document_xml = Some(s);
+                order.push((name, true));
+            } else {
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf)
+                    .context("read entry bytes (strip_multi_column pass)")?;
+                entries.insert(name.clone(), buf);
+                order.push((name, false));
+            }
+        }
+        let doc = document_xml.as_deref().unwrap_or("");
+        let new_doc = rewrite_cols_to_single(doc);
+        for (name, is_document) in &order {
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .compression_level(Some(9));
+            zout.start_file(name.as_str(), opts)
+                .context("start_file (strip_multi_column pass)")?;
+            if *is_document {
+                zout.write_all(new_doc.as_bytes())
+                    .context("write new document.xml (strip_multi_column)")?;
+            } else {
+                let bytes = entries.get(name).expect("cached entry");
+                zout.write_all(bytes).context("write cached entry (strip_multi_column)")?;
+            }
+        }
+        zout.finish().context("finish zip (strip_multi_column pass)")?;
+    }
+    Ok(out.into_inner())
+}
+
+/// Pure text-level rewrite of `<w:cols w:num="N" .../>` → `<w:cols .../>`
+/// (dropping just the `w:num` attribute; leaving `w:space` etc. alone).
+fn rewrite_cols_to_single(doc: &str) -> String {
+    let mut out = String::with_capacity(doc.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = doc[cursor..].find("<w:cols") {
+        let tag_start = cursor + rel;
+        let tag_close = match doc[tag_start..].find('>') {
+            Some(p) => tag_start + p + 1,
+            None => break,
+        };
+        out.push_str(&doc[cursor..tag_start]);
+        let tag = &doc[tag_start..tag_close];
+        let stripped = strip_w_num_from_cols_tag(tag);
+        out.push_str(&stripped);
+        cursor = tag_close;
+    }
+    out.push_str(&doc[cursor..]);
+    out
+}
+
+fn strip_w_num_from_cols_tag(tag: &str) -> String {
+    let needle = " w:num=\"";
+    if let Some(p) = tag.find(needle) {
+        let value_start = p + needle.len();
+        if let Some(rel_end) = tag[value_start..].find('"') {
+            let close = value_start + rel_end + 1;
+            let mut out = String::with_capacity(tag.len());
+            out.push_str(&tag[..p]);
+            out.push_str(&tag[close..]);
+            return out;
+        }
+    }
+    tag.to_string()
+}
+
 pub fn inject_pgnumtype_per_section(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
     let mut zin =
@@ -4983,6 +5081,21 @@ fn replace_or_insert_attr(tag: &str, name: &str, value: &str) -> String {
     s
 }
 
+fn remove_attr(tag: &str, name: &str) -> String {
+    let needle = format!(" {name}=\"");
+    if let Some(p) = tag.find(&needle) {
+        let value_start = p + needle.len();
+        if let Some(rel_end) = tag[value_start..].find('"') {
+            let close = value_start + rel_end + 1;
+            let mut out = String::with_capacity(tag.len());
+            out.push_str(&tag[..p]);
+            out.push_str(&tag[close..]);
+            return out;
+        }
+    }
+    tag.to_string()
+}
+
 fn patch_cols_space(block: &str, space: u32) -> String {
     // Replace existing <w:cols …/> if present.
     if let Some(p) = block.find("<w:cols") {
@@ -4992,6 +5105,12 @@ fn patch_cols_space(block: &str, space: u32) -> String {
             .or_else(|| block[p..].find('>').map(|e| p + e + 1));
         if let Some(end) = end {
             let mut new_tag = block[p..end].to_string();
+            // ADR-0064 iter42 (2026-07-04): strip w:num so Word's default
+            // INDEX-field 2-column sectPr gets forced back to single-column
+            // full-page layout. Every non-thesis book that goes through this
+            // patch gets a single-column rendering; explicit multi-column
+            // is not currently a supported feature of any book profile.
+            new_tag = remove_attr(&new_tag, "w:num");
             new_tag = replace_or_insert_attr(&new_tag, "w:space", &space.to_string());
             let mut out = String::with_capacity(block.len() + new_tag.len());
             out.push_str(&block[..p]);

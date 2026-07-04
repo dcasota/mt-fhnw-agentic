@@ -22,6 +22,14 @@ struct Manifest {
 struct BookSpec {
     key: String,
     title: String,
+    /// ADR-0064 iter42 (2026-07-04): optional output filename basename
+    /// (without .docx extension). When set, the rendered docx / dotx are
+    /// written to `{out}/{output_basename}.docx` instead of
+    /// `{out}/{key}.docx`. Lets a manifest name its deliverable in a
+    /// user-friendly form (e.g. "Campaign 01 - CVE Self-Patch")
+    /// distinct from the internal book key. Absent → filename = key.
+    #[serde(default)]
+    output_basename: Option<String>,
     #[serde(default)]
     subtitle: String,
     #[serde(default)]
@@ -1455,6 +1463,18 @@ fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result
         }
         _ => agentic_export::thesis_styles::StylesProfile::AiNorms,
     };
+    // ADR-0064 iter42 (2026-07-04): unconditional single-column
+    // normalization. Word's INDEX field auto-generates a `<w:sectPr>`
+    // containing `<w:cols w:num="2" .../>` around the emitted INDEX
+    // paragraphs (see §5 of the OOXML SDT/INDEX guidance). That leaves
+    // every non-thesis book with a two-column INDEX section at the end
+    // — visually jarring when the rest of the book uses full-page
+    // paragraphs. Strip `w:num` from every `<w:cols>` occurrence in
+    // `word/document.xml` so all sections revert to single-column
+    // full-page layout. Idempotent + safe for master_thesis (which has
+    // no INDEX field and therefore no `<w:cols>` occurrences to touch).
+    let collapsed = agentic_export::book::strip_multi_column_from_docx(collapsed)
+        .with_context(|| format!("strip multi-column for {}", path.display()))?;
     let with_styles = if restore_theme_and_styles {
         // Round V zone B: re-inject theme1.xml + styles.xml AFTER Word COM
         // finalize so the Office-2010 Calibri/Cambria pair + the right styles
@@ -1534,7 +1554,10 @@ fn build(
         match result {
             Ok((figs, bytes, held)) => {
                 built += 1;
-                built_docs.push(out.join(format!("{}.docx", spec.key)));
+                built_docs.push(out.join(format!(
+                    "{}.docx",
+                    spec.output_basename.as_deref().unwrap_or(&spec.key)
+                )));
                 built_use_bk.push(spec.body_render_use_bk_styles);
                 let included = spec.chapters.len() - held.len();
                 report.push(serde_json::json!({
@@ -1922,7 +1945,14 @@ fn build_one(
         emit_chapter_extras: spec.emit_chapter_extras,
     };
     let bytes = render_book(&meta, &chapters, work)?;
-    let path = out.join(format!("{}.docx", spec.key));
+    // ADR-0064 iter42 (2026-07-04): manifest may name the deliverable
+    // via `output_basename` (e.g. "Campaign 01 - CVE Self-Patch"). Fall
+    // back to `spec.key` for books that don't set it. Sidecar files
+    // (fhnw_logo.png, fhnw_header.json) continue to use `spec.key` as
+    // basename so the finalize step's sidecar lookup remains a simple
+    // key match regardless of the docx's user-facing filename.
+    let deliverable_base = spec.output_basename.as_deref().unwrap_or(&spec.key);
+    let path = out.join(format!("{}.docx", deliverable_base));
     std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
 
     // ADR-0050 §1 item 1 (v0.1.15-engine, 2026-05-29 fix): the engine
