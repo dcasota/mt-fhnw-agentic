@@ -874,6 +874,37 @@ try {{
           $logoPath = $side.logo_path_abs
           $logoExists = if ($logoPath) {{ Test-Path -LiteralPath $logoPath }} else {{ $false }}
           Write-Output ("{{0}}`tHEADER_PROBE  logo=[{{1}}]  exists={{2}}" -f $pth, $logoPath, $logoExists)
+          # ADR-0064 iter43 (2026-07-05): TITLE-PAGE floating logo.
+          # Anchor scope = document body (not header) so it appears on
+          # page 1 only. Position + size reuse the sidecar's logo_*
+          # fields (same as the header logo — page-relative, bleeds off
+          # top-left corner). Reference master_thesis had this drawing
+          # since day 1 (image1.png, 3840x885, position -49.3/-59.8pt);
+          # our tool never emitted it. tp_drawings=0 across all 30
+          # historical cascades sampled in the 2026-07-05 sweep.
+          if ([bool]$side.title_logo_enabled -and $logoExists) {{
+            try {{
+              $tp_W_pt = [double]$side.logo_width_cm * 28.346
+              $tp_H_pt = [double]$side.logo_height_cm * 28.346
+              $tp_L_pt = [double]$side.logo_left_pt
+              $tp_T_pt = [double]$side.logo_top_pt
+              # Doc-scope Shape.AddPicture — anchors to Range at insertion
+              # point which is currently at document start (Selection has
+              # not been moved yet). Position + wrap will be re-asserted
+              # below so the paragraph-anchor is decorative only.
+              $tpShape = $d.Shapes.AddPicture($logoPath, $false, $true, $tp_L_pt, $tp_T_pt, $tp_W_pt, $tp_H_pt)
+              $tpShape.WrapFormat.Type            = [int]$side.logo_wrap_type
+              $tpShape.RelativeHorizontalPosition = [int]$side.logo_relh
+              $tpShape.RelativeVerticalPosition   = [int]$side.logo_relv
+              $tpShape.Left = $tp_L_pt
+              $tpShape.Top  = $tp_T_pt
+              # Name it so we can find + skip it on idempotent re-runs.
+              $tpShape.Name = "FhnwTitlePageLogo"
+              Write-Output ("{{0}}`tTITLE_LOGO_ADDED  L={{1}} T={{2}} W={{3}} H={{4}} wrap={{5}}" -f $pth, [math]::Round($tpShape.Left,1), [math]::Round($tpShape.Top,1), [math]::Round($tpShape.Width,1), [math]::Round($tpShape.Height,1), $tpShape.WrapFormat.Type)
+            }} catch {{
+              Write-Output ("{{0}}`tTITLE_LOGO_ERROR  msg={{1}}" -f $pth, $_.Exception.Message)
+            }}
+          }}
             # Layout: FLOATING-anchor logo + text-line paragraphs.
             # The FHNW MAS proposal docx places the logo as a Shape (NOT
             # an InlineShape) anchored to the page at (-49.3, -59.8) pt
@@ -1947,10 +1978,16 @@ fn build_one(
     let bytes = render_book(&meta, &chapters, work)?;
     // ADR-0064 iter42 (2026-07-04): manifest may name the deliverable
     // via `output_basename` (e.g. "Campaign 01 - CVE Self-Patch"). Fall
-    // back to `spec.key` for books that don't set it. Sidecar files
-    // (fhnw_logo.png, fhnw_header.json) continue to use `spec.key` as
-    // basename so the finalize step's sidecar lookup remains a simple
-    // key match regardless of the docx's user-facing filename.
+    // back to `spec.key` for books that don't set it.
+    // ADR-0064 iter43 (2026-07-05): bug fix — sidecar files MUST also
+    // use `deliverable_base`, not `spec.key`. The finalize PowerShell
+    // step derives the sidecar path from the docx filename via
+    // `$pth + '.fhnw_header.json'` (see the embedded script). If
+    // sidecar is written at `<key>.docx.fhnw_header.json` but the docx
+    // is `<output_basename>.docx`, the finalize's Test-Path fails
+    // silently and the WHOLE header + title-page logo injection block
+    // is skipped. Confirmed root cause of the "no FHNW logo" regression
+    // across every iter42+ cascade (tp_drawings=0, HeaderCount=0).
     let deliverable_base = spec.output_basename.as_deref().unwrap_or(&spec.key);
     let path = out.join(format!("{}.docx", deliverable_base));
     std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
@@ -1963,7 +2000,7 @@ fn build_one(
     // a sibling PNG so finalize doesn't need the project DB.
     if agentic_export::book::fhnw_header_sidecar_needed(&meta) {
         let logo_path_abs: Option<String> = if let Some(bytes) = meta.header_logo.as_ref() {
-            let logo_path = out.join(format!("{}.fhnw_logo.png", spec.key));
+            let logo_path = out.join(format!("{}.fhnw_logo.png", deliverable_base));
             std::fs::write(&logo_path, bytes)
                 .with_context(|| format!("writing FHNW logo to {}", logo_path.display()))?;
             // Use the absolute path so the PowerShell finalize step is
@@ -1976,7 +2013,7 @@ fn build_one(
         };
         let sidecar =
             agentic_export::book::FhnwHeaderSidecar::from_meta(&meta, logo_path_abs.clone());
-        let sidecar_path = out.join(format!("{}.docx.fhnw_header.json", spec.key));
+        let sidecar_path = out.join(format!("{}.docx.fhnw_header.json", deliverable_base));
         let json = serde_json::to_string_pretty(&sidecar)
             .with_context(|| "serialising FHNW header sidecar")?;
         std::fs::write(&sidecar_path, json).with_context(|| {

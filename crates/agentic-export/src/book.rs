@@ -1315,6 +1315,17 @@ pub struct FhnwHeaderSidecar {
     /// controls whether the mirrored variant is populated on Even pages too.
     #[serde(default = "default_header_odd_even_mirrored")]
     pub header_odd_even_mirrored: bool,
+    /// ADR-0064 iter43 (2026-07-05): also inject the FHNW logo as a
+    /// floating drawing anchored to the title-page body (section 1),
+    /// not just to the running header. Reuses `logo_path_abs` +
+    /// `logo_left_pt` / `logo_top_pt` / `logo_width_cm` / `logo_height_cm`
+    /// so the title-page logo bleeds off the top-left corner exactly
+    /// like the reference master-thesis's page 1. Reference has a
+    /// 3840×885 PNG floating there; the tool has never emitted this
+    /// until today. Default: enabled whenever the sidecar itself is
+    /// present (FhnwMtTemplate books).
+    #[serde(default = "default_title_logo_enabled")]
+    pub title_logo_enabled: bool,
 }
 
 fn default_logo_width_cm() -> f32 {
@@ -1353,6 +1364,9 @@ fn default_header_pagenum_styleref_enabled() -> bool {
 fn default_header_odd_even_mirrored() -> bool {
     false
 }
+fn default_title_logo_enabled() -> bool {
+    true
+}
 
 impl FhnwHeaderSidecar {
     /// Build the sidecar struct from a BookMeta, with the proposal's
@@ -1389,6 +1403,12 @@ impl FhnwHeaderSidecar {
             // headers with STYLEREF chapter refs + PAGE field.
             header_pagenum_styleref_enabled: is_mt_template,
             header_odd_even_mirrored: is_mt_template,
+            // ADR-0064 iter43 (2026-07-05): FhnwMtTemplate emits the FHNW
+            // logo also on the title page (page 1 body) as a floating
+            // drawing. Reference thesis had this since day 1; our tool
+            // has never emitted it. Confirmed via 30-cascade sweep
+            // 2026-07-05: tp_drawings=0 across all sampled snapshots.
+            title_logo_enabled: is_mt_template,
         }
     }
 }
