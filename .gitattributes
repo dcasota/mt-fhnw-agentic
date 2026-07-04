@@ -11,3 +11,13 @@
 # Linux/macOS checkouts (7,642 bytes), breaking both the pinned-length test
 # and the actual docx parity.
 crates/agentic-export/tests/fixtures/theme1_reference.xml binary
+
+# ADR-0064 iter41 (2026-07-04): FHNW MT-Template fixtures embedded in the
+# `agentic-thesis-template` crate. Same rationale as the theme1_reference.xml
+# rule above — the hardcoded `size_matches_fixture` tests assert byte-lengths
+# that were measured on a Windows checkout (CRLF). Without a binary rule,
+# git autocrlf normalises to LF on Linux/macOS checkouts and every
+# `size_matches_fixture` test fails by ~1 byte per line. Also the fhnw_logo
+# PNG must not be text-processed.
+crates/agentic-thesis-template/tests/fixtures/*.xml binary
+crates/agentic-thesis-template/tests/fixtures/*.png binary
