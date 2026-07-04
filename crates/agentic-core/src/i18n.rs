@@ -49,9 +49,9 @@ pub const KEYS: &[&str] = &[
     "fig_caption_sep_colon",     // separator between "Figure N" and caption text in Colon format
     "fig_caption_sep_period",    // separator between "Figure N" and caption text in Period format
     // ── ADR-0064: FHNW MT-Template consolidation (2026-07-03) ───────────────
-    "chapter_prefix",            // "Chapter " label above numbered main-matter H1s (Palatino 17pt bold, ChapterNumber style)
-    "imprint_heading",           // "Imprint" heading of the synthesised chapter emitted between title page and Declaration
-    "school_of_business",        // "School of Business" line on the FHNW MT-Template title-page prelude
+    "chapter_prefix", // "Chapter " label above numbered main-matter H1s (Palatino 17pt bold, ChapterNumber style)
+    "imprint_heading", // "Imprint" heading of the synthesised chapter emitted between title page and Declaration
+    "school_of_business", // "School of Business" line on the FHNW MT-Template title-page prelude
 ];
 
 /// Supported language codes, English first.

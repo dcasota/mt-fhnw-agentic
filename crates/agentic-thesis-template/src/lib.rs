@@ -15,18 +15,18 @@
 
 #![allow(clippy::doc_markdown)]
 
-pub mod styles;
-pub mod document;
-pub mod headers;
-pub mod footers;
-pub mod settings;
-pub mod numbering;
 pub mod content_types;
-pub mod rels;
-pub mod theme;
+pub mod document;
 pub mod font_table;
-pub mod web_settings;
+pub mod footers;
+pub mod headers;
+pub mod numbering;
 pub mod package;
+pub mod rels;
+pub mod settings;
+pub mod styles;
+pub mod theme;
+pub mod web_settings;
 
 /// Style constants pulled verbatim from `MT-Template/build/generate_template.py`.
 pub mod fhnw {

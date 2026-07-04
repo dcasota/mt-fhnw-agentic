@@ -41,7 +41,10 @@ mod tests {
         // MT-Template ADR-0002: font pinned on all four slots.
         let bytes = emit_styles_xml();
         let s = String::from_utf8_lossy(&bytes);
-        assert!(s.contains("Palatino Linotype"), "Palatino Linotype missing from styles.xml");
+        assert!(
+            s.contains("Palatino Linotype"),
+            "Palatino Linotype missing from styles.xml"
+        );
     }
 
     #[test]
@@ -49,15 +52,19 @@ mod tests {
         // MT-Template ADR-0002: hyperlink accent = 294F6D (dark navy).
         let bytes = emit_styles_xml();
         let s = String::from_utf8_lossy(&bytes);
-        assert!(s.contains("294F6D") || s.contains("294f6d"),
-                "hyperlink accent 294F6D missing from styles.xml");
+        assert!(
+            s.contains("294F6D") || s.contains("294f6d"),
+            "hyperlink accent 294F6D missing from styles.xml"
+        );
     }
 
     #[test]
     fn contains_chapter_number_style() {
         let bytes = emit_styles_xml();
         let s = String::from_utf8_lossy(&bytes);
-        assert!(s.contains("Chapter Number"),
-                "custom 'Chapter Number' style missing from styles.xml");
+        assert!(
+            s.contains("Chapter Number"),
+            "custom 'Chapter Number' style missing from styles.xml"
+        );
     }
 }

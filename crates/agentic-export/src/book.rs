@@ -1358,14 +1358,15 @@ impl FhnwHeaderSidecar {
     /// Build the sidecar struct from a BookMeta, with the proposal's
     /// measured defaults for the cosmetic fields.
     pub fn from_meta(meta: &BookMeta, logo_path_abs: Option<String>) -> Self {
-        let is_mt_template = matches!(
-            meta.thesis_typography,
-            TypographyProfile::FhnwMtTemplate
-        );
+        let is_mt_template = matches!(meta.thesis_typography, TypographyProfile::FhnwMtTemplate);
         Self {
             logo_path_abs,
             lines: meta.header_lines.clone(),
-            line_font: if is_mt_template { "Palatino Linotype".to_string() } else { "Arial".to_string() },
+            line_font: if is_mt_template {
+                "Palatino Linotype".to_string()
+            } else {
+                "Arial".to_string()
+            },
             line_size_pt: 12,
             line_bold: true,
             logo_height_cm: 4.92,
@@ -1377,7 +1378,11 @@ impl FhnwHeaderSidecar {
             logo_relv: default_logo_relv(),
             apply_to_all_pages: true,
             footer_pagenum_enabled: default_footer_pagenum_enabled(),
-            footer_pagenum_font: if is_mt_template { "Palatino Linotype".to_string() } else { default_footer_pagenum_font() },
+            footer_pagenum_font: if is_mt_template {
+                "Palatino Linotype".to_string()
+            } else {
+                default_footer_pagenum_font()
+            },
             footer_pagenum_size_pt: default_footer_pagenum_size_pt(),
             footer_pagenum_alignment: default_footer_pagenum_alignment(),
             // ADR-0064 iter7: FhnwMtTemplate enables book-style mirrored
@@ -3539,13 +3544,18 @@ fn postprocess_docx_inner_layout(
 /// Idempotent.
 pub fn inject_pgnumtype_per_section(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
-    let mut zin = zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip for pgNumType inject")?;
+    let mut zin =
+        zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip for pgNumType inject")?;
 
     // Special-cased entries: document.xml (pgNumType rewrite) and styles.xml
     // (append 5 stub TOC-derived styles to reach the 183-style reference count).
     // Everything else is copied verbatim.
     #[derive(Copy, Clone)]
-    enum Kind { Verbatim, Document, Styles }
+    enum Kind {
+        Verbatim,
+        Document,
+        Styles,
+    }
 
     let mut document_xml: Option<String> = None;
     let mut styles_xml: Option<String> = None;
@@ -3559,17 +3569,20 @@ pub fn inject_pgnumtype_per_section(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
             let name = f.name().to_string();
             if name == "word/document.xml" {
                 let mut s = String::new();
-                f.read_to_string(&mut s).context("read document.xml (pgNumType pass)")?;
+                f.read_to_string(&mut s)
+                    .context("read document.xml (pgNumType pass)")?;
                 document_xml = Some(s);
                 order.push((name, Kind::Document));
             } else if name == "word/styles.xml" {
                 let mut s = String::new();
-                f.read_to_string(&mut s).context("read styles.xml (pgNumType pass)")?;
+                f.read_to_string(&mut s)
+                    .context("read styles.xml (pgNumType pass)")?;
                 styles_xml = Some(s);
                 order.push((name, Kind::Styles));
             } else {
                 let mut buf = Vec::new();
-                f.read_to_end(&mut buf).context("read entry bytes (pgNumType pass)")?;
+                f.read_to_end(&mut buf)
+                    .context("read entry bytes (pgNumType pass)")?;
                 entries.insert(name.clone(), buf);
                 order.push((name, Kind::Verbatim));
             }
@@ -3584,10 +3597,15 @@ pub fn inject_pgnumtype_per_section(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
             let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated)
                 .compression_level(Some(9));
-            zout.start_file(name.as_str(), opts).context("start_file (pgNumType pass)")?;
+            zout.start_file(name.as_str(), opts)
+                .context("start_file (pgNumType pass)")?;
             match kind {
-                Kind::Document => zout.write_all(new_doc.as_bytes()).context("write new document.xml")?,
-                Kind::Styles => zout.write_all(new_sty.as_bytes()).context("write new styles.xml")?,
+                Kind::Document => zout
+                    .write_all(new_doc.as_bytes())
+                    .context("write new document.xml")?,
+                Kind::Styles => zout
+                    .write_all(new_sty.as_bytes())
+                    .context("write new styles.xml")?,
                 Kind::Verbatim => {
                     let bytes = entries.get(name).expect("cached entry");
                     zout.write_all(bytes).context("write cached entry")?;
@@ -3653,17 +3671,22 @@ fn rewrite_pgnumtype_in_document_xml(doc: &str) -> String {
     let intro_paragraph = find_heading1_paragraph_offset(doc, &["Introduction"]);
     let back_matter_paragraph = find_heading1_paragraph_offset(
         doc,
-        &["Appendix", "Bibliography", "AI Tools Disclosure", "References", "Glossary"],
+        &[
+            "Appendix",
+            "Bibliography",
+            "AI Tools Disclosure",
+            "References",
+            "Glossary",
+        ],
     );
 
     // Count sectPr occurrences BEFORE each landmark. The section INDEX
     // containing the landmark is (count + 1), because sectPr N terminates
     // section N; paragraphs after sectPr N-1 and before sectPr N are in
     // section N.
-    let intro_section: Option<usize> = intro_paragraph
-        .map(|pos| count_sectpr_before(doc, pos) + 1);
-    let back_section: Option<usize> = back_matter_paragraph
-        .map(|pos| count_sectpr_before(doc, pos) + 1);
+    let intro_section: Option<usize> = intro_paragraph.map(|pos| count_sectpr_before(doc, pos) + 1);
+    let back_section: Option<usize> =
+        back_matter_paragraph.map(|pos| count_sectpr_before(doc, pos) + 1);
 
     // Rewrite each sectPr in order.
     let mut result = String::with_capacity(doc.len() + 512);
@@ -3690,7 +3713,8 @@ fn rewrite_pgnumtype_in_document_xml(doc: &str) -> String {
         // Rewrite this sectPr block.
         let block = &doc[start..end];
         let role = classify_section(sect_index, intro_section, back_section);
-        let rewritten = rewrite_single_sectpr(block, role, sect_index, back_section.unwrap_or(usize::MAX));
+        let rewritten =
+            rewrite_single_sectpr(block, role, sect_index, back_section.unwrap_or(usize::MAX));
         result.push_str(&rewritten);
 
         cursor = end;
@@ -3701,11 +3725,11 @@ fn rewrite_pgnumtype_in_document_xml(doc: &str) -> String {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum SectionRole {
-    Front,       // Roman
-    MainStart,   // Arabic start=1
-    Main,        // Arabic continue (no explicit pgNumType)
-    BackStart,   // Roman start=<continuing>
-    Back,        // Roman continue (no explicit pgNumType)
+    Front,     // Roman
+    MainStart, // Arabic start=1
+    Main,      // Arabic continue (no explicit pgNumType)
+    BackStart, // Roman start=<continuing>
+    Back,      // Roman continue (no explicit pgNumType)
 }
 
 fn classify_section(
@@ -3715,21 +3739,35 @@ fn classify_section(
 ) -> SectionRole {
     match (intro_section, back_section) {
         (Some(k), Some(l)) => {
-            if idx < k { SectionRole::Front }
-            else if idx == k { SectionRole::MainStart }
-            else if idx < l { SectionRole::Main }
-            else if idx == l { SectionRole::BackStart }
-            else { SectionRole::Back }
+            if idx < k {
+                SectionRole::Front
+            } else if idx == k {
+                SectionRole::MainStart
+            } else if idx < l {
+                SectionRole::Main
+            } else if idx == l {
+                SectionRole::BackStart
+            } else {
+                SectionRole::Back
+            }
         }
         (Some(k), None) => {
-            if idx < k { SectionRole::Front }
-            else if idx == k { SectionRole::MainStart }
-            else { SectionRole::Main }
+            if idx < k {
+                SectionRole::Front
+            } else if idx == k {
+                SectionRole::MainStart
+            } else {
+                SectionRole::Main
+            }
         }
         (None, Some(l)) => {
-            if idx < l { SectionRole::Main }
-            else if idx == l { SectionRole::BackStart }
-            else { SectionRole::Back }
+            if idx < l {
+                SectionRole::Main
+            } else if idx == l {
+                SectionRole::BackStart
+            } else {
+                SectionRole::Back
+            }
         }
         (None, None) => SectionRole::Main,
     }
@@ -3778,12 +3816,8 @@ fn rewrite_single_sectpr(
             // (decimal continues from MainStart's start=1).
             Some(r#"<w:pgNumType w:fmt="decimal"/>"#.to_string())
         }
-        SectionRole::BackStart => {
-            Some(r#"<w:pgNumType w:fmt="lowerRoman"/>"#.to_string())
-        }
-        SectionRole::Back => {
-            Some(r#"<w:pgNumType w:fmt="lowerRoman"/>"#.to_string())
-        }
+        SectionRole::BackStart => Some(r#"<w:pgNumType w:fmt="lowerRoman"/>"#.to_string()),
+        SectionRole::Back => Some(r#"<w:pgNumType w:fmt="lowerRoman"/>"#.to_string()),
     };
 
     if let Some(pg) = inject {
@@ -4112,8 +4146,7 @@ pub fn restore_reference_theme_and_styles(
                 let bytes = agentic_thesis_template::settings::emit_settings_xml();
                 zout.start_file(&name, zip::write::SimpleFileOptions::default())
                     .context("start FHNW settings.xml")?;
-                zout.write_all(&bytes)
-                    .context("write FHNW settings.xml")?;
+                zout.write_all(&bytes).context("write FHNW settings.xml")?;
                 let mut _drain = String::new();
                 let _ = f.read_to_string(&mut _drain);
             } else if name == "[Content_Types].xml" {
@@ -7183,11 +7216,7 @@ fn render_thesis_book(
                         TableRow::new(vec![
                             cell(&meta.author, false, false, REF_TITLE_TBL_LEFT_DXA),
                             cell(
-                                &meta
-                                    .header_lines
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_default(),
+                                &meta.header_lines.first().cloned().unwrap_or_default(),
                                 false,
                                 true,
                                 REF_TITLE_TBL_RIGHT_DXA,
@@ -7213,10 +7242,7 @@ fn render_thesis_book(
                 // + only when the manifest supplies imprint content.
                 if slot == ThesisSlot::TitlePage
                     && matches!(meta.thesis_typography, TypographyProfile::FhnwMtTemplate)
-                    && meta
-                        .imprint
-                        .as_ref()
-                        .is_some_and(|s| !s.trim().is_empty())
+                    && meta.imprint.as_ref().is_some_and(|s| !s.trim().is_empty())
                 {
                     doc = doc.add_paragraph(page_break());
                     doc = doc.add_paragraph(

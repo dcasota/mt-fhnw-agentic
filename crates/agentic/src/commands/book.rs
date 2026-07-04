@@ -1334,8 +1334,8 @@ try {{
     // Fix: write the script to a temp file and invoke `powershell -File`,
     // which reads the script through the file system and bypasses the
     // command-line limit entirely.
-    let script_path = std::env::temp_dir()
-        .join(format!("agentic_finalize_{}.ps1", std::process::id()));
+    let script_path =
+        std::env::temp_dir().join(format!("agentic_finalize_{}.ps1", std::process::id()));
     // ADR-0064 iter29 (2026-07-03): PowerShell's `-File` reads the script
     // using the system codepage (Windows-1252 in DE/CH locales) unless
     // a UTF-8 BOM is present. Without it, non-ASCII path characters

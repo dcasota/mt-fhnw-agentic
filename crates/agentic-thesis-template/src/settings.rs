@@ -29,8 +29,10 @@ mod tests {
     fn has_even_and_odd_headers_flag() {
         let bytes = emit_settings_xml();
         let s = String::from_utf8_lossy(&bytes);
-        assert!(s.contains("evenAndOddHeaders"),
-                "settings.xml missing evenAndOddHeaders flag — mirrored headers won't render");
+        assert!(
+            s.contains("evenAndOddHeaders"),
+            "settings.xml missing evenAndOddHeaders flag — mirrored headers won't render"
+        );
     }
 
     #[test]
