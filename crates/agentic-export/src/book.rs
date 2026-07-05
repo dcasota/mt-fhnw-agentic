@@ -7317,8 +7317,10 @@ fn render_thesis_book(
     // ADR-0064 iter44 (2026-07-05): track whether we've crossed into
     // the Body (main matter) so we can emit the transition page break
     // exactly once, matching the reference's 3 total page breaks
-    // instead of ~25.
+    // instead of ~25. Also track the previous slot for the
+    // TitlePage → next-chapter break.
     let mut body_started = false;
+    let mut last_slot: Option<ThesisSlot> = None;
     for item in thesis_layout(chapters) {
         // Wave-2 (bookkit chrome suppression, 2026-06-04): skip Appendix
         // chapters entirely when the profile sets
@@ -7476,9 +7478,23 @@ fn render_thesis_book(
                 // matching the reference's mid-doc landmark. Further
                 // breaks appear naturally from render_thesis_chapter's
                 // own end-of-chapter emit.
-                if fhnw && emitted && slot == ThesisSlot::Body && !body_started {
+                // ADR-0064 iter44.m (2026-07-05): also break after
+                // TitlePage (before first non-title chapter). Reference
+                // renders Imprint on p2 with a hard page break separating
+                // it from the title-page banner. Without this, the
+                // Imprint text bleeds onto p1 next to the title. Together
+                // with the Body transition break above, that gives us 2
+                // total explicit page breaks — close to reference's 3.
+                if fhnw
+                    && emitted
+                    && (slot == ThesisSlot::Body && !body_started
+                        || (last_slot == Some(ThesisSlot::TitlePage)
+                            && slot != ThesisSlot::TitlePage))
+                {
                     doc = doc.add_paragraph(page_break());
-                    body_started = true;
+                    if slot == ThesisSlot::Body {
+                        body_started = true;
+                    }
                 }
                 doc = render_thesis_chapter(doc, &md_ref, meta, &mut ctx, emitted);
                 emitted = true;
