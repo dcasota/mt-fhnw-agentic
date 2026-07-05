@@ -7314,6 +7314,11 @@ fn render_thesis_book(
         ThesisSlot::MgmtSummary,
         ThesisSlot::Acronyms,
     ];
+    // ADR-0064 iter44 (2026-07-05): track whether we've crossed into
+    // the Body (main matter) so we can emit the transition page break
+    // exactly once, matching the reference's 3 total page breaks
+    // instead of ~25.
+    let mut body_started = false;
     for item in thesis_layout(chapters) {
         // Wave-2 (bookkit chrome suppression, 2026-06-04): skip Appendix
         // chapters entirely when the profile sets
@@ -7458,8 +7463,22 @@ fn render_thesis_book(
                 // (under FHNW only). Non-thesis books and the Designer
                 // profile keep the historical "chapter_break_before from
                 // emitted-state" behaviour.
-                if fhnw && front_matter_slots.contains(&slot) && emitted {
+                //
+                // ADR-0064 iter44 (2026-07-05): the June-8 reference uses
+                // just 3 `<w:br w:type="page">` for the whole document
+                // and lets chapter transitions flow via 21 `<w:sectPr>`
+                // section breaks. Emitting a page break for every
+                // front-matter chapter (5 slots × N chapters) produced
+                // 25 total page breaks and ~22 spurious blank pages
+                // (running-header-only pages) between chapters — 16 of
+                // the page-count overshoot vs reference. Kept just
+                // one break: the transition into the Body (main matter),
+                // matching the reference's mid-doc landmark. Further
+                // breaks appear naturally from render_thesis_chapter's
+                // own end-of-chapter emit.
+                if fhnw && emitted && slot == ThesisSlot::Body && !body_started {
                     doc = doc.add_paragraph(page_break());
+                    body_started = true;
                 }
                 doc = render_thesis_chapter(doc, &md_ref, meta, &mut ctx, emitted);
                 emitted = true;
