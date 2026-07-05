@@ -691,7 +691,14 @@ fn is_structural_marker(s: &str) -> bool {
     // Pipe-table row: leading `|` AND another `|` somewhere later in the
     // same line span. Restrict to the first 200 chars to keep the scan
     // cheap.
-    if b[0] == b'|' && s[1..s.len().min(200)].contains('|') {
+    // ADR-0064 iter43 (2026-07-05) UTF-8 safety fix — same class of bug
+    // as line 707 below: walk back to the nearest char boundary before
+    // slicing when the raw byte cap lands inside a multi-byte char.
+    let mut pipe_end = s.len().min(200);
+    while pipe_end > 1 && !s.is_char_boundary(pipe_end) {
+        pipe_end -= 1;
+    }
+    if b[0] == b'|' && s[1..pipe_end].contains('|') {
         return true;
     }
     // Italic-anchor section marker: `*<word>...<word>*` followed by a
@@ -699,7 +706,16 @@ fn is_structural_marker(s: &str) -> bool {
     // sub-headings). Tolerant of CRLF.
     if b[0] == b'*' && b.len() >= 3 && b[1] != b' ' && b[1] != b'*' {
         // Look for closing `*` within 160 chars.
-        let close = s[1..s.len().min(161)].find('*');
+        // ADR-0064 iter43 (2026-07-05) UTF-8 safety fix: the previous
+        // `s[1..s.len().min(161)]` panics when byte 161 falls inside a
+        // multi-byte char like `§` (bytes 160..162 in the failing
+        // PT-C08-9 sample). Walk back to the nearest char boundary
+        // before slicing.
+        let mut end = s.len().min(161);
+        while end > 1 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        let close = s[1..end].find('*');
         if let Some(c) = close {
             let after = c + 2;
             if after < s.len() && b.get(after) == Some(&b' ') {
