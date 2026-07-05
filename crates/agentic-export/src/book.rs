@@ -53,7 +53,17 @@ const ACCENT: &str = "0B5C9E"; // hyperlink blue
 const HEADBG: &str = "1F3864";
 const ALTBG: &str = "F4F6FA";
 const RULE: &str = "C9D2E0";
-const BODY: &str = "Georgia";
+/// ADR-0064 iter44 (2026-07-05): switched from Georgia to Palatino
+/// Linotype for the default body font. The June-8 master_thesis
+/// reference uses Palatino Linotype (declared on the Normal style +
+/// referenced in ~180 runs). Our earlier Georgia default leaked into
+/// 79 runs of the master_thesis body, causing line breaks to fall on
+/// different words (Georgia is ~4% wider than Palatino Linotype per
+/// character), which cascaded through every mid-doc page's layout.
+/// Non-thesis book profiles (AI-Norms, campaigns) still register
+/// Palatino Linotype via the AiNorms styles.xml fixture, so this
+/// change is safe across the fleet.
+const BODY: &str = "Palatino Linotype";
 const HEADF: &str = "Calibri";
 const MONO: &str = "Consolas";
 
@@ -7210,8 +7220,15 @@ fn render_thesis_book(
     chapters: &[(String, String)],
     figdir: &Path,
 ) -> Result<Vec<u8>> {
+    // ADR-0064 iter44 (2026-07-05): use profile-aware default font.
+    // Prior code hardcoded `body_fonts()` = Georgia — leaked Georgia
+    // into 79 runs of the FhnwMtTemplate thesis (reference has 0
+    // Georgia; body font is Palatino Linotype). This was the source
+    // of most of the mid-doc pixel diff because Georgia's letter
+    // width differs from Palatino by ~4%, cascading into different
+    // line breaks per paragraph.
     let doc_base = Docx::new()
-        .default_fonts(body_fonts())
+        .default_fonts(body_fonts_for(meta.thesis_typography))
         .default_size(22)
         .page_size(11906, 16838)
         .page_margin(std_margin_for(meta));
