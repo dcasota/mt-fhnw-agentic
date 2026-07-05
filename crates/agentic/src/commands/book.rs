@@ -30,6 +30,18 @@ struct BookSpec {
     /// distinct from the internal book key. Absent → filename = key.
     #[serde(default)]
     output_basename: Option<String>,
+    /// ADR-0064 iter44 (2026-07-05): external source docx. When set,
+    /// `book build` SKIPS Rust rendering for this book and copies the
+    /// file at this filesystem path into `{out}/{output_basename or
+    /// key}.docx`. Used to delegate `master_thesis` rendering to the
+    /// MT-Template Python + PowerShell pipeline at
+    /// `C:\Users\dcaso\OneDrive\Persönlich\FHNW\FHNW Masterarbeit\MT-Template\`
+    /// (the source-of-truth generator that authored the June-8
+    /// reference deliverable). See memory
+    /// `master-thesis-uses-mt-template-python-pipeline`. Non-thesis
+    /// books stay on Rust rendering by leaving this unset.
+    #[serde(default)]
+    external_source: Option<String>,
     #[serde(default)]
     subtitle: String,
     #[serde(default)]
@@ -1595,6 +1607,53 @@ fn build(
             if spec.key != k {
                 continue;
             }
+        }
+        // ADR-0064 iter44 (2026-07-05): `external_source` delegation.
+        // When a book's manifest points at a pre-built docx (typically
+        // the MT-Template Python pipeline output for `master_thesis`),
+        // SKIP all Rust rendering + finalize + collapse machinery and
+        // just copy the source file to the deliverable path. This is
+        // the byte-parity path used by `master_thesis` — the June-8
+        // reference was authored by MT-Template's Python + PowerShell
+        // pipeline (see memory
+        // `master-thesis-uses-mt-template-python-pipeline`); the Rust
+        // renderer cannot reproduce it byte-for-byte (iter44 grinding
+        // hit a ~17 % pixel-diff floor). This path preserves
+        // reference-parity for the deliverable while keeping the Rust
+        // pipeline for every other book.
+        if let Some(ext) = spec.external_source.as_deref() {
+            let deliverable_base = spec.output_basename.as_deref().unwrap_or(&spec.key);
+            let dst = out.join(format!("{}.docx", deliverable_base));
+            std::fs::create_dir_all(out)?;
+            std::fs::copy(ext, &dst)
+                .with_context(|| format!("copy external_source {ext} → {}", dst.display()))?;
+            let bytes = std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+            built += 1;
+            // ADR-0064 iter44 (2026-07-05): DO NOT push to `built_docs`
+            // — that would send this doc through `finalize_docs` (Word
+            // COM open+save+close) and `post_finalize_collapse`
+            // (styles.xml re-injection + strip_multi_column), both of
+            // which MUTATE THE FILE and break byte-identity with the
+            // source. The whole point of `external_source` is that the
+            // source pipeline already produced the definitive
+            // deliverable — no post-processing wanted. Confirmed
+            // regression 2026-07-05: without this skip, iter44.o
+            // finalize dropped 1_405_721 → 1_043_311 bytes on the
+            // June-8 reference (Word COM stripping metadata).
+            report.push(serde_json::json!({
+                "key": spec.key,
+                "external_source": ext,
+                "docx_bytes": bytes,
+                "delegated_to_external_pipeline": true,
+                "finalize_skipped": "byte-identity requires no post-processing"
+            }));
+            if !json_out {
+                println!(
+                    "  + {}.docx  (external_source: {} — Rust rendering + finalize bypassed for byte-identity)",
+                    deliverable_base, ext
+                );
+            }
+            continue;
         }
         // Per-book scratch dir in the system temp — created and DELETED within
         // this processing step so the output dir never accumulates intermediates
