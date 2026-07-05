@@ -1403,12 +1403,15 @@ impl FhnwHeaderSidecar {
             // headers with STYLEREF chapter refs + PAGE field.
             header_pagenum_styleref_enabled: is_mt_template,
             header_odd_even_mirrored: is_mt_template,
-            // ADR-0064 iter43 (2026-07-05): FhnwMtTemplate emits the FHNW
-            // logo also on the title page (page 1 body) as a floating
-            // drawing. Reference thesis had this since day 1; our tool
-            // has never emitted it. Confirmed via 30-cascade sweep
-            // 2026-07-05: tp_drawings=0 across all sampled snapshots.
-            title_logo_enabled: is_mt_template,
+            // ADR-0064 iter44 (2026-07-05): reverted iter43's
+            // wp:anchor floating title-page logo. The June-8 reference
+            // has an INLINE image at body paragraph 0 (image1.png,
+            // 3840x885 banner, wp:inline), not a floating anchor drawing.
+            // My iter43 misread the reference: TitlePageDrawings=1 in ref
+            // is a wp:inline, not a wp:anchor. Inline banner is now
+            // emitted via a markdown `![](assets/fhnw_banner.png)` at
+            // the top of the master_thesis title page markdown.
+            title_logo_enabled: false,
         }
     }
 }
@@ -6247,7 +6250,7 @@ fn render_block(
 /// only 26. Defining the named styles brings tooling that reads the docx via
 /// `styles.xml` (Word's Style pane, agentic check writing-quality, third-party
 /// renderers) into alignment with the bookkit harness.
-fn with_styles(mut doc: Docx) -> Docx {
+fn with_styles(mut doc: Docx, use_bk_styles: bool) -> Docx {
     let specs = [
         (1u8, 44usize, NAVY),
         (2, 32, NAVY),
@@ -6285,6 +6288,16 @@ fn with_styles(mut doc: Docx) -> Docx {
             .fonts(body_fonts()),
     );
     // ─── ADR-0054 v1 (T1.1, 2026-06-02): bookkit named-style set ────────
+    // ADR-0064 iter44 (2026-07-05): the Bk* set is now gated on the
+    // caller's `use_bk_styles` flag (mapped from
+    // `BookMeta::body_render_use_bk_styles`). The June-8 master-thesis
+    // reference declares 183 styles WITHOUT any Bk* prefix — the
+    // AI-Norms reference has 186 and IS the bookkit family. Registering
+    // Bk* unconditionally was leaking bookkit styles into the FHNW
+    // master-thesis output (style count 186 vs reference 183). When the
+    // caller opts out we skip the entire block. Callers must pass
+    // `meta.body_render_use_bk_styles` explicitly.
+    //
     // Reference values (Agent A inventory, agent_a_reference_inventory.md §5):
     //   BkBody     Georgia 11pt   (= 22 hp) — inherits Normal but pinned here
     //   BkH1       Calibri 22pt   (= 44 hp) bold navy, outline 0
@@ -6295,6 +6308,9 @@ fn with_styles(mut doc: Docx) -> Docx {
     //   BkCallout  Calibri 10.5pt (= 21 hp)
     //   BkBullet   Georgia 11pt   (= 22 hp) — bullet glyph applied by renderer
     //   BkSubtitle Calibri 13pt   (= 26 hp) grey
+    if !use_bk_styles {
+        return doc;
+    }
     //
     // Sizes are half-points (Word convention): 22 hp = 11 pt; 9 pt = 18 hp.
     // The styles are registered with `q_format(true)` (default for Style::new)
@@ -6561,7 +6577,7 @@ pub fn render_book(
     // NOTE: docGrid + cols.space on the document-level sectPr are injected
     // by the post-processor (`apply_layout_overrides_to_sectprs`); the
     // `Docx` builder does not expose those knobs in docx-rs 0.4.20.
-    let mut doc = with_styles(doc_base).footer(
+    let mut doc = with_styles(doc_base, meta.body_render_use_bk_styles).footer(
         Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
@@ -7171,7 +7187,7 @@ fn render_thesis_book(
         .page_size(11906, 16838)
         .page_margin(std_margin_for(meta));
     // docGrid + cols.space injected post-build (see `render_book`).
-    let mut doc = with_styles(doc_base).footer(
+    let mut doc = with_styles(doc_base, meta.body_render_use_bk_styles).footer(
         Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
@@ -7311,6 +7327,48 @@ fn render_thesis_book(
                 if matches!(meta.thesis_typography, TypographyProfile::FhnwMtTemplate)
                     && slot == ThesisSlot::TitlePage
                 {
+                    // ADR-0064 iter44 (2026-07-05): reference thesis has an
+                    // inline banner image (image1.png, 3840x885 FHNW letterhead)
+                    // as body paragraph 0, BEFORE the prelude text lines.
+                    // Emit it here as an inline `wp:inline` picture (NOT the
+                    // wp:anchor floating drawing iter43 briefly tried and
+                    // reverted). Bytes come from meta.header_logo when the
+                    // manifest points it at a banner-shaped image; if the
+                    // configured header_logo is the small square FHNW logo
+                    // (24 KB, 768x768) rather than the banner (129 KB, 3840x885)
+                    // the emission still works but the visual won't match
+                    // reference — set manifest.header_logo to
+                    // `assets/fhnw_banner.png` for full parity.
+                    if let Some(bytes) = meta.header_logo.as_ref() {
+                        if !bytes.is_empty() {
+                            // Read the image dimensions so we can size the
+                            // page-width banner correctly. The reference
+                            // renders image1.png at ≈16.5 cm wide (fills the
+                            // title-page content area on A4 with 2.5 cm margins).
+                            let (px_w, px_h) = match ::image::load_from_memory(bytes) {
+                                Ok(img) => (
+                                    ::image::GenericImageView::dimensions(&img).0,
+                                    ::image::GenericImageView::dimensions(&img).1,
+                                ),
+                                Err(_) => (3840, 885),
+                            };
+                            // Target: 16 cm wide (= 6.30 in), maintain aspect
+                            // ratio. 1 cm = 360000 EMU; 16 cm = 5_760_000 EMU.
+                            let target_w_emu: u32 = 5_760_000;
+                            let target_h_emu: u32 = target_w_emu
+                                .saturating_mul(px_h)
+                                .checked_div(px_w.max(1))
+                                .unwrap_or(1_500_000);
+                            doc = doc.add_paragraph(
+                                Paragraph::new().add_run(
+                                    Run::new().add_image(
+                                        Pic::new_with_dimensions(bytes.clone(), px_w, px_h)
+                                            .size(target_w_emu.into(), target_h_emu.into()),
+                                    ),
+                                ),
+                            );
+                        }
+                    }
                     // FHNW's official English name is a proper noun that the
                     // reference thesis keeps identical across all language
                     // editions (verified against the June-8 delivery for

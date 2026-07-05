@@ -918,7 +918,17 @@ try {{
             # `Headers.Shapes.AddPicture(...)` builds the floating shape
             # DIRECTLY — no convert step. Verified live 2026-05-29 against
             # the proposal coordinate dump: bit-for-bit match.
-            if ($logoExists) {{
+            #
+            # ADR-0064 iter44 (2026-07-05): gate the header logo on
+            # `title_logo_enabled` too. The June-8 reference has 0
+            # drawings in any of its 54 header parts — a text-only header.
+            # For FhnwMtTemplate the sidecar sets
+            # `title_logo_enabled=false`, which now disables BOTH the
+            # title-page shape and this header shape, matching reference.
+            # The MAS proposal parity path (FhnwProposalParity) keeps
+            # `title_logo_enabled=true` and continues to get the floating
+            # logo.
+            if ($logoExists -and [bool]$side.title_logo_enabled) {{
               # Delete any pre-existing inline shape in the header (left
               # over from the v0.1.15..16-engine inline path; defensive
               # so this code path is idempotent on re-runs).
@@ -1488,8 +1498,25 @@ fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result
     // all other books (AI Norms, campaigns, master_thesis, etc.) use the 186-
     // style AI-Norms verbatim port. Decision is per-file because the cascade
     // loops over rendered docs after finalize_docs returns.
+    //
+    // ADR-0064 iter44 (2026-07-05): the iter42 `output_basename` field
+    // renamed `master_thesis.docx` → `FHNW2026_DanielCasota_MT_en.docx`
+    // (and `master_thesis_bookkit.docx` → `FHNW2026_DanielCasota_MT_Bookkit_en.docx`)
+    // — but this filename match kept looking for the old names. The
+    // silent fallthrough routed FhnwMtTemplate books to the AiNorms
+    // 186-style fixture, which imports 10 `Bk*`/`Index*` styles the FHNW
+    // reference doesn't have. This was the root cause of "Bk* leakage
+    // into master_thesis" (memory
+    // `parity-verification-must-diff-against-reference`). Match both
+    // legacy `master_thesis*` names AND every filename that starts with
+    // the FHNW deliverable prefix `FHNW2026_DanielCasota_MT` so no
+    // future `output_basename` rename can silently drop the mapping.
     let styles_profile = match path.file_name().and_then(|s| s.to_str()) {
-        Some("master_thesis_bookkit.docx") | Some("master_thesis.docx") => {
+        Some(name)
+            if name == "master_thesis_bookkit.docx"
+                || name == "master_thesis.docx"
+                || name.starts_with("FHNW2026_DanielCasota_MT") =>
+        {
             agentic_export::thesis_styles::StylesProfile::FhnwMasterThesis
         }
         _ => agentic_export::thesis_styles::StylesProfile::AiNorms,
