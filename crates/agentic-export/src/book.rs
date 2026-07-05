@@ -3577,17 +3577,18 @@ fn postprocess_docx_inner_layout(
 /// carries no INDEX field and is therefore untouched.
 pub fn strip_multi_column_from_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
-    let mut zin = zip::ZipArchive::new(Cursor::new(docx))
-        .context("open docx zip for strip_multi_column")?;
+    let mut zin =
+        zip::ZipArchive::new(Cursor::new(docx)).context("open docx zip for strip_multi_column")?;
     let mut document_xml: Option<String> = None;
     let mut out = Cursor::new(Vec::<u8>::new());
     let mut order: Vec<(String, bool)> = Vec::with_capacity(zin.len());
-    let mut entries: std::collections::HashMap<String, Vec<u8>> =
-        std::collections::HashMap::new();
+    let mut entries: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
     {
         let mut zout = zip::ZipWriter::new(&mut out);
         for i in 0..zin.len() {
-            let mut f = zin.by_index(i).context("read zip entry (strip_multi_column pass)")?;
+            let mut f = zin
+                .by_index(i)
+                .context("read zip entry (strip_multi_column pass)")?;
             let name = f.name().to_string();
             if name == "word/document.xml" {
                 let mut s = String::new();
@@ -3616,10 +3617,12 @@ pub fn strip_multi_column_from_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
                     .context("write new document.xml (strip_multi_column)")?;
             } else {
                 let bytes = entries.get(name).expect("cached entry");
-                zout.write_all(bytes).context("write cached entry (strip_multi_column)")?;
+                zout.write_all(bytes)
+                    .context("write cached entry (strip_multi_column)")?;
             }
         }
-        zout.finish().context("finish zip (strip_multi_column pass)")?;
+        zout.finish()
+            .context("finish zip (strip_multi_column pass)")?;
     }
     Ok(out.into_inner())
 }
