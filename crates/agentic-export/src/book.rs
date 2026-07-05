@@ -66,6 +66,14 @@ const CONTENT_TWIPS: usize = 9298; // A4 (11906) − 2×1304 margins
 // airier page than the reference. Aligned to 1.32 so the Designer profile
 // matches AI_Norms_and_Regulations_BOOK.docx byte-for-byte on body spacing.
 const LINE_132: i32 = 317; // 1.32× single (240 = single; 1.32 × 240 = 316.8 → 317)
+/// ADR-0064 iter44 (2026-07-05): reference single-spacing line height in
+/// twips. `LineSpacingType::Auto` + `line(240)` = "single". June-8
+/// master_thesis emits `<w:spacing w:after="360"/>` on body paragraphs
+/// with NO `w:line` — inheriting the docDefault (which is single). The
+/// 1.32× LINE_132 was aliased at iter7-ish for readability in
+/// AI-Norms; on the thesis it added ~32% vertical space per line,
+/// producing 117 pages vs reference's 96.
+const LINE_SINGLE: i32 = 240;
 const SPACE_AFTER: u32 = 160; // ≈8 pt after body paragraphs
 const SPACE_AFTER_HEAD: u32 = 120; // after headings
 const SPACE_BEFORE_HEAD: u32 = 280; // before headings (separate from prose above)
@@ -84,10 +92,18 @@ const LAND_CONTENT_TWIPS: usize = 14230;
 /// Bookkit body paragraph spacing: 1.32× line-height with breathing room
 /// after the block. Mirrors `book_build/build_styles.py` Normal style
 /// (reference-parity audit 2026-06-02).
+/// ADR-0064 iter44 (2026-07-05): switched from 1.32× (LINE_132=317)
+/// to single-line (LINE_SINGLE=240). June-8 reference master_thesis
+/// declares `<w:spacing w:after="360"/>` on body paragraphs with NO
+/// `w:line` attr — inherits docDefault single spacing. Our earlier
+/// 1.32× multiplier added ~32% vertical space per line, producing 117
+/// pages vs reference's 96 for the same content. Non-thesis books
+/// were similarly affected but the visual delta is acceptable
+/// (readability slightly tightens — reference behaviour).
 fn body_spacing() -> LineSpacing {
     LineSpacing::new()
         .line_rule(LineSpacingType::Auto)
-        .line(LINE_132)
+        .line(LINE_SINGLE)
         .after(SPACE_AFTER)
 }
 
