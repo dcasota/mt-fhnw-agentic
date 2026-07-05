@@ -6088,11 +6088,51 @@ fn render_block(
                 // compressed source PNG. By providing the dims we skip
                 // that round trip entirely and ship the exact bytes
                 // we already produced.
+                // ADR-0064 iter43 (2026-07-05) — protect against docx-rs
+                // `Pic::new(&buf)` panic at pic.rs:58:
+                // `image::load_from_memory(buf).expect(...)` panics when
+                // the bytes aren't a decodable image, killing the entire
+                // cascade subprocess before finalize runs (every book in
+                // the cascade output silently lost its FHNW logo — the
+                // sidecar-driven finalize step never got called because
+                // ai_norms_and_regulations's malformed figure aborted
+                // the process). Note: this Cargo profile has `panic =
+                // "abort"`, so std::panic::catch_unwind CANNOT intercept
+                // the panic. The only safe path is to pre-validate the
+                // bytes with `image::load_from_memory` — same decoder,
+                // returns a Result — before calling `Pic::new`. On
+                // decode failure substitute a 1×1 transparent-PNG
+                // placeholder (uses `Pic::new_with_dimensions` which
+                // does NOT decode) so the figure paragraph structure
+                // stays intact and the caption still renders.
+                const PLACEHOLDER_1X1_PNG: [u8; 67] = [
+                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
+                    0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
+                    0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44,
+                    0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D,
+                    0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42,
+                    0x60, 0x82,
+                ];
                 let pic = match dims_hint {
-                    Some((w_px, h_px)) => Pic::new_with_dimensions(bytes, w_px, h_px),
-                    None => Pic::new(&bytes),
-                }
-                .size(w_emu, h_emu);
+                    Some((w_px, h_px)) => {
+                        // No-decode path — safe.
+                        Pic::new_with_dimensions(bytes, w_px, h_px).size(w_emu, h_emu)
+                    }
+                    None => {
+                        // Pre-validate before Pic::new decodes internally.
+                        if ::image::load_from_memory(&bytes).is_err() {
+                            eprintln!(
+                                "WARN: skipping undecodable figure {} ({} B) — using 1x1 placeholder",
+                                path,
+                                bytes.len()
+                            );
+                            Pic::new_with_dimensions(PLACEHOLDER_1X1_PNG.to_vec(), 1, 1)
+                                .size(w_emu, h_emu)
+                        } else {
+                            Pic::new(&bytes).size(w_emu, h_emu)
+                        }
+                    }
+                };
                 // Readability brief 2026-06-13: when the figspec's `layout`
                 // field was `"landscape"` (signalled via a `#landscape` URL
                 // fragment from `agentic_figures::resolve_markdown`), wrap
