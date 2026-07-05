@@ -84,6 +84,13 @@ const LINE_132: i32 = 317; // 1.32× single (240 = single; 1.32 × 240 = 316.8 �
 /// AI-Norms; on the thesis it added ~32% vertical space per line,
 /// producing 117 pages vs reference's 96.
 const LINE_SINGLE: i32 = 240;
+// ADR-0064 iter44.n (2026-07-05) SPIKE reverted: bumping SPACE_AFTER
+// from 160 → 360 (reference value on Normal style) regressed page
+// count 96→106 and avg pixel diff 17.37%→24.61%. Reference emits
+// `after="360"` on SPECIFIC paragraphs (chapter closers), not every
+// body paragraph — our global body_spacing() call applies the value
+// universally, over-inflating spacing. Keep 160 as the compromise
+// value; per-paragraph tuning is a future iter44.o if needed.
 const SPACE_AFTER: u32 = 160; // ≈8 pt after body paragraphs
 const SPACE_AFTER_HEAD: u32 = 120; // after headings
 const SPACE_BEFORE_HEAD: u32 = 280; // before headings (separate from prose above)
