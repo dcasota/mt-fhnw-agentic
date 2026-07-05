@@ -122,11 +122,24 @@ fn std_margin() -> PageMargin {
 /// the historical Designer defaults (851 / 992 twips) when the meta does
 /// not supply an override.
 fn std_margin_for(m: &BookMeta) -> PageMargin {
+    // ADR-0064 iter44 (2026-07-05): FhnwMtTemplate uses June-8 reference
+    // margins (asymmetric — larger left for binding). Non-thesis profiles
+    // keep the historical symmetric 1304/1304.
+    let (left, right, header_default, footer_default) = if matches!(
+        m.thesis_typography,
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwProposalParity
+    ) {
+        (1417, 1134, 709, 709)
+    } else {
+        (1304, 1304, 851, 992)
+    };
     let mut pm = PageMargin::new()
         .top(1417)
         .bottom(1417)
-        .left(1304)
-        .right(1304);
+        .left(left)
+        .right(right)
+        .header(header_default)
+        .footer(footer_default);
     if let Some(h) = m.header_distance_twips {
         pm = pm.header(h as i32);
     }
@@ -7368,9 +7381,12 @@ fn render_thesis_book(
                                 ),
                                 Err(_) => (3840, 885),
                             };
-                            // Target: 16 cm wide (= 6.30 in), maintain aspect
-                            // ratio. 1 cm = 360000 EMU; 16 cm = 5_760_000 EMU.
-                            let target_w_emu: u32 = 5_760_000;
+                            // ADR-0064 iter44 (2026-07-05): reference banner
+                            // renders at cx=3_420_000 EMU (9.5 cm wide). Our
+                            // earlier 16 cm target overshot the reference by
+                            // 68% width / 42% height, dominating the title
+                            // page. Matched to reference value.
+                            let target_w_emu: u32 = 3_420_000;
                             let target_h_emu: u32 = target_w_emu
                                 .saturating_mul(px_h)
                                 .checked_div(px_w.max(1))
