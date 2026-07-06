@@ -1065,6 +1065,13 @@ try {{
                 # binding. Ports MT-Template/build/post_process.ps1:113-180.
                 # Then strip the list from front/back-matter H1s (they must stay
                 # unnumbered) — same logic as post_process.ps1:184-211.
+                # ADR-0064 iter44.q (2026-07-06): GATED on the
+                # outline_numbering_enabled sidecar flag. Campaign books have
+                # explicit numbers already in H2/H3 markdown; letting Word
+                # auto-number as well produces doubled numbering everywhere.
+                # Default: false. Master-thesis is external_source-delegated
+                # so it doesnt go through this finalize path anyway.
+                if ([bool]$side.outline_numbering_enabled) {{
                 try {{
                   $wdArabic = 0
                   $wdTrailingTab  = 0
@@ -1143,6 +1150,9 @@ try {{
                   Write-Output ("{{0}}`tLIST_TEMPLATE_APPLIED  stripped_frontback_h1s={{1}}" -f $pth, $stripped)
                 }} catch {{
                   [Console]::Error.WriteLine(("FHNW-MT-LIST-FAIL [{{0}}]: {{1}}" -f $pth, $_.Exception.Message))
+                }}
+                }} else {{
+                  Write-Output ("{{0}}`tLIST_TEMPLATE_SKIPPED  outline_numbering_enabled=false" -f $pth)
                 }}
                 # ADR-0064 iter16 + iter26 (2026-07-03): apply Roman-then-Arabic
                 # page numbering per section. Iter26 prefers the emitted

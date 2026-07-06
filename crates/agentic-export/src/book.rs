@@ -1372,6 +1372,21 @@ pub struct FhnwHeaderSidecar {
     /// present (FhnwMtTemplate books).
     #[serde(default = "default_title_logo_enabled")]
     pub title_logo_enabled: bool,
+    /// ADR-0064 iter44.q (2026-07-06): gate the Word COM ListTemplate
+    /// creation (H1/H2/H3 auto-numbering with `%1.%2` / `%1.%2.%3`
+    /// LinkedStyle bindings, ported from MT-Template post_process.ps1)
+    /// on this flag. Iter42 rolled out `FhnwMtTemplate` typography to
+    /// every campaign book, which enabled the sidecar and hence the
+    /// ListTemplate emission — but campaign markdown carries EXPLICIT
+    /// section numbers in H2 text ("## 2.1 Starting situation"), so
+    /// Word's auto-numbering ADDED "1.1" on top, producing "1.1 2.1
+    /// Starting situation" everywhere in TOC + headings — visible in
+    /// the iter44.p cascade output, undetected until user opened one.
+    /// Default: false. Master-thesis is now `external_source`-delegated
+    /// so it doesn't use this path; no book in the current fleet needs
+    /// auto-numbering. If a future book wants it, opt in explicitly.
+    #[serde(default)]
+    pub outline_numbering_enabled: bool,
 }
 
 fn default_logo_width_cm() -> f32 {
@@ -1458,6 +1473,9 @@ impl FhnwHeaderSidecar {
             // emitted via a markdown `![](assets/fhnw_banner.png)` at
             // the top of the master_thesis title page markdown.
             title_logo_enabled: false,
+            // ADR-0064 iter44.q (2026-07-06): default off. See field
+            // doc for why campaigns broke when this was implicitly on.
+            outline_numbering_enabled: false,
         }
     }
 }
