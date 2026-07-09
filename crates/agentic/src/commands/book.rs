@@ -1438,6 +1438,29 @@ try {{
             script_path.display()
         );
     }
+    // Clean up the FHNW header sidecar files (`*.docx.fhnw_header.json` +
+    // `*.fhnw_logo.png`) unconditionally, BEFORE the finalize-success check.
+    // They are transient hand-offs to Word COM; once the PowerShell script
+    // has run (successfully or not) they carry no forward value and would
+    // otherwise pollute the snapshot directory as user-visible detritus.
+    // Prior implementation ran this only on the success path — every
+    // finalize failure (`bail!` below) left them behind (bug reported
+    // 2026-07-09: user saw 15 sidecars + 14 logos in a killed cascade's
+    // snapshot dir with no AIBOM).
+    for doc in docs {
+        let sidecar = doc.with_extension("docx.fhnw_header.json");
+        let _ = std::fs::remove_file(&sidecar);
+        // Logo file is named `<key>.fhnw_logo.png` (sibling of the
+        // docx, not a `.docx.fhnw_logo.png` suffix). Derive the key
+        // by stripping `.docx`.
+        if let Some(stem) = doc.file_stem().and_then(|s| s.to_str()) {
+            if let Some(parent) = doc.parent() {
+                let logo = parent.join(format!("{stem}.fhnw_logo.png"));
+                let _ = std::fs::remove_file(&logo);
+            }
+        }
+    }
+
     if !out.status.success() {
         anyhow::bail!(
             "Word finalize failed (is Microsoft Word installed?): {}",
@@ -1453,27 +1476,6 @@ try {{
         }
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-
-    // Clean up the FHNW header sidecar files (`*.docx.fhnw_header.json` +
-    // `*.fhnw_logo.png`). They're written by `build_one` (see line ~668)
-    // as input for THIS finalize step; once Word has injected the
-    // header + footer they have no further value and only pollute the
-    // snapshot directory. We delete them per-docx after the run
-    // completes successfully (we don't reach this code if the whole
-    // PowerShell pipeline failed).
-    for doc in docs {
-        let sidecar = doc.with_extension("docx.fhnw_header.json");
-        let _ = std::fs::remove_file(&sidecar);
-        // Logo file is named `<key>.fhnw_logo.png` (sibling of the
-        // docx, not a `.docx.fhnw_logo.png` suffix). Derive the key
-        // by stripping `.docx`.
-        if let Some(stem) = doc.file_stem().and_then(|s| s.to_str()) {
-            if let Some(parent) = doc.parent() {
-                let logo = parent.join(format!("{stem}.fhnw_logo.png"));
-                let _ = std::fs::remove_file(&logo);
-            }
-        }
-    }
 
     Ok(stdout
         .lines()
