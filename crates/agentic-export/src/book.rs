@@ -2572,9 +2572,26 @@ pub fn image_dims_to_emu(bytes: &[u8], width_in_override: Option<f32>) -> (u32, 
         return snap_emu_to_grid(target_w_emu, nat_w_emu, nat_h_emu);
     }
 
-    // Branch 2: unsized + naturally small → keep native width.
+    // Branch 2: unsized + naturally small → keep native width, UNLESS
+    // the natural width is below the "readable thumbnail" floor, in which
+    // case scale up to the wide-figure width so the image is legible.
+    //
+    // iter44.ap (2026-07-10) fix: figspec-rendered PNGs from
+    // `agentic-figures` produce natural widths around 76.5 pt (~1 in),
+    // which clustered as 7 unreadable ~1-in thumbnails on pages 48-49 of
+    // `Campaign - Sovereign Build Attestation`. Icons (~0.22 in) and QR
+    // codes (~1.09 in) bypass this function via direct constants in
+    // `icons.rs`, so the floor is safe to apply here — anything reaching
+    // this branch at < 1.75 in is a figspec rendering that should be
+    // full-page-wide.
     if nat_w_emu <= u64::from(DEFAULT_EMBED_W_EMU) {
-        return snap_emu_to_grid(nat_w_emu, nat_w_emu, nat_h_emu);
+        const READABLE_MIN_W_EMU: u64 = 1_600_000; // ~1.75 in
+        let target_w_emu = if nat_w_emu < READABLE_MIN_W_EMU {
+            u64::from(IMAGE_MAX_W_EMU)
+        } else {
+            nat_w_emu
+        };
+        return snap_emu_to_grid(target_w_emu, nat_w_emu, nat_h_emu);
     }
 
     // Branch 3: unsized + naturally wide → shrink to 4-in default.
