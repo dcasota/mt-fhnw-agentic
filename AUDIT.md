@@ -87,34 +87,28 @@ Example APA7 line:
 
 ## 6 Current audit log (latest iteration)
 
-Snapshot of project `01KS117RNSSE7NERSWM0H6SJ6P` (regenerate with
-`agentic audit report --project <ID> --to out/AUDIT_latest_EN.md`):
+Snapshot of project `01KS117RNSSE7NERSWM0H6SJ6P` as of 2026-07-10
+(regenerate with `agentic audit report --project <ID> --to out/AUDIT_latest_EN.md`):
 
-- **User/journal actions:** 31 · **Commits:** 135 (**135 signed of 135**,
-  ML-DSA-87 key `2853f41320db8a80`) · **APA7 source origins:** 57 ·
-  **AI decisions indexed:** 58 (2 recorded + 56 reconstructed) · **Signing:**
-  ML-DSA-87 (ADR-0039).
+- **User/journal actions:** 212 · **Commits:** 4 934 (**4 934 signed of
+  4 934**, ML-DSA-87 key `2853f41320db8a80`) · **APA7 source origins:** 1 673 ·
+  **AI decisions indexed:** 327 · **Gate verdicts:** 5 421 · **External-platform
+  sessions (ADR-0053):** 1 (Claude Code session)  · **Signing:** ML-DSA-87
+  (ADR-0039).
 
-**Latest user activity (journal):**
+Growth from the 0.1.5-era baseline (135 commits) reflects the iter 15–44 arc:
+external-input dispatch, per-book cascade orchestration + Wave-1/2/3 close-out,
+FHNW MT-Template consolidation (ADR-0064) and the iter44 hardening arc
+(external_source delegation, sidecar cleanup, figspec width floor).
 
-| # | When | Actor | Action | Description |
-|---|---|---|---|---|
-| 31 | 2026-05-23 | me | migrate | Made `thesis.db` the source of truth: ingested all 637 git-tracked files; round-trip byte-identical |
-| 30 | 2026-05-23 | me | research | Dispatched 9 external inputs (SDD bundle, Apple corecrypto, NSA MCP, FPGA, …); ranking deliverable |
-| 29 | 2026-05-20 | agentic | spec | Completed all 8 campaign FRDs (FRD-C01..C08) |
-| 28 | 2026-05-20 | agentic | spec | Instantiated campaign FRDs demonstrating the SDD chain |
-
-**Latest AI activity (recorded `audit_rows`):**
-
-| Agent | Action | Target | Result | Iter |
-|---|---|---|---|---|
-| claude-opus-4-7 | dispatch+rank external inputs | Inbox_SDD_external_inputs | info | 14 |
-| claude-opus-4-7 | make DB source of truth | content ingest 637 files | ok | 14 |
-
-The full signed report (all 31 actions, 135 commits, 57 APA7 sources, 58 AI
-decisions, and the ML-DSA-87 seal) is at `out/AUDIT_latest_EN.md` /
-`out/AUDIT_latest_EN.json` in the thesis repository, and a per-item example at
-`out/AUDIT_item_C09_EN.md`.
+The full signed report — every user action + APA7 origin + AI decision
++ gate verdict + the ML-DSA-87 integrity seal — lives as an in-DB blob at
+`out/sources/AI_Audit_BOM_EN.md` (source) and renders to the
+`AI-Audit-BOM.docx` book in each snapshot. Regenerate on demand via
+`agentic audit report`; the rendered docx post-processes with
+`scratch/aibom_table_widths.ps1` to apply the manually-adjusted Journal-table
+column widths (# 562 / When 1701 / Actor 1418 / Action 992 / Approval 1134 /
+Description 3487 twips).
 
 ## 7 Verifying a report independently
 

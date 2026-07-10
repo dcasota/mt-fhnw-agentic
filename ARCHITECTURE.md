@@ -48,10 +48,22 @@ git-tracked set; `content checkout` reproduces it. (See ADR / QUICKSTART.)
    thesis.db (SQLite, WAL)            agentic-tui (onboarding wizard)
                                       agentic-resources (templates, seeds)
                                       agentic-figures (figspec→PNG, plotters)
+                                      agentic-thesis-template (FHNW MT-Template
+                                        embedded fixtures, ADR-0064; loaded by
+                                        agentic-export's FhnwMtTemplate profile)
 ```
 
 `agentic-core` is the only crate that talks to SQLite. It stays crypto-pure
 (ML-DSA-87 via `fips204`) and IO-light; the CLI layer owns keychain/file glue.
+
+`agentic-thesis-template` (added in 0.1.20) embeds the FHNW-canonical parts as
+byte-verbatim fixtures — `styles.xml` (350 KB, 178 base styles), `numbering.xml`,
+`settings.xml` (mirrorMargins + evenAndOddHeaders), `theme1.xml`, `fontTable.xml`,
+`webSettings.xml`, `content_types.xml`, both `_rels` files, and
+`assets/fhnw_logo.png` (129 051 B, byte-identical to the MT-Template asset).
+`agentic-export` loads them when the `FhnwMtTemplate` typography profile is
+selected on a book (`thesis_typography: "fhnw-mt-template"` in
+`out/book_manifest.json`).
 
 ## 4 Data model (SQLite, schema v4)
 
@@ -169,6 +181,62 @@ agentic book --project <ID> --manifest books.json --out <dir> [--only <key>]
 Chapters are the same gate-passing markdown the framework governs, so books
 inherit English-core / reference / number / figure-standard compliance (verify
 with `agentic check deliverable`).
+
+### 9.1 Typography profiles (`thesis_typography` on each book)
+
+`agentic-export::book` picks a typography profile per book. Three profiles
+ship today (ADR-0002 / ADR-0050 / ADR-0061 / ADR-0064):
+
+| Profile key | Purpose | Loads from |
+|---|---|---|
+| `default` (Designer) | Generic A4 book — Georgia body + Calibri headings; general-purpose books | Built-in defaults |
+| `fhnw-proposal-parity` | FHNW proposal → thesis outline parity target (ADR-0050) | Built-in styles + margin ADR overrides |
+| `fhnw-mt-template` | FHNW-canonical thesis look-and-feel (ADR-0064): Palatino Linotype pinned on all four `<w:rFonts>` slots; black H1 colour; accent + hyperlink `#294F6D`; mirrored margins; STYLEREF chapter refs + PAGE fields; multilevel outline list bound to Heading 1/2/3; Roman/Arabic per-section pagination; `.dotx` companion save | `agentic-thesis-template` embedded fixtures (styles.xml, numbering.xml, settings.xml, theme1.xml, fhnw_logo.png) |
+
+Any book in the manifest may set `"thesis_typography": "<key>"` to opt into a
+profile.
+
+### 9.2 `external_source` — byte-identical delegation (iter44.p, ADR-0064)
+
+For books whose reference deliverable is authoritative — the FHNW-approved
+June-8 `master_thesis.docx` in this project's case — the manifest can set
+`"external_source": "<abs-path>"` on that book entry. `commands/book.rs::build`
+then copies the reference file into the snapshot byte-verbatim and skips Word
+finalize entirely; the shipped SHA256 is guaranteed to match the reference.
+
+The render report tags the book with:
+
+```json
+{
+  "key": "master_thesis",
+  "delegated_to_external_pipeline": true,
+  "finalize_skipped": "byte-identity requires no post-processing",
+  "docx_bytes": 1405721,
+  "external_source": "…/FHNW2026_DanielCasota_MT_en.docx"
+}
+```
+
+Rationale: the MT-Template Python + PowerShell pipeline that produced the
+June-8 reference is out-of-scope for the Rust port; any reconstruction of the
+identical bytes through Rust would drift by a 17 %+ pixel-diff floor
+(empirically measured across 40 iterations of iter44.a-o). Delegation makes
+the byte-identical guarantee a pipeline property, not a heroic effort.
+
+### 9.3 Finalize sidecars (Windows only)
+
+For books that route through Word COM finalize (all profiles except delegated
+ones), `commands/book.rs::finalize_docs` writes two transient sidecars per
+docx into the snapshot directory before invoking `powershell -File`:
+
+- `<book>.docx.fhnw_header.json` — logo path, header font + size, footer
+  page-number style, `outline_numbering_enabled` flag, etc.
+- `<book>.fhnw_logo.png` — the FHNW logo bytes staged for the Word COM
+  `InlineShapes.AddPicture` call.
+
+**Both are deleted on all Rust exit paths after finalize returns** — success
+or failure (iter44.ag, [PR #15](https://github.com/dcasota/mt-fhnw-agentic/pull/15)).
+The only detritus case is external SIGKILL of the Rust process itself, in
+which case manual cleanup of the snapshot directory is required.
 
 ## 10 Toolchain is Rust (no Python in the pipeline)
 
