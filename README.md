@@ -18,9 +18,18 @@ OpenAI Codex, Cursor, Factory) drives it identically.
 
 ## Status
 
-- **Version**: 0.1.3 · **DB schema**: v4 · cross-platform (Windows x64, macOS, Linux).
+- **Version**: 0.1.20 · **DB schema**: v4 · cross-platform (Windows x64, macOS, Linux).
 - Functional surface: storage + content store, journal, passport, import,
   embed/classify, checks, DOCX/PDF export, and PQC audit/signing.
+- **Unreleased (as of 2026-07-10)** — iter44 hardening on the book-build path:
+  `external_source` byte-identical delegation for reference-anchored books
+  (ADR-0064), sidecar cleanup on all Rust exit paths
+  ([PR #15](https://github.com/dcasota/mt-fhnw-agentic/pull/15)), figspec
+  figure-width floor for readable thumbnails
+  ([PR #16](https://github.com/dcasota/mt-fhnw-agentic/pull/16)), ListTemplate
+  outline-numbering gated behind a sidecar flag (fixes doubled chapter numbers
+  on campaign books), and RUSTSEC-2026-0204 `crossbeam-epoch` bump. See
+  [`CHANGELOG.md`](CHANGELOG.md) `[Unreleased]` for details.
 
 ## Design principles
 
