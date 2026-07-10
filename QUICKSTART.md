@@ -215,3 +215,58 @@ git -c core.quotepath=false ls-files > $env:TEMP\tracked.txt
 put the binary on PATH, and continue. `agentic project list` shows the project;
 `agentic content checkout` reconstructs the working tree if you only carried the
 DB.
+
+## 8 Cascade — the phase-6 gate framework
+
+For a full iteration in one command, use `agentic cascade run`. It walks the
+seven phases (boot → import → embed → classify → render → gates → seal) and
+records one `audit_verdicts` row per gate per book:
+
+```powershell
+& $agx cascade run --project $proj --root "." --per-dimension --no-regenerate
+```
+
+Cascade builds all books in `out/book_manifest.json`, runs the phase-6 gate
+matrix (each gate rendered against every book), and signs the resulting
+snapshot into `snapshots/<ts>-books-cascade/`. `--per-dimension` includes the
+17 dimension-specific books beyond the 4 profile-summary defaults.
+
+## 9 Book manifest — `out/book_manifest.json`
+
+```jsonc
+{
+  "books": [
+    {
+      "key": "master_thesis",
+      "title": "…",
+      "chapters": ["out/sources/…"],   // DB paths, concatenated in order
+      "thesis_typography": "fhnw-mt-template",    // profile (§9.1 in ARCHITECTURE.md)
+      "external_source": "C:\\…\\FHNW2026_DanielCasota_MT_en.docx"
+      //  ^ optional: if set, tool byte-copies this file and skips Word finalize
+      //    entirely (byte-identity guarantee). Introduced in iter44.p / ADR-0064.
+      //    Used when a reference deliverable is authoritative and the Rust
+      //    pipeline cannot reconstruct its exact bytes.
+    },
+    // …
+  ]
+}
+```
+
+The manifest is authored data (edit it in a PR), not a runtime artefact. Each
+book independently opts into a typography profile and, optionally, into
+`external_source` delegation.
+
+## 10 Detection gate before signing (thesis-side)
+
+The thesis repo ships a per-book detection script that Word-COM-opens the
+rendered docx and asserts on structural sanity — XML wellformedness,
+heading-length ceiling, size delta vs a baseline snapshot, and optional
+Word-open verification:
+
+```powershell
+pwsh -File scratch/check_cascade_content.ps1 -SnapshotDir snapshots/<ts>-books-cascade
+pwsh -File scratch/check_cascade_content.ps1 -SnapshotDir <snap> -WithWord  # opt-in Word COM
+```
+
+Non-zero exit = at least one book failed a sanity check → do NOT sign the
+snapshot; investigate first.
