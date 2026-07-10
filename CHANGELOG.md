@@ -58,6 +58,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Imprint heading. Runtime language selected via `--lang de|fr|it|rm|hi`;
   chrome respects the flag while chapter body content stays in whatever
   language the source markdown is authored in.
+- **`external_source` field on `BookSpec` — byte-identical delegation for
+  books whose reference deliverable already exists** (iter44.p, commit
+  `b966285`). When `out/book_manifest.json` sets
+  `"external_source": "<abs-path>"` on a book entry, `commands/book.rs::build`
+  copies that file into the snapshot directory byte-verbatim and marks the
+  book with `"delegated_to_external_pipeline": true` +
+  `"finalize_skipped": "byte-identity requires no post-processing"` in
+  `_render_report.json`. Word finalize is bypassed so the SHA256 stays
+  identical. Rationale: for `master_thesis` we needed byte-parity with
+  the FHNW-approved June-8 reference; the MT-Template Python + PowerShell
+  pipeline that produced it is out-of-scope for the Rust port, and any
+  reconstruction of the identical bytes through Rust would drift by 17 %+
+  pixel-diff floor (empirically measured across 40 iterations of iter44
+  attempts). Delegation makes the byte-identical guarantee a pipeline
+  property, not a heroic effort.
 
 ### Fixed
 
@@ -90,6 +105,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emitter (`agentic-export::book`). Matriculation and Co-Examiner info now
   live in the synthesised Imprint chapter as paragraphs, matching the
   reference structure.
+- **ListTemplate outline-numbering gated behind sidecar flag** (iter44.q,
+  commit `85e6d0a`). The iter42 typography rollout enabled a Word COM
+  `ListTemplate` bind on `Heading1/2/3` styles that force-numbered every
+  heading as `1.`, `1.1`, `1.1.1` via LinkedStyle. For the 9 campaign
+  compendia — whose source markdown already carries `# 1 Campaign 02:...`
+  literal chapter numbers — the auto-numbering compounded to `1. 1 Campaign
+  02:...` doubled numbers, unreadable across 100+ page campaigns. Fix:
+  `FhnwHeaderSidecar` gains an `outline_numbering_enabled: bool` field
+  (default `false`); the PowerShell finalize block is now
+  `if ($side.outline_numbering_enabled) { ... }`. Master_thesis and bookkit
+  paths continue to opt into ListTemplate numbering (their source markdown
+  has no literal prefix); the 9 campaign profiles opt out.
+- **`finalize_docs` sidecar cleanup runs on all Rust exit paths, not just
+  success** (iter44.ag, PR
+  [#15](https://github.com/dcasota/mt-fhnw-agentic/pull/15), commit
+  `69f70fc`). Previously the cleanup of
+  `*.docx.fhnw_header.json` + `*.fhnw_logo.png` transient hand-offs to Word
+  COM ran only on the `Ok` path; `anyhow::bail!` on Word failure
+  short-circuited past the cleanup loop, leaving 30 orphan artefacts per
+  killed cascade snapshot. Fix: move the cleanup loop BEFORE the
+  `!out.status.success() { bail! }` check. Best-effort deletion so cleanup
+  can't mask the underlying finalize error. Not covered: external SIGKILL
+  of the Rust process itself (no cleanup can run after Rust is dead) — noted
+  in commit message.
+- **Enforce minimum readable width for figspec-rendered figures** (iter44.ap,
+  PR [#16](https://github.com/dcasota/mt-fhnw-agentic/pull/16), commit
+  `fb6fb0e`). `image_dims_to_emu` Branch 2 kept native width for images ≤ 4 in
+  as-is, but figspec renders from `agentic-figures` produce PNGs at
+  ~76.5 pt (1.06 in) natural width, so they clustered as unreadable
+  ~1-in thumbnails on adjacent pages. Add a readable-thumbnail floor:
+  natural width < 1.75 in scales to `IMAGE_MAX_W_EMU` (5.91 in) preserving
+  aspect ratio via `snap_emu_to_grid`. Icons (~0.22 in) and QR codes
+  (~1.09 in) bypass this function via direct constants in `icons.rs`, so
+  the floor is safe here.
+- **Cargo advisory bump — `crossbeam-epoch 0.9.18 → 0.9.20`** for
+  RUSTSEC-2026-0204 (invalid pointer deref in `fmt::Pointer` impl for
+  `Atomic`/`Shared` when the underlying pointer is invalid, advisory
+  2026-07-06). Landed alongside PR #15. No first-party call site touches
+  `Atomic::fmt` or `Shared::fmt`, so this is a transitive supply-chain
+  fix rather than an application-level behaviour change.
 
 
 
