@@ -76,6 +76,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown headings nested inside blockquotes are no longer promoted to Word
+  Heading N styles.** (`agentic-export/src/markdown.rs`; iter45.a,
+  [PR #19](https://github.com/dcasota/mt-fhnw-agentic/pull/19).) `MdDocxFlow`
+  and `to_typst` did not track `pulldown_cmark`'s `Tag::BlockQuote` depth, so
+  any ATX (`> # foo`) or setext (`> foo\n> ---`) heading nested inside a
+  blockquote emitted as `DocxBlock::Heading` → `w:pStyle=Heading[1-6]` and
+  polluted Word's TOC field. Reproducing case: `AI-Audit-BOM.docx` had 34
+  Heading1 + 24 Heading2 for a source with 1 H1 + 10 H2 (plus 3 renderer-
+  injected List/Index H1s); TOC pages 173–200 were prompt-body text rather
+  than session IDs. Fix threads a `blockquote_depth: u32` counter; a Heading
+  event with `depth > 0` is downgraded to a bold Paragraph (docx) or
+  `*_…_*` markup (Typst). Verified end-to-end: rebuild of the AIBOM from
+  un-neutralized source produces 4/10/90 headings (matches source
+  expectation exactly). 4 new regression tests, 215 total pass.
 - **Windows CreateProcess 32 KB command-line limit — silent cascade delivery
   corruption.** The embedded finalize PowerShell script grew past ~32 KB
   after iter7 → iter27 accumulation (mirrored headers, STYLEREF fields,
