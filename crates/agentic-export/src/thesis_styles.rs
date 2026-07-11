@@ -98,6 +98,17 @@ pub enum StylesProfile {
     /// FHNW master-thesis bookkit parity (Wave-2-D / ADR-0061). The 178-
     /// style block embedded in this module.
     FhnwMasterThesis,
+    /// FHNW campaign bookkit parity (iter45.b/#558, 2026-07-11). Wires
+    /// [`agentic_thesis_template::styles::emit_styles_xml_str`] — the
+    /// byte-verbatim MT-Template `configure_styles()` output (170-style,
+    /// 346 290 B) with Palatino Linotype pinned on all four `<w:rFonts>`
+    /// slots of the `Normal` style. Campaigns previously fell through to
+    /// docx-rs's default styles.xml (no Palatino pin), and the Word-COM
+    /// finalize step normalised run-level `.fonts("Palatino Linotype")`
+    /// back to the theme's `minorFont` (Cambria/Aptos) — so the body font
+    /// silently regressed. Selecting this profile injects the MT-Template
+    /// baseline so Palatino survives finalize.
+    FhnwCampaignBookkit,
 }
 
 /// Per-profile router that picks the right reference styles fixture. The
@@ -112,6 +123,9 @@ pub fn emit_styles_xml_for_profile(profile: StylesProfile) -> &'static str {
     match profile {
         StylesProfile::AiNorms => crate::styles_xml::emit_styles_xml(),
         StylesProfile::FhnwMasterThesis => emit_thesis_styles_xml(),
+        StylesProfile::FhnwCampaignBookkit => {
+            agentic_thesis_template::styles::emit_styles_xml_str()
+        }
     }
 }
 
@@ -184,6 +198,39 @@ mod tests {
             emit_styles_xml_for_profile(StylesProfile::FhnwMasterThesis),
             emit_thesis_styles_xml(),
         ));
+        assert!(std::ptr::eq(
+            emit_styles_xml_for_profile(StylesProfile::FhnwCampaignBookkit),
+            agentic_thesis_template::styles::emit_styles_xml_str(),
+        ));
+    }
+
+    /// #558 (2026-07-11): campaign profile must ship the MT-Template
+    /// `Normal` style with Palatino pinned on all four `<w:rFonts>` slots.
+    /// Without this, Word-COM finalize strips run-level `.fonts(...)`
+    /// back to the theme's `minorFont` — silently regressing the body font.
+    #[test]
+    fn campaign_profile_pins_palatino_on_normal_style() {
+        let xml = emit_styles_xml_for_profile(StylesProfile::FhnwCampaignBookkit);
+        // The `Normal` style must reference Palatino Linotype on ALL four
+        // rFonts slots (ascii/eastAsia/hAnsi/cs); Word inherits the run
+        // font from Normal when no run-level rFonts wins.
+        assert!(
+            xml.contains(r#"<w:rFonts w:ascii="Palatino Linotype" w:eastAsia="Palatino Linotype" w:hAnsi="Palatino Linotype" w:cs="Palatino Linotype"/>"#),
+            "FhnwCampaignBookkit styles.xml must pin Palatino on all four rFonts slots"
+        );
+    }
+
+    /// #558 (2026-07-11): campaign fixture ships the MT-Template style
+    /// count (170), not the AI-Norms (186) or thesis-reference (178)
+    /// counts. Regression guard against wiring the wrong fixture in.
+    #[test]
+    fn campaign_profile_ships_mt_template_style_count() {
+        let xml = emit_styles_xml_for_profile(StylesProfile::FhnwCampaignBookkit);
+        assert_eq!(
+            count_styles(xml),
+            170,
+            "campaign fixture (MT-Template baseline) declares 170 styles"
+        );
     }
 
     #[test]
