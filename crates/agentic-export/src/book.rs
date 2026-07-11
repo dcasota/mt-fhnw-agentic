@@ -3548,6 +3548,7 @@ fn postprocess_docx_inner_layout(
                     || matches!(
                         styles_profile,
                         crate::thesis_styles::StylesProfile::FhnwMasterThesis
+                            | crate::thesis_styles::StylesProfile::FhnwCampaignBookkit
                     ))
             {
                 // Wave-2 AI-Norms parity: discard the docx-rs-emitted styles
@@ -7259,13 +7260,20 @@ pub fn render_book(
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack book docx")?;
     let layout = LayoutOverrides::from_meta(meta);
-    let styles_profile = if matches!(
-        meta.thesis_typography,
-        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate
-    ) {
-        crate::thesis_styles::StylesProfile::FhnwMasterThesis
-    } else {
-        crate::thesis_styles::StylesProfile::AiNorms
+    // iter45.b follow-up (#558, 2026-07-11): campaigns get their own
+    // per-profile styles.xml (MT-Template baseline, Palatino pinned)
+    // instead of falling through to the AI-Norms 186-style fixture.
+    // Word-COM finalize normalises run-level `.fonts()` back to the
+    // theme's `minorFont`, so Palatino has to be pinned in styles.xml
+    // to survive finalize.
+    let styles_profile = match meta.thesis_typography {
+        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate => {
+            crate::thesis_styles::StylesProfile::FhnwMasterThesis
+        }
+        TypographyProfile::FhnwCampaignBookkit => {
+            crate::thesis_styles::StylesProfile::FhnwCampaignBookkit
+        }
+        TypographyProfile::Designer => crate::thesis_styles::StylesProfile::AiNorms,
     };
     postprocess_docx_inner_layout(
         cur.into_inner(),
@@ -7970,13 +7978,18 @@ fn render_thesis_book(
     let mut cur = Cursor::new(Vec::<u8>::new());
     doc.build().pack(&mut cur).context("pack thesis docx")?;
     let layout = LayoutOverrides::from_meta(meta);
-    let styles_profile = if matches!(
-        meta.thesis_typography,
-        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate
-    ) {
-        crate::thesis_styles::StylesProfile::FhnwMasterThesis
-    } else {
-        crate::thesis_styles::StylesProfile::AiNorms
+    // Mirrors the picker in `render_book`; kept in sync so both paths
+    // route the same profile → styles.xml fixture. #558 (2026-07-11):
+    // FhnwCampaignBookkit gets its own MT-Template baseline (Palatino
+    // pinned in Normal), not the AI-Norms 186-style fallback.
+    let styles_profile = match meta.thesis_typography {
+        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate => {
+            crate::thesis_styles::StylesProfile::FhnwMasterThesis
+        }
+        TypographyProfile::FhnwCampaignBookkit => {
+            crate::thesis_styles::StylesProfile::FhnwCampaignBookkit
+        }
+        TypographyProfile::Designer => crate::thesis_styles::StylesProfile::AiNorms,
     };
     postprocess_docx_inner_layout(
         cur.into_inner(),

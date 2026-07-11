@@ -19,12 +19,28 @@
 /// (346 290 B).
 const STYLES_XML: &[u8] = include_bytes!("../tests/fixtures/empty_styles.xml");
 
+/// Same bytes as [`STYLES_XML`], embedded as `&'static str` so callers that
+/// route through `&'static str` APIs (e.g. `agentic-export`'s
+/// `emit_styles_xml_for_profile`) can plug this fixture in without copying
+/// through `Vec<u8>` and without a runtime UTF-8 validation. The XML is
+/// UTF-8 by construction (the fixture ships with a UTF-8 BOM-less XML
+/// declaration `encoding="UTF-8"`).
+const STYLES_XML_STR: &str = include_str!("../tests/fixtures/empty_styles.xml");
+
 /// Emit `word/styles.xml` as UTF-8 bytes.
 ///
 /// Returns the canonical FHNW styles baseline. Word-COM finalize is expected
 /// to add content-specific styles (e.g. `TOC1`, `TOF`) after body population.
 pub fn emit_styles_xml() -> Vec<u8> {
     STYLES_XML.to_vec()
+}
+
+/// Emit `word/styles.xml` as a borrowed UTF-8 slice. Same bytes as
+/// [`emit_styles_xml`]; use this variant when routing through a
+/// `&'static str` API (avoids allocating a per-call `Vec`).
+#[must_use]
+pub fn emit_styles_xml_str() -> &'static str {
+    STYLES_XML_STR
 }
 
 #[cfg(test)]
@@ -34,6 +50,17 @@ mod tests {
     #[test]
     fn size_matches_fixture() {
         assert_eq!(emit_styles_xml().len(), 346_290);
+    }
+
+    #[test]
+    fn str_and_bytes_variants_match() {
+        // The `&'static str` route must expose the exact same bytes as the
+        // `Vec<u8>` route — callers can pick either without behavioural drift.
+        assert_eq!(
+            emit_styles_xml_str().as_bytes(),
+            emit_styles_xml().as_slice()
+        );
+        assert_eq!(emit_styles_xml_str().len(), 346_290);
     }
 
     #[test]

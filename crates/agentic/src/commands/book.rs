@@ -1543,6 +1543,14 @@ fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result
         {
             agentic_export::thesis_styles::StylesProfile::FhnwMasterThesis
         }
+        // #558 (iter45.b follow-up, 2026-07-11): campaigns ship the
+        // book_manifest `output_basename: "Campaign - <title>"`. Route
+        // them to the MT-Template baseline (Palatino pinned on Normal)
+        // so the run-level Palatino set by the renderer isn't collapsed
+        // to the theme's minorFont by Word-COM finalize.
+        Some(name) if name.starts_with("Campaign - ") => {
+            agentic_export::thesis_styles::StylesProfile::FhnwCampaignBookkit
+        }
         _ => agentic_export::thesis_styles::StylesProfile::AiNorms,
     };
     // ADR-0064 iter42 (2026-07-04): unconditional single-column

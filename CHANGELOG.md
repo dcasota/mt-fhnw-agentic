@@ -76,6 +76,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Campaign body font (`Palatino Linotype`) no longer collapses to the theme
+  minorFont after Word-COM finalize.** (`agentic-export/src/thesis_styles.rs`
+  + `agentic-thesis-template/src/styles.rs`; iter45.b follow-up (#558),
+  2026-07-11.) Campaigns render under `TypographyProfile::FhnwCampaignBookkit`
+  with per-run `.fonts("Palatino Linotype")`, but the styles.xml swap in
+  `post_finalize_collapse` fell through to the AI-Norms 186-style fixture
+  (whose `Normal` style has no `<w:rFonts>` pin). Word-COM finalize then
+  normalised the run-level fonts back to the theme's `minorFont`
+  (Cambria/Aptos), silently regressing the visible body font. Fix adds a
+  new `StylesProfile::FhnwCampaignBookkit` that wires
+  `agentic_thesis_template::styles::emit_styles_xml_str()` — the MT-Template
+  `configure_styles()` baseline (346 290 B, 170 styles) with Palatino
+  Linotype pinned on all four `<w:rFonts>` slots of `Normal`. Routed at
+  three layers: the `render_book` picker, the `render_thesis_book` picker,
+  and the `post_finalize_collapse` filename router (matches
+  `Campaign - <title>.docx`). 2 new regression tests: `Normal` style pins
+  Palatino on all four rFonts slots, and the fixture ships 170 styles
+  (not 178 or 186).
 - **Markdown headings nested inside blockquotes are no longer promoted to Word
   Heading N styles.** (`agentic-export/src/markdown.rs`; iter45.a,
   [PR #19](https://github.com/dcasota/mt-fhnw-agentic/pull/19).) `MdDocxFlow`
