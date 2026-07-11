@@ -298,6 +298,16 @@ pub enum TypographyProfile {
     /// Wired to the `agentic-thesis-template` crate for canonical styles.xml
     /// + numbering.xml + theme + settings + fontTable.
     FhnwMtTemplate,
+    /// FHNW campaign bookkit (iter45.b, 2026-07-11). Shares MT-Template's
+    /// visual identity — Palatino Linotype body/heads, `#294F6D` accent,
+    /// running header + anchored FHNW logo — but has its own book-style
+    /// title page (no Author/Supervisor 2×2 table, no Matriculation, no
+    /// mandated FHNW thesis chapter structure). Every campaign book renders
+    /// as a book of its own; user directive (session 96ed48d5, 2026-07-04):
+    /// "Each document must be like a book of its own … craft a new title
+    /// page for each as a book." Selected by
+    /// `thesis_typography: "fhnw-campaign-bookkit"` in the manifest.
+    FhnwCampaignBookkit,
 }
 
 /// Page-numbering style (ADR-0050 §2).
@@ -1059,7 +1069,7 @@ fn body_fonts_for(p: TypographyProfile) -> RunFonts {
         TypographyProfile::FhnwProposalParity => {
             RunFonts::new().ascii(FHNW_BODY).hi_ansi(FHNW_BODY)
         }
-        TypographyProfile::FhnwMtTemplate => {
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit => {
             RunFonts::new().ascii(FHNW_MT_BODY).hi_ansi(FHNW_MT_BODY)
         }
     }
@@ -1072,7 +1082,7 @@ fn head_fonts_for(p: TypographyProfile) -> RunFonts {
         TypographyProfile::FhnwProposalParity => {
             RunFonts::new().ascii(FHNW_BODY).hi_ansi(FHNW_BODY)
         }
-        TypographyProfile::FhnwMtTemplate => {
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit => {
             RunFonts::new().ascii(FHNW_MT_BODY).hi_ansi(FHNW_MT_BODY)
         }
     }
@@ -1086,7 +1096,7 @@ fn caption_fonts_for(p: TypographyProfile) -> RunFonts {
         TypographyProfile::FhnwProposalParity => {
             RunFonts::new().ascii(FHNW_CAPTION).hi_ansi(FHNW_CAPTION)
         }
-        TypographyProfile::FhnwMtTemplate => {
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit => {
             RunFonts::new().ascii(FHNW_MT_BODY).hi_ansi(FHNW_MT_BODY)
         }
     }
@@ -1103,7 +1113,9 @@ fn body_color_for(_p: TypographyProfile) -> &'static str {
 fn heading_color_for(p: TypographyProfile) -> &'static str {
     match p {
         TypographyProfile::Designer => NAVY,
-        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate => FHNW_BLACK,
+        TypographyProfile::FhnwProposalParity
+        | TypographyProfile::FhnwMtTemplate
+        | TypographyProfile::FhnwCampaignBookkit => FHNW_BLACK,
     }
 }
 
@@ -1111,7 +1123,9 @@ fn heading_color_for(p: TypographyProfile) -> &'static str {
 fn subheading_color_for(p: TypographyProfile) -> &'static str {
     match p {
         TypographyProfile::Designer => HEAD2,
-        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate => FHNW_BLACK,
+        TypographyProfile::FhnwProposalParity
+        | TypographyProfile::FhnwMtTemplate
+        | TypographyProfile::FhnwCampaignBookkit => FHNW_BLACK,
     }
 }
 
@@ -1119,7 +1133,9 @@ fn subheading_color_for(p: TypographyProfile) -> &'static str {
 fn caption_color_for(p: TypographyProfile) -> &'static str {
     match p {
         TypographyProfile::Designer => GREY,
-        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate => FHNW_BLACK,
+        TypographyProfile::FhnwProposalParity
+        | TypographyProfile::FhnwMtTemplate
+        | TypographyProfile::FhnwCampaignBookkit => FHNW_BLACK,
     }
 }
 
@@ -1130,7 +1146,9 @@ fn accent_color_for(p: TypographyProfile) -> &'static str {
     match p {
         TypographyProfile::Designer => ACCENT,
         TypographyProfile::FhnwProposalParity => FHNW_BLACK,
-        TypographyProfile::FhnwMtTemplate => FHNW_MT_ACCENT,
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit => {
+            FHNW_MT_ACCENT
+        }
     }
 }
 
@@ -1138,7 +1156,9 @@ fn accent_color_for(p: TypographyProfile) -> &'static str {
 fn subtitle_color_for(p: TypographyProfile) -> &'static str {
     match p {
         TypographyProfile::Designer => GREY,
-        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate => FHNW_BLACK,
+        TypographyProfile::FhnwProposalParity
+        | TypographyProfile::FhnwMtTemplate
+        | TypographyProfile::FhnwCampaignBookkit => FHNW_BLACK,
     }
 }
 
@@ -1147,7 +1167,9 @@ fn bullet_glyph_color_for(p: TypographyProfile) -> &'static str {
     match p {
         TypographyProfile::Designer => ACCENT,
         TypographyProfile::FhnwProposalParity => FHNW_BLACK,
-        TypographyProfile::FhnwMtTemplate => FHNW_MT_ACCENT,
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit => {
+            FHNW_MT_ACCENT
+        }
     }
 }
 
@@ -1186,6 +1208,10 @@ fn heading_size_hp(p: TypographyProfile, level: u8) -> usize {
         (TypographyProfile::FhnwMtTemplate, 2) => 28,
         (TypographyProfile::FhnwMtTemplate, 3) => 24,
         (TypographyProfile::FhnwMtTemplate, _) => 24,
+        (TypographyProfile::FhnwCampaignBookkit, 1) => 48,
+        (TypographyProfile::FhnwCampaignBookkit, 2) => 28,
+        (TypographyProfile::FhnwCampaignBookkit, 3) => 24,
+        (TypographyProfile::FhnwCampaignBookkit, _) => 24,
     }
 }
 
@@ -1196,7 +1222,7 @@ fn body_size_hp(p: TypographyProfile) -> usize {
     match p {
         TypographyProfile::Designer => 22,
         TypographyProfile::FhnwProposalParity => 20,
-        TypographyProfile::FhnwMtTemplate => 22,
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit => 22,
     }
 }
 
@@ -1257,7 +1283,9 @@ fn fhnw_header_for(_meta: &BookMeta) -> Option<Header> {
 pub fn fhnw_header_sidecar_needed(meta: &BookMeta) -> bool {
     matches!(
         meta.thesis_typography,
-        TypographyProfile::FhnwProposalParity | TypographyProfile::FhnwMtTemplate
+        TypographyProfile::FhnwProposalParity
+            | TypographyProfile::FhnwMtTemplate
+            | TypographyProfile::FhnwCampaignBookkit
     ) && (meta.header_logo.as_ref().is_some_and(|b| !b.is_empty())
         || meta.header_lines.iter().any(|l| !l.trim().is_empty()))
 }
@@ -1551,7 +1579,19 @@ fn chapter_end_rule_if(chapter_break: bool) -> Option<Paragraph> {
     }
 }
 
-fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
+fn title_page(doc: Docx, m: &BookMeta) -> Docx {
+    // iter45.b (2026-07-11): campaigns route to a dedicated book-style
+    // title page. User directive (session 96ed48d5, 2026-07-04): "Each
+    // document must be like a book of its own … craft a new title page
+    // for each as a book." Keeps the Designer / FhnwProposalParity /
+    // FhnwMtTemplate title-page rendering untouched.
+    if matches!(m.thesis_typography, TypographyProfile::FhnwCampaignBookkit) {
+        return campaign_bookkit_title_page(doc, m);
+    }
+    title_page_default(doc, m)
+}
+
+fn title_page_default(mut doc: Docx, m: &BookMeta) -> Docx {
     // Wave-4 (REF parity 2026-06-03): subtitle paragraphs adopt the
     // `BkSubtitle` pStyle when the manifest opts into the bookkit Bk*
     // family, matching the reference book paragraphs [1] and [2].
@@ -1660,6 +1700,131 @@ fn title_page(mut doc: Docx, m: &BookMeta) -> Docx {
                         .size(20)
                         .color(GREY)
                         .fonts(head_fonts()),
+                ),
+            );
+        }
+    }
+    doc.add_paragraph(page_break())
+}
+
+/// FHNW campaign bookkit title page (iter45.b, 2026-07-11) —
+/// book-style: Palatino Linotype 40 pt title in `#294F6D`, accent-coloured
+/// rule underneath, Palatino subtitle in `#294F6D`, author + byline +
+/// imprint in body text, ending with a page break. The FHNW logo is
+/// injected top-left by the Word-COM finalize sidecar (running header —
+/// same mechanism as `master_thesis.docx` uses) — no title-page-specific
+/// logo emission is needed.
+///
+/// Deliberately omits master-thesis chrome: no Author/Supervisor 2×2
+/// table, no Matriculation, no Co-Examiner. Those belong on a degree
+/// thesis title page, not on a self-contained campaign book.
+fn campaign_bookkit_title_page(mut doc: Docx, m: &BookMeta) -> Docx {
+    // FHNW logo INLINE at the top-left of the title page (not via the
+    // Word-COM running-header sidecar, which today doesn't successfully
+    // inject a floating shape for non-`external_source` books). Docx-rs
+    // `Pic::new(&bytes).size(w_emu, h_emu)`; ~4.9 cm square matches the
+    // FHNW MAS proposal reference (129 051-byte PNG in agentic-thesis-
+    // template's `fhnw_logo.png`, 4.92 cm × 4.92 cm).
+    if let Some(bytes) = m.header_logo.as_ref() {
+        if !bytes.is_empty() {
+            // 4.92 cm ≈ 1_772_000 EMU (914400 EMU/inch, 2.54 cm/inch).
+            doc = doc.add_paragraph(
+                Paragraph::new()
+                    .align(AlignmentType::Left)
+                    .add_run(Run::new().add_image(Pic::new(bytes).size(1_772_000, 1_772_000))),
+            );
+        }
+    }
+    // Top margin: 2 blank paragraphs (less than default; the logo already
+    // consumed vertical space).
+    for _ in 0..2 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    // Title — Palatino Linotype 40 pt bold in FHNW MT-Template accent.
+    doc = doc.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(&m.title)
+                .bold()
+                .size(80)
+                .color(FHNW_MT_ACCENT)
+                .fonts(head_fonts_for(m.thesis_typography)),
+        ),
+    );
+    // Accent rule under the title (paragraph bottom-border, sz=12).
+    let mut rule = Paragraph::new()
+        .align(AlignmentType::Center)
+        .line_spacing(LineSpacing::new().before(200).after(200));
+    rule.property = rule.property.set_border(
+        ParagraphBorder::new(ParagraphBorderPosition::Bottom)
+            .val(BorderType::Single)
+            .size(12)
+            .space(1)
+            .color(FHNW_MT_ACCENT),
+    );
+    doc = doc.add_paragraph(rule);
+    // Subtitle — 20 pt Palatino, accent colour.
+    if !m.subtitle.is_empty() {
+        doc = doc.add_paragraph(
+            Paragraph::new().align(AlignmentType::Center).add_run(
+                Run::new()
+                    .add_text(&m.subtitle)
+                    .size(40)
+                    .color(FHNW_MT_ACCENT)
+                    .fonts(head_fonts_for(m.thesis_typography)),
+            ),
+        );
+    }
+    // Description (optional short pitch, italic).
+    if !m.description.is_empty() {
+        doc = doc.add_paragraph(Paragraph::new());
+        doc = doc.add_paragraph(
+            Paragraph::new().align(AlignmentType::Center).add_run(
+                Run::new()
+                    .add_text(&m.description)
+                    .italic()
+                    .size(24)
+                    .color(FHNW_BLACK)
+                    .fonts(head_fonts_for(m.thesis_typography)),
+            ),
+        );
+    }
+    // Vertical air before the author byline.
+    for _ in 0..8 {
+        doc = doc.add_paragraph(Paragraph::new());
+    }
+    // Author — 18 pt Palatino, black.
+    doc = doc.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(&m.author)
+                .size(36)
+                .color(FHNW_BLACK)
+                .fonts(head_fonts_for(m.thesis_typography)),
+        ),
+    );
+    // Byline / context (FHNW MAS…). Prefer the long form when supplied.
+    let byline = m.byline_institution_full.as_deref().unwrap_or(&m.context);
+    doc = doc.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(byline)
+                .size(24)
+                .color(FHNW_BLACK)
+                .fonts(head_fonts_for(m.thesis_typography)),
+        ),
+    );
+    // Imprint (version / place + date). One centred line each.
+    if let Some(imp) = &m.imprint {
+        doc = doc.add_paragraph(Paragraph::new());
+        for line in imp.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            doc = doc.add_paragraph(
+                Paragraph::new().align(AlignmentType::Center).add_run(
+                    Run::new()
+                        .add_text(line)
+                        .size(22)
+                        .color(FHNW_BLACK)
+                        .fonts(head_fonts_for(m.thesis_typography)),
                 ),
             );
         }
@@ -3246,7 +3411,9 @@ fn rule_para(typography: TypographyProfile) -> Paragraph {
     let color = match typography {
         TypographyProfile::Designer => RULE,
         TypographyProfile::FhnwProposalParity => FHNW_BLACK,
-        TypographyProfile::FhnwMtTemplate => FHNW_MT_ACCENT,
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit => {
+            FHNW_MT_ACCENT
+        }
     };
     Paragraph::new()
         .line_spacing(LineSpacing::new().before(60).after(120))
@@ -6331,12 +6498,44 @@ fn render_block(
 /// only 26. Defining the named styles brings tooling that reads the docx via
 /// `styles.xml` (Word's Style pane, agentic check writing-quality, third-party
 /// renderers) into alignment with the bookkit harness.
-fn with_styles(mut doc: Docx, use_bk_styles: bool) -> Docx {
+fn with_styles(doc: Docx, use_bk_styles: bool) -> Docx {
+    with_styles_for(doc, use_bk_styles, TypographyProfile::Designer)
+}
+
+/// Profile-aware styles registration. iter45.b (2026-07-11): the fixed
+/// Georgia Normal style embedded by `add_style("Normal", …)` (or docx-rs's
+/// default) leaks Georgia into every unstyled body run. For FHNW MT-Template
+/// / campaign bookkit books, override Normal to Palatino Linotype so
+/// unstyled runs inherit the correct book font. Headings use profile-aware
+/// colour + font too.
+fn with_styles_for(mut doc: Docx, use_bk_styles: bool, profile: TypographyProfile) -> Docx {
+    // Override the default Normal style for FHNW-family profiles so
+    // unstyled body runs pick up the correct book font (Palatino Linotype
+    // for MtTemplate / CampaignBookkit; Arial for ProposalParity). The
+    // Designer profile keeps the historical Georgia default.
+    match profile {
+        TypographyProfile::Designer => {}
+        TypographyProfile::FhnwProposalParity
+        | TypographyProfile::FhnwMtTemplate
+        | TypographyProfile::FhnwCampaignBookkit => {
+            let normal_color = body_color_for(profile);
+            doc = doc.add_style(
+                Style::new("Normal", StyleType::Paragraph)
+                    .name("Normal")
+                    .size(body_size_hp(profile))
+                    .color(normal_color)
+                    .fonts(body_fonts_for(profile)),
+            );
+        }
+    }
+    let heading_color = heading_color_for(profile);
+    let subheading_color = subheading_color_for(profile);
+    let head_fonts_profile = head_fonts_for(profile);
     let specs = [
-        (1u8, 44usize, NAVY),
-        (2, 32, NAVY),
-        (3, 26, HEAD2),
-        (4, 23, HEAD2),
+        (1u8, heading_size_hp(profile, 1), heading_color),
+        (2u8, heading_size_hp(profile, 2), heading_color),
+        (3u8, heading_size_hp(profile, 3), subheading_color),
+        (4u8, heading_size_hp(profile, 4), subheading_color),
     ];
     for (lvl, size, color) in specs {
         doc = doc.add_style(
@@ -6346,7 +6545,7 @@ fn with_styles(mut doc: Docx, use_bk_styles: bool) -> Docx {
                 .size(size)
                 .bold()
                 .color(color)
-                .fonts(head_fonts())
+                .fonts(head_fonts_profile.clone())
                 .outline_lvl(usize::from(lvl) - 1),
         );
     }
@@ -6650,15 +6849,25 @@ pub fn render_book(
     if meta.thesis_profile {
         return render_thesis_book(meta, chapters, figdir);
     }
+    // iter45.b (2026-07-11): profile-aware default fonts. Prior code
+    // hardcoded `body_fonts()` (Georgia), which leaked Georgia into every
+    // paragraph of non-thesis FHNW-profile books (campaigns on
+    // FhnwCampaignBookkit → user expected Palatino). Match render_thesis_book
+    // line 7427.
     let doc_base = Docx::new()
-        .default_fonts(body_fonts())
-        .default_size(22)
+        .default_fonts(body_fonts_for(meta.thesis_typography))
+        .default_size(body_size_hp(meta.thesis_typography) as usize)
         .page_size(11906, 16838)
         .page_margin(std_margin_for(meta));
     // NOTE: docGrid + cols.space on the document-level sectPr are injected
     // by the post-processor (`apply_layout_overrides_to_sectprs`); the
     // `Docx` builder does not expose those knobs in docx-rs 0.4.20.
-    let mut doc = with_styles(doc_base, meta.body_render_use_bk_styles).footer(
+    let mut doc = with_styles_for(
+        doc_base,
+        meta.body_render_use_bk_styles,
+        meta.thesis_typography,
+    )
+    .footer(
         Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
@@ -6713,14 +6922,17 @@ pub fn render_book(
     if meta.body_render_use_bk_styles {
         contents_p = contents_p.style("BkH1");
     }
+    // iter45.b: profile-aware "Contents" heading colour + font.
+    let contents_color = accent_color_for(meta.thesis_typography);
+    let contents_size = heading_size_hp(meta.thesis_typography, 1);
     doc = doc.add_paragraph(
         contents_p.add_run(
             Run::new()
                 .add_text("Contents")
                 .bold()
-                .size(44)
-                .color(NAVY)
-                .fonts(head_fonts()),
+                .size(contents_size)
+                .color(contents_color)
+                .fonts(head_fonts_for(meta.thesis_typography)),
         ),
     );
     doc = doc.add_table_of_contents(
@@ -7275,7 +7487,12 @@ fn render_thesis_book(
         .page_size(11906, 16838)
         .page_margin(std_margin_for(meta));
     // docGrid + cols.space injected post-build (see `render_book`).
-    let mut doc = with_styles(doc_base, meta.body_render_use_bk_styles).footer(
+    let mut doc = with_styles_for(
+        doc_base,
+        meta.body_render_use_bk_styles,
+        meta.thesis_typography,
+    )
+    .footer(
         Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
