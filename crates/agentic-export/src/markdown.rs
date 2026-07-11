@@ -21,15 +21,37 @@ pub fn to_typst(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
     let mut list_stack: Vec<Option<u64>> = Vec::new(); // None = bullet, Some(n) = ordered next
     let mut in_code: Option<String> = None;
+    // iter45.a — mirror the docx renderer: headings inside a blockquote must
+    // NOT emit Typst heading markers (`= …`), else the ToC picks them up.
+    let mut blockquote_depth: u32 = 0;
+    let mut heading_downgraded_in_quote = false;
 
     for ev in parser {
         match ev {
+            Event::Start(Tag::BlockQuote(_)) => {
+                blockquote_depth = blockquote_depth.saturating_add(1);
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                blockquote_depth = blockquote_depth.saturating_sub(1);
+            }
             Event::Start(Tag::Heading { level, .. }) => {
                 out.push('\n');
-                out.push_str(&"=".repeat(heading_depth(level)));
-                out.push(' ');
+                if blockquote_depth > 0 {
+                    // Emit as bold-italic paragraph run rather than heading.
+                    out.push_str("*_");
+                    heading_downgraded_in_quote = true;
+                } else {
+                    out.push_str(&"=".repeat(heading_depth(level)));
+                    out.push(' ');
+                }
             }
-            Event::End(TagEnd::Heading(_)) => out.push('\n'),
+            Event::End(TagEnd::Heading(_)) => {
+                if heading_downgraded_in_quote {
+                    out.push_str("_*");
+                    heading_downgraded_in_quote = false;
+                }
+                out.push('\n');
+            }
             Event::Start(Tag::Paragraph) => out.push('\n'),
             Event::End(TagEnd::Paragraph) => out.push('\n'),
             Event::Start(Tag::Emphasis) => out.push('_'),
@@ -298,25 +320,62 @@ pub fn to_docx_blocks(md: &str) -> Vec<DocxBlock> {
     let mut in_head = false;
     let mut img: Option<(String, String)> = None; // (url, alt)
     let mut cur_link: Option<String> = None; // active hyperlink URL
+    // iter45.a, 2026-07-11 — track BlockQuote nesting so ATX/setext headings
+    // nested inside a `> …` block do NOT get promoted to `pStyle=HeadingN`.
+    // Without this, prompts quoted verbatim (AIBOM user-prompt log) that
+    // contain `#` at line start become Word Heading paragraphs and pollute
+    // the TOC (AIBOM iter44 arc: 34 H1s emitted vs source 1). Rendering
+    // continues as bold-paragraph body inside the quote.
+    let mut blockquote_depth: u32 = 0;
+    let mut heading_downgraded_bold_was_set = false;
 
     for ev in parser {
         match ev {
+            Event::Start(Tag::BlockQuote(_)) => {
+                blockquote_depth = blockquote_depth.saturating_add(1);
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                blockquote_depth = blockquote_depth.saturating_sub(1);
+            }
             Event::Start(Tag::Heading { level, .. }) => {
                 flush(&mut blocks, &mut current_runs, &state, &mut list_stack);
-                state = ParseState::Heading(heading_depth(level) as u8);
+                if blockquote_depth > 0 {
+                    // Downgrade: render as a bold Paragraph inside the quote,
+                    // NOT a Heading (else the TOC picks it up).
+                    state = ParseState::Paragraph;
+                    if !style.bold {
+                        style.bold = true;
+                        heading_downgraded_bold_was_set = true;
+                    }
+                } else {
+                    state = ParseState::Heading(heading_depth(level) as u8);
+                }
             }
             Event::End(TagEnd::Heading(_)) => {
-                let text = current_runs
-                    .iter()
-                    .map(|r| r.text.as_str())
-                    .collect::<String>();
-                let level = match state {
-                    ParseState::Heading(l) => l,
-                    _ => 1,
-                };
-                blocks.push(DocxBlock::Heading { level, text });
-                current_runs.clear();
-                state = ParseState::Top;
+                if matches!(state, ParseState::Paragraph) {
+                    // Was downgraded (blockquote-nested). Emit as Paragraph.
+                    let runs = std::mem::take(&mut current_runs);
+                    if !runs.is_empty() {
+                        blocks.push(DocxBlock::Paragraph(runs));
+                    }
+                    if heading_downgraded_bold_was_set {
+                        style.bold = false;
+                        heading_downgraded_bold_was_set = false;
+                    }
+                    state = ParseState::Top;
+                } else {
+                    let text = current_runs
+                        .iter()
+                        .map(|r| r.text.as_str())
+                        .collect::<String>();
+                    let level = match state {
+                        ParseState::Heading(l) => l,
+                        _ => 1,
+                    };
+                    blocks.push(DocxBlock::Heading { level, text });
+                    current_runs.clear();
+                    state = ParseState::Top;
+                }
             }
             Event::Start(Tag::Paragraph) => {
                 state = ParseState::Paragraph;
@@ -911,6 +970,81 @@ mod tests {
             blocks
                 .iter()
                 .any(|b| matches!(b, DocxBlock::Paragraph(runs) if !runs.is_empty()))
+        );
+    }
+
+    // iter45.a — regression guard for AIBOM TOC pollution. A `#` heading
+    // nested inside a `> …` blockquote must render as body Paragraph, NEVER
+    // as `DocxBlock::Heading`, else it leaks into the Word ToC (bug fixed
+    // iter45.a — AIBOM had 34 promoted H1s from prompt-log blockquotes).
+    #[test]
+    fn heading_inside_blockquote_is_downgraded_to_paragraph() {
+        let md = "> # Autonomous loop tick (dynamic pacing)\n> \n> body text.\n";
+        let blocks = to_docx_blocks(md);
+        assert_eq!(
+            0,
+            blocks
+                .iter()
+                .filter(|b| matches!(b, DocxBlock::Heading { .. }))
+                .count(),
+            "no DocxBlock::Heading may appear from `> #` — got: {blocks:?}"
+        );
+        // The heading text should still show up somewhere as body run text.
+        let all_text: String = blocks
+            .iter()
+            .filter_map(|b| {
+                if let DocxBlock::Paragraph(runs) = b {
+                    Some(runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            all_text.contains("Autonomous loop tick"),
+            "text preserved as body; got: {all_text}"
+        );
+    }
+
+    // iter45.a — setext heading inside blockquote (`> text\n> ---`) must also
+    // be downgraded.
+    #[test]
+    fn setext_heading_inside_blockquote_is_downgraded() {
+        let md = "> Apply the following book structure:\n> ------\n";
+        let blocks = to_docx_blocks(md);
+        assert_eq!(
+            0,
+            blocks
+                .iter()
+                .filter(|b| matches!(b, DocxBlock::Heading { .. }))
+                .count(),
+            "setext heading inside blockquote must not become DocxBlock::Heading; got: {blocks:?}"
+        );
+    }
+
+    // Non-regression: ordinary top-level headings still become Headings.
+    #[test]
+    fn ordinary_heading_outside_blockquote_still_heading() {
+        let md = "# Real Title\n\nBody.\n";
+        let blocks = to_docx_blocks(md);
+        assert!(
+            blocks.iter().any(
+                |b| matches!(b, DocxBlock::Heading { level: 1, text } if text == "Real Title")
+            ),
+            "top-level heading must still be a Heading block; got: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn typst_heading_inside_blockquote_is_downgraded() {
+        let t = to_typst("> # Autonomous loop tick\n> \n> body.\n");
+        assert!(
+            !t.contains("\n= Autonomous"),
+            "no top-level Typst heading may be emitted from `> #`; got: {t}"
+        );
+        assert!(
+            t.contains("Autonomous loop tick"),
+            "text still preserved; got: {t}"
         );
     }
 
