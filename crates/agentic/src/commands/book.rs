@@ -1943,6 +1943,9 @@ fn build_one(
     let thesis_typography = match spec.thesis_typography.as_deref() {
         Some("fhnw-proposal-parity") => agentic_export::book::TypographyProfile::FhnwProposalParity,
         Some("fhnw-mt-template") => agentic_export::book::TypographyProfile::FhnwMtTemplate,
+        Some("fhnw-campaign-bookkit") => {
+            agentic_export::book::TypographyProfile::FhnwCampaignBookkit
+        }
         _ => agentic_export::book::TypographyProfile::Designer,
     };
     let caption_format = match spec.caption_format.as_deref() {
