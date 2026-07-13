@@ -1719,6 +1719,44 @@ fn title_page_default(mut doc: Docx, m: &BookMeta) -> Docx {
 /// table, no Matriculation, no Co-Examiner. Those belong on a degree
 /// thesis title page, not on a self-contained campaign book.
 fn campaign_bookkit_title_page(mut doc: Docx, m: &BookMeta) -> Docx {
+    // ADR-0064 iter45.d (2026-07-13): compact per-paragraph spacing so
+    // the title page fits on ONE page regardless of the inherited
+    // `Normal`-style line-height. Post-#558 the MT-Template
+    // `styles.xml` fixture pins `Normal` to `<w:spacing w:after="120"
+    // w:line="300" w:lineRule="auto"/>` (Palatino Linotype's line box
+    // + 6 pt trailing air); the historical Georgia baseline was closer
+    // to `after="160" w:line="317"` in effect. On top of Palatino's
+    // ~4% wider glyph metrics, that pushed the author/byline/imprint
+    // block onto page 2 across all 9 campaigns. Fix: every title-page
+    // paragraph declares explicit `after=0` (blanks) or a small
+    // custom after-value (content), overriding whatever `Normal`
+    // supplies — so the layout is stable against future styles.xml
+    // fixture swaps.
+
+    /// Tight blank spacer: line=auto/200 twips, before=0, after=0.
+    /// A run of empty paragraphs collapses to their natural line
+    /// height (font size × 1.0) with NO trailing air. 12 spacers at
+    /// ~10 pt each ≈ 4.2 cm instead of iter45.c's ~8.5 cm.
+    fn blank() -> Paragraph {
+        Paragraph::new().line_spacing(
+            LineSpacing::new()
+                .line_rule(LineSpacingType::Auto)
+                .line(200)
+                .before(0)
+                .after(0),
+        )
+    }
+    /// Content paragraph spacing: line=auto (natural line box for the
+    /// run's font size wins), small after (60 twips = 3 pt) so
+    /// consecutive content paragraphs don't touch, before=0.
+    fn content_line() -> LineSpacing {
+        LineSpacing::new()
+            .line_rule(LineSpacingType::Auto)
+            .line(240)
+            .before(0)
+            .after(60)
+    }
+
     // FHNW logo INLINE at the top-left of the title page (not via the
     // Word-COM running-header sidecar, which today doesn't successfully
     // inject a floating shape for non-`external_source` books). Docx-rs
@@ -1731,30 +1769,34 @@ fn campaign_bookkit_title_page(mut doc: Docx, m: &BookMeta) -> Docx {
             doc = doc.add_paragraph(
                 Paragraph::new()
                     .align(AlignmentType::Left)
+                    .line_spacing(content_line())
                     .add_run(Run::new().add_image(Pic::new(bytes).size(1_772_000, 1_772_000))),
             );
         }
     }
-    // Top margin: 2 blank paragraphs (less than default; the logo already
-    // consumed vertical space).
-    for _ in 0..2 {
-        doc = doc.add_paragraph(Paragraph::new());
-    }
+    // Top gap: 1 blank paragraph (was 2; the logo's own line box
+    // already consumes ~5 cm — one blank is enough visual breathing
+    // room before the title).
+    doc = doc.add_paragraph(blank());
     // Title — Palatino Linotype 40 pt bold in FHNW MT-Template accent.
     doc = doc.add_paragraph(
-        Paragraph::new().align(AlignmentType::Center).add_run(
-            Run::new()
-                .add_text(&m.title)
-                .bold()
-                .size(80)
-                .color(FHNW_MT_ACCENT)
-                .fonts(head_fonts_for(m.thesis_typography)),
-        ),
+        Paragraph::new()
+            .align(AlignmentType::Center)
+            .line_spacing(content_line())
+            .add_run(
+                Run::new()
+                    .add_text(&m.title)
+                    .bold()
+                    .size(80)
+                    .color(FHNW_MT_ACCENT)
+                    .fonts(head_fonts_for(m.thesis_typography)),
+            ),
     );
     // Accent rule under the title (paragraph bottom-border, sz=12).
+    // Reduce before/after 200→120 so the rule hugs the title tighter.
     let mut rule = Paragraph::new()
         .align(AlignmentType::Center)
-        .line_spacing(LineSpacing::new().before(200).after(200));
+        .line_spacing(LineSpacing::new().before(120).after(120));
     rule.property = rule.property.set_border(
         ParagraphBorder::new(ParagraphBorderPosition::Bottom)
             .val(BorderType::Single)
@@ -1766,66 +1808,84 @@ fn campaign_bookkit_title_page(mut doc: Docx, m: &BookMeta) -> Docx {
     // Subtitle — 20 pt Palatino, accent colour.
     if !m.subtitle.is_empty() {
         doc = doc.add_paragraph(
-            Paragraph::new().align(AlignmentType::Center).add_run(
-                Run::new()
-                    .add_text(&m.subtitle)
-                    .size(40)
-                    .color(FHNW_MT_ACCENT)
-                    .fonts(head_fonts_for(m.thesis_typography)),
-            ),
+            Paragraph::new()
+                .align(AlignmentType::Center)
+                .line_spacing(content_line())
+                .add_run(
+                    Run::new()
+                        .add_text(&m.subtitle)
+                        .size(40)
+                        .color(FHNW_MT_ACCENT)
+                        .fonts(head_fonts_for(m.thesis_typography)),
+                ),
         );
     }
     // Description (optional short pitch, italic).
     if !m.description.is_empty() {
-        doc = doc.add_paragraph(Paragraph::new());
+        doc = doc.add_paragraph(blank());
         doc = doc.add_paragraph(
-            Paragraph::new().align(AlignmentType::Center).add_run(
-                Run::new()
-                    .add_text(&m.description)
-                    .italic()
-                    .size(24)
-                    .color(FHNW_BLACK)
-                    .fonts(head_fonts_for(m.thesis_typography)),
-            ),
+            Paragraph::new()
+                .align(AlignmentType::Center)
+                .line_spacing(content_line())
+                .add_run(
+                    Run::new()
+                        .add_text(&m.description)
+                        .italic()
+                        .size(24)
+                        .color(FHNW_BLACK)
+                        .fonts(head_fonts_for(m.thesis_typography)),
+                ),
         );
     }
-    // Vertical air before the author byline.
-    for _ in 0..8 {
-        doc = doc.add_paragraph(Paragraph::new());
+    // Vertical air before the author byline. iter45.d: 8 → 5 blanks.
+    // Combined with the tight-blank spacing (after=0) this reclaims
+    // ~5 cm on page 1 vs iter45.c, comfortably fitting author + byline
+    // + imprint on the first page for every campaign in the fleet.
+    for _ in 0..5 {
+        doc = doc.add_paragraph(blank());
     }
     // Author — 18 pt Palatino, black.
     doc = doc.add_paragraph(
-        Paragraph::new().align(AlignmentType::Center).add_run(
-            Run::new()
-                .add_text(&m.author)
-                .size(36)
-                .color(FHNW_BLACK)
-                .fonts(head_fonts_for(m.thesis_typography)),
-        ),
+        Paragraph::new()
+            .align(AlignmentType::Center)
+            .line_spacing(content_line())
+            .add_run(
+                Run::new()
+                    .add_text(&m.author)
+                    .size(36)
+                    .color(FHNW_BLACK)
+                    .fonts(head_fonts_for(m.thesis_typography)),
+            ),
     );
     // Byline / context (FHNW MAS…). Prefer the long form when supplied.
     let byline = m.byline_institution_full.as_deref().unwrap_or(&m.context);
     doc = doc.add_paragraph(
-        Paragraph::new().align(AlignmentType::Center).add_run(
-            Run::new()
-                .add_text(byline)
-                .size(24)
-                .color(FHNW_BLACK)
-                .fonts(head_fonts_for(m.thesis_typography)),
-        ),
+        Paragraph::new()
+            .align(AlignmentType::Center)
+            .line_spacing(content_line())
+            .add_run(
+                Run::new()
+                    .add_text(byline)
+                    .size(24)
+                    .color(FHNW_BLACK)
+                    .fonts(head_fonts_for(m.thesis_typography)),
+            ),
     );
     // Imprint (version / place + date). One centred line each.
     if let Some(imp) = &m.imprint {
-        doc = doc.add_paragraph(Paragraph::new());
+        doc = doc.add_paragraph(blank());
         for line in imp.lines().map(str::trim).filter(|l| !l.is_empty()) {
             doc = doc.add_paragraph(
-                Paragraph::new().align(AlignmentType::Center).add_run(
-                    Run::new()
-                        .add_text(line)
-                        .size(22)
-                        .color(FHNW_BLACK)
-                        .fonts(head_fonts_for(m.thesis_typography)),
-                ),
+                Paragraph::new()
+                    .align(AlignmentType::Center)
+                    .line_spacing(content_line())
+                    .add_run(
+                        Run::new()
+                            .add_text(line)
+                            .size(22)
+                            .color(FHNW_BLACK)
+                            .fonts(head_fonts_for(m.thesis_typography)),
+                    ),
             );
         }
     }
