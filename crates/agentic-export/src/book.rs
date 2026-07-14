@@ -1461,11 +1461,24 @@ impl FhnwHeaderSidecar {
     /// Build the sidecar struct from a BookMeta, with the proposal's
     /// measured defaults for the cosmetic fields.
     pub fn from_meta(meta: &BookMeta, logo_path_abs: Option<String>) -> Self {
-        let is_mt_template = matches!(meta.thesis_typography, TypographyProfile::FhnwMtTemplate);
+        // iter45.f (2026-07-14, task #567): extended the "MT-Template
+        // style header treatment" gate to include FhnwCampaignBookkit.
+        // Previously the gate was strictly FhnwMtTemplate — which meant
+        // campaigns (FhnwCampaignBookkit) got the FhnwProposalParity
+        // fallback: fixed `header_lines` text instead of STYLEREF chapter
+        // refs, and a page-number footer instead of the MT reference's
+        // empty footers with page-number-in-header. Visual diff vs the
+        // June-8 reference exposed the gap after iter45.e's structural
+        // fix landed. `is_mt_style` groups the two profiles that must
+        // emit the MT-Template header/footer pattern.
+        let is_mt_style = matches!(
+            meta.thesis_typography,
+            TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit
+        );
         Self {
             logo_path_abs,
             lines: meta.header_lines.clone(),
-            line_font: if is_mt_template {
+            line_font: if is_mt_style {
                 "Palatino Linotype".to_string()
             } else {
                 "Arial".to_string()
@@ -1480,8 +1493,14 @@ impl FhnwHeaderSidecar {
             logo_relh: default_logo_relh(),
             logo_relv: default_logo_relv(),
             apply_to_all_pages: true,
-            footer_pagenum_enabled: default_footer_pagenum_enabled(),
-            footer_pagenum_font: if is_mt_template {
+            // iter45.f (2026-07-14): the June-8 reference has EMPTY
+            // footers (2787 B each, structural XML only, no text
+            // runs). Page numbers live in the HEADER via a PAGE field
+            // (see word/header1.xml and header2.xml of the reference).
+            // When the MT-style header is active, disable the
+            // separate footer page-number so the two do not double up.
+            footer_pagenum_enabled: !is_mt_style && default_footer_pagenum_enabled(),
+            footer_pagenum_font: if is_mt_style {
                 "Palatino Linotype".to_string()
             } else {
                 default_footer_pagenum_font()
@@ -1490,8 +1509,9 @@ impl FhnwHeaderSidecar {
             footer_pagenum_alignment: default_footer_pagenum_alignment(),
             // ADR-0064 iter7: FhnwMtTemplate enables book-style mirrored
             // headers with STYLEREF chapter refs + PAGE field.
-            header_pagenum_styleref_enabled: is_mt_template,
-            header_odd_even_mirrored: is_mt_template,
+            // iter45.f: extended to FhnwCampaignBookkit via `is_mt_style`.
+            header_pagenum_styleref_enabled: is_mt_style,
+            header_odd_even_mirrored: is_mt_style,
             // ADR-0064 iter44 (2026-07-05): reverted iter43's
             // wp:anchor floating title-page logo. The June-8 reference
             // has an INLINE image at body paragraph 0 (image1.png,
@@ -1501,9 +1521,15 @@ impl FhnwHeaderSidecar {
             // emitted via a markdown `![](assets/fhnw_banner.png)` at
             // the top of the master_thesis title page markdown.
             title_logo_enabled: false,
-            // ADR-0064 iter44.q (2026-07-06): default off. See field
-            // doc for why campaigns broke when this was implicitly on.
-            outline_numbering_enabled: false,
+            // iter45.f (2026-07-14): enable Word's built-in Heading1/2/3
+            // multilevel outline numbering ("1.", "1.1", "1.1.1") for
+            // campaigns. The reference master_thesis binds Heading1 to
+            // numId with ilvl=0 (visible in front-matter chapters:
+            // Imprint, Declaration, etc.) — campaigns' Heading1 currently
+            // emits with `numPr=False`, giving no visible outline
+            // numbering. Turn on for FhnwCampaignBookkit so subchapters
+            // render "1.1" like the reference.
+            outline_numbering_enabled: is_mt_style,
         }
     }
 }
@@ -1889,7 +1915,20 @@ fn campaign_bookkit_title_page(mut doc: Docx, m: &BookMeta) -> Docx {
             );
         }
     }
-    doc.add_paragraph(page_break())
+    // iter45.f (task #567, 2026-07-14): close the title page with a
+    // section break (not just a page break) when the profile emits
+    // per-chapter sectPrs. This puts the title page in its own
+    // Section 1 so the post-finalize "strip Section 1 headerRef/
+    // footerRef" pass only clears the title-page section, and
+    // Sections 2+ retain the STYLEREF running header. Without this,
+    // Section 1 spans title page + Contents + first body chapter
+    // (all inside one section) and stripping its refs erases the
+    // header from all six pages.
+    if m.emit_per_chapter_sectpr {
+        doc.add_paragraph(per_chapter_sectpr_paragraph(m))
+    } else {
+        doc.add_paragraph(page_break())
+    }
 }
 
 /// bookkit inscription page: centred dedication + epigraph (italic) + "— by".
@@ -3887,6 +3926,124 @@ fn postprocess_docx_inner_layout(
 /// Idempotent: absence of `<w:cols>` is a no-op; already-single-column
 /// `<w:cols w:space="..."/>` is preserved unchanged; `master_thesis.docx`
 /// carries no INDEX field and is therefore untouched.
+/// iter45.f (task #567, 2026-07-14): strip `<w:headerReference>` and
+/// `<w:footerReference>` from Section 1's `<w:sectPr>` in `word/document.xml`.
+///
+/// The reference master thesis (`FHNW2026_DanielCasota_MT_en.docx`) puts the
+/// title page in a section whose sectPr carries `<w:titlePg/>` but ZERO
+/// header/footer references — Word then uses its implicit empty
+/// header/footer for that section. Rust-rendered books emit a full
+/// first/default/even triple on every sectPr including section 1, so the
+/// title page shows a running header/footer.
+///
+/// Section 1's sectPr is the FIRST `<w:sectPr>` occurrence in `document.xml`.
+/// This helper strips the header/footer references from that one sectPr
+/// only, leaving sections 2+ untouched. Idempotent: if the first sectPr
+/// already has zero refs, the function is a no-op.
+///
+/// Gate at call-site: apply only to MT-style books (FhnwCampaignBookkit,
+/// master_thesis_bookkit under FhnwMtTemplate typography) where the
+/// title-page-empty pattern is desired.
+pub fn strip_section1_headerfooter_refs_from_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let mut zin = zip::ZipArchive::new(Cursor::new(docx))
+        .context("open docx zip for strip_section1_headerfooter_refs")?;
+    let mut document_xml: Option<String> = None;
+    let mut out = Cursor::new(Vec::<u8>::new());
+    let mut order: Vec<(String, bool)> = Vec::with_capacity(zin.len());
+    let mut entries: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    {
+        let mut zout = zip::ZipWriter::new(&mut out);
+        for i in 0..zin.len() {
+            let mut f = zin
+                .by_index(i)
+                .context("read zip entry (sec1 hdr/ftr strip)")?;
+            let name = f.name().to_string();
+            if name == "word/document.xml" {
+                let mut s = String::new();
+                f.read_to_string(&mut s)
+                    .context("read document.xml (sec1 hdr/ftr strip)")?;
+                document_xml = Some(s);
+                order.push((name, true));
+            } else {
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf)
+                    .context("read entry bytes (sec1 hdr/ftr strip)")?;
+                entries.insert(name.clone(), buf);
+                order.push((name, false));
+            }
+        }
+        let doc = document_xml.as_deref().unwrap_or("");
+        let new_doc = strip_first_sectpr_headerfooter_refs(doc);
+        for (name, is_document) in &order {
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .compression_level(Some(9));
+            zout.start_file(name.as_str(), opts)
+                .context("start_file (sec1 hdr/ftr strip)")?;
+            if *is_document {
+                zout.write_all(new_doc.as_bytes())
+                    .context("write new document.xml (sec1 hdr/ftr strip)")?;
+            } else {
+                let bytes = entries.get(name).expect("cached entry");
+                zout.write_all(bytes)
+                    .context("write cached entry (sec1 hdr/ftr strip)")?;
+            }
+        }
+        zout.finish().context("finish zip (sec1 hdr/ftr strip)")?;
+    }
+    Ok(out.into_inner())
+}
+
+/// Pure text-level rewrite: locate the FIRST `<w:sectPr ...>...</w:sectPr>`
+/// block in the document and drop every `<w:headerReference .../>` and
+/// `<w:footerReference .../>` self-closing element inside it. Returns
+/// the doc unchanged if no sectPr is found.
+fn strip_first_sectpr_headerfooter_refs(doc: &str) -> String {
+    let Some(sect_open) = doc.find("<w:sectPr") else {
+        return doc.to_string();
+    };
+    // Find the end of THIS sectPr (either self-closing `/>` before any
+    // content, or `</w:sectPr>` for a full element).
+    let after_open_tag = match doc[sect_open..].find('>') {
+        Some(o) => sect_open + o + 1,
+        None => return doc.to_string(),
+    };
+    // Detect self-closing sectPr (`<w:sectPr ... />`) — no header refs to strip.
+    if doc[sect_open..after_open_tag].ends_with("/>") {
+        return doc.to_string();
+    }
+    let close_marker = "</w:sectPr>";
+    let sect_close = match doc[after_open_tag..].find(close_marker) {
+        Some(c) => after_open_tag + c,
+        None => return doc.to_string(),
+    };
+    // Everything between after_open_tag and sect_close is the sectPr body.
+    let head = &doc[..after_open_tag];
+    let body = &doc[after_open_tag..sect_close];
+    let tail = &doc[sect_close..];
+    // Regex-free strip: repeatedly find and remove `<w:headerReference
+    // ... />` and `<w:footerReference ... />` self-closing tags.
+    let mut body_owned = body.to_string();
+    for needle in &["<w:headerReference", "<w:footerReference"] {
+        let mut cursor = 0usize;
+        while let Some(rel) = body_owned[cursor..].find(needle) {
+            let start = cursor + rel;
+            let close = match body_owned[start..].find("/>") {
+                Some(c) => start + c + 2,
+                None => break,
+            };
+            body_owned.replace_range(start..close, "");
+            cursor = start;
+        }
+    }
+    let mut result = String::with_capacity(doc.len());
+    result.push_str(head);
+    result.push_str(&body_owned);
+    result.push_str(tail);
+    result
+}
+
 pub fn strip_multi_column_from_docx(docx: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     use std::io::{Read, Write};
     let mut zin =
@@ -6923,18 +7080,29 @@ pub fn render_book(
     // NOTE: docGrid + cols.space on the document-level sectPr are injected
     // by the post-processor (`apply_layout_overrides_to_sectprs`); the
     // `Docx` builder does not expose those knobs in docx-rs 0.4.20.
+    // iter45.f (task #567, 2026-07-14): the MT-Template reference has EMPTY
+    // footers (page number lives in the header via a PAGE field). When the
+    // typography is FhnwMtTemplate or FhnwCampaignBookkit, emit an EMPTY
+    // footer so the docx-rs default centred page-number does not double
+    // up with the header PAGE field that Word-COM finalize will add.
+    let mt_style_footer = matches!(
+        meta.thesis_typography,
+        TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit
+    );
     let mut doc = with_styles_for(
         doc_base,
         meta.body_render_use_bk_styles,
         meta.thesis_typography,
     )
-    .footer(
+    .footer(if mt_style_footer {
+        Footer::new()
+    } else {
         Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
                 .add_page_num(PageNum::new()),
-        ),
-    );
+        )
+    });
 
     if meta.companion {
         // Companion paper (bookkit B): a plain title, no book chrome.
@@ -7126,6 +7294,19 @@ pub fn render_book(
         // active.
         if meta.body_render_use_bk_styles && meta.emit_chapter_dividers {
             doc = doc.add_paragraph(chapter_end_rule(false));
+        }
+        // iter45.f (task #567, 2026-07-14): per-chapter sectPr for the
+        // FhnwCampaignBookkit profile. Reference master thesis carries one
+        // <w:sectPr> per chapter (21 sectPrs for 21 chapters); campaigns
+        // previously emitted only 1 doc-level sectPr + N landscape breaks,
+        // which meant Section 1 spanned the title page + Contents + first
+        // body chapter — a single section for pages 1-6 that then all
+        // inherited the same header/footer. Emit a per-chapter section
+        // break at chapter close so each chapter gets its own sectPr,
+        // matching the reference layout exactly.
+        // Gate mirrors render_thesis_book's exact condition.
+        if meta.emit_per_chapter_sectpr {
+            doc = doc.add_paragraph(per_chapter_sectpr_paragraph(meta));
         }
     }
 
@@ -7560,13 +7741,25 @@ fn render_thesis_book(
         meta.body_render_use_bk_styles,
         meta.thesis_typography,
     )
-    .footer(
-        Footer::new().add_paragraph(
-            Paragraph::new()
-                .align(AlignmentType::Center)
-                .add_page_num(PageNum::new()),
-        ),
-    );
+    .footer({
+        // iter45.f (task #567, 2026-07-14): MT-style books (FhnwMtTemplate,
+        // FhnwCampaignBookkit) have EMPTY footers — page numbers live in the
+        // header via a PAGE field. Emit an empty Footer for MT-style so the
+        // docx-rs default page-number footer does not double up.
+        let mt_style_footer = matches!(
+            meta.thesis_typography,
+            TypographyProfile::FhnwMtTemplate | TypographyProfile::FhnwCampaignBookkit
+        );
+        if mt_style_footer {
+            Footer::new()
+        } else {
+            Footer::new().add_paragraph(
+                Paragraph::new()
+                    .align(AlignmentType::Center)
+                    .add_page_num(PageNum::new()),
+            )
+        }
+    });
 
     // FHNW running header (ADR-0050 item 1) — only attached for the FHNW
     // typography profile AND when the manifest supplies logo bytes; no

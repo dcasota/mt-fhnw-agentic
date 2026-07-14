@@ -76,6 +76,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bookkit visual parity (iter45.f + iter45.g, task #567 / #568, 2026-07-14).**
+  Reference master thesis (`FHNW2026_DanielCasota_MT_en.docx`) authored via the
+  MT-Template Python + PowerShell pipeline has three visible header/footer
+  properties that the Rust `FhnwCampaignBookkit` + `master_thesis_bookkit` path
+  did not reproduce despite iter45.e's structural inventory reporting parity:
+  (1) header text VARIES per section via STYLEREF "Heading 1" + PAGE, not a
+  fixed static string; (2) footers are EMPTY (page number lives in the
+  header); (3) Heading2 paragraphs show `1.1` outline numbering via multilevel
+  Heading1/2/3 binding; (4) the first page of every section (including
+  landscape sections) shows the STYLEREF chapter title alongside the PAGE
+  field, so landscape pages that happen to be the first page of their section
+  do not appear header-less. Fixed by extending
+  `FhnwHeaderSidecar::from_meta`'s `is_mt_template` gate to `is_mt_style`
+  (matching `FhnwMtTemplate | FhnwCampaignBookkit`), gating `.footer(...)` in
+  both `render_book` and `render_thesis_book` on `mt_style_footer` to emit
+  `Footer::new()` (empty) for MT-style books, honouring
+  `emit_per_chapter_sectpr` in `render_book` (previously thesis-only) so
+  campaigns get one section per chapter, closing
+  `campaign_bookkit_title_page` with a section break so the title page is
+  Section 1 alone, adding a new
+  `strip_section1_headerfooter_refs_from_docx` XML-rewrite helper wired into
+  `post_finalize_collapse` for FhnwCampaignBookkit + master_thesis_bookkit
+  filenames, extending Word-COM finalize's `HEADER_MT_FIRSTPAGE_ADDED` step
+  to inject `PAGE` + tab + `STYLEREF "Heading 1"` (was `PAGE` alone), and
+  skipping the static `header_lines` block in the finalize script when
+  `header_pagenum_styleref_enabled` is on so the STYLEREF header is not
+  duplicated by fixed text. Verified via Word-COM per-page reads (not
+  structural counts) on the fresh cascade snapshot: all 10 target books
+  (9 campaigns + master_thesis_bookkit) show `P1 s1 H='' F=''`, `P2 s2`
+  STYLEREF chapter title header + empty footer, and landscape sections wired
+  with the same content pattern.
 - **Campaign body font (`Palatino Linotype`) no longer collapses to the theme
   minorFont after Word-COM finalize.** (`agentic-export/src/thesis_styles.rs`
   + `agentic-thesis-template/src/styles.rs`; iter45.b follow-up (#558),
