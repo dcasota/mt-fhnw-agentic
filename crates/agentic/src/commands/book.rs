@@ -967,9 +967,19 @@ try {{
             # 2) Append each non-empty text line, terminated by a paragraph
             # mark. After all text is in place we style the whole header
             # uniformly (font/size/bold).
-            foreach ($line in $side.lines) {{
-              if ([string]::IsNullOrWhiteSpace($line)) {{ continue }}
-              $hdr.Range.InsertAfter($line + $cr)
+            # iter45.f (2026-07-14, task #567): SKIP the static header_lines
+            # when header_pagenum_styleref_enabled is on. The MT-Template
+            # reference has NO static header text — only STYLEREF "Heading 1"
+            # + PAGE field. Emitting the manifest `header_lines` alongside
+            # the STYLEREF produces duplicated header content (visible on
+            # every page as "MAS Cybersecurity, IWI, FHNW Campaign 02 —
+            # <name> <chapter-title> <page>"). Skip the lines block when
+            # STYLEREF is on so the header content matches the reference.
+            if (-not [bool]$side.header_pagenum_styleref_enabled) {{
+              foreach ($line in $side.lines) {{
+                if ([string]::IsNullOrWhiteSpace($line)) {{ continue }}
+                $hdr.Range.InsertAfter($line + $cr)
+              }}
             }}
             # Apply uniform character formatting to every run in the header
             # (the picture is unaffected; this only touches text runs).
@@ -1238,8 +1248,23 @@ try {{
                 # bare right-aligned PAGE field on odd pages (book
                 # convention: page-no on outer margin). Populate Section 2's
                 # firstPageHeader (Headers.Item(2)); Sections 3+ inherit via
-                # LinkToPrevious. Section 1's firstPageHeader remains empty
-                # (the title page has no header at all — iter11).
+                # LinkToPrevious.
+                # iter45.f (task #567, 2026-07-14): Section 1's title page
+                # must have NO header and NO footer (matches reference master
+                # thesis where P1 has H='' F='').
+                # Fighting Word's LinkToPrevious chain in-place is fragile
+                # (clearing Sec1 also clears Sec2/3+ that inherit from it).
+                # Cleanest path: after Word-COM save, post-process the
+                # docx zip and STRIP all <w:headerReference>/
+                # <w:footerReference> from Section 1's sectPr in
+                # document.xml. Word then uses implicit empty
+                # header/footer for Section 1 while Sections 2+ retain
+                # their triples. This mirrors the reference master
+                # thesis where sectPr 0 has titlePg + zero refs.
+                # The strip step lives in `strip_section1_hdrftr_refs`
+                # invoked from post_finalize_collapse. Marker for
+                # visibility in the finalize log:
+                Write-Output ("{{0}}`tHEADER_MT_SEC1_STRIP_DEFERRED  (see post_finalize_collapse)" -f $pth)
                 if ($d.Sections.Count -ge 2) {{
                   try {{
                     $fpHdr = $d.Sections.Item(2).Headers.Item(2)  # wdHeaderFooterFirstPage
@@ -1248,15 +1273,46 @@ try {{
                     $fpHdr.Range.Font.Name = $side.line_font
                     $fpHdr.Range.Font.Size = $side.line_size_pt
                     $fpHdr.Range.Font.Bold = $false
-                    $fpHdr.Range.ParagraphFormat.Alignment = 2  # right-aligned
+                    $fpHdr.Range.ParagraphFormat.Alignment = 0  # left-aligned base; we'll insert tab+right-align via content
+                    # iter45.g (task #568, 2026-07-14): first-page headers
+                    # must contain BOTH the PAGE field AND the STYLEREF
+                    # "Heading 1" chapter title. Reference master thesis
+                    # first-page headers (header1.xml) contain
+                    # "PAGE\tSTYLEREF" — e.g. "1\tCurrent State Analysis"
+                    # on the first page of chapter 3. Previously we only
+                    # emitted PAGE, which meant the first page of every
+                    # section (including landscape pages that are almost
+                    # always the first page of their landscape section)
+                    # appeared header-less to a reader who expected the
+                    # chapter title. Add PAGE at the left, tab, then
+                    # STYLEREF right-aligned.
                     $fpRng = $fpHdr.Range
                     $fpRng.Collapse(0)
                     $d.Fields.Add($fpRng, -1, "PAGE", $false) | Out-Null
+                    # Append a right-aligned tab so the STYLEREF sits on the
+                    # right edge (mirrors reference's page-left / chapter-
+                    # right layout on odd first pages).
+                    $fpRng = $fpHdr.Range
+                    $fpRng.Collapse(0)
+                    $fpRng.InsertAfter([char]9)  # TAB character
+                    $fpRng = $fpHdr.Range
+                    $fpRng.Collapse(0)
+                    # Match the primary STYLEREF syntax exactly (no
+                    # `\*` MERGEFORMAT switch — that would double-escape
+                    # in PowerShell single-quoted strings and Word would
+                    # render "Error! Use the Home tab to apply..." because
+                    # the field code parses wrong).
+                    $d.Fields.Add($fpRng, -1, 'STYLEREF "Heading 1"', $false) | Out-Null
+                    # Give the header a right tab stop at the content-right
+                    # so the STYLEREF field aligns to the right edge.
+                    try {{
+                      $tab = $fpHdr.Range.ParagraphFormat.TabStops.Add(464.7, 2, 0)  # 9340 twips ≈ 464.7 pt, right-align
+                    }} catch {{}}
                     # Sections 3+ inherit the firstPage header from Section 2.
                     for ($s = 3; $s -le $d.Sections.Count; $s++) {{
                       try {{ $d.Sections.Item($s).Headers.Item(2).LinkToPrevious = $true }} catch {{}}
                     }}
-                    Write-Output ("{{0}}`tHEADER_MT_FIRSTPAGE_ADDED" -f $pth)
+                    Write-Output ("{{0}}`tHEADER_MT_FIRSTPAGE_ADDED  (PAGE + STYLEREF)" -f $pth)
                   }} catch {{
                     [Console]::Error.WriteLine(("FHNW-MT-FP-FAIL [{{0}}]: {{1}}" -f $pth, $_.Exception.Message))
                   }}
@@ -1565,6 +1621,26 @@ fn post_finalize_collapse(path: &Path, restore_theme_and_styles: bool) -> Result
     // no INDEX field and therefore no `<w:cols>` occurrences to touch).
     let collapsed = agentic_export::book::strip_multi_column_from_docx(collapsed)
         .with_context(|| format!("strip multi-column for {}", path.display()))?;
+    // iter45.f (task #567, 2026-07-14): for MT-style books, strip the
+    // header/footer refs from Section 1's sectPr so the title page has NO
+    // running header/footer (matches reference master thesis where sectPr 0
+    // has titlePg + zero refs). Applies to FhnwCampaignBookkit + the
+    // FhnwMtTemplate-typed master_thesis_bookkit. Non-MT books (AI-Norms,
+    // Photon Antikythera, Workbench, Governing) keep their title-page
+    // headers as before.
+    let strip_sec1_hdrftr = matches!(
+        styles_profile,
+        agentic_export::thesis_styles::StylesProfile::FhnwCampaignBookkit
+    ) || path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.starts_with("FHNW2026_DanielCasota_MT_Bookkit"));
+    let collapsed = if strip_sec1_hdrftr {
+        agentic_export::book::strip_section1_headerfooter_refs_from_docx(collapsed)
+            .with_context(|| format!("strip sec1 hdr/ftr refs for {}", path.display()))?
+    } else {
+        collapsed
+    };
     let with_styles = if restore_theme_and_styles {
         // Round V zone B: re-inject theme1.xml + styles.xml AFTER Word COM
         // finalize so the Office-2010 Calibri/Cambria pair + the right styles
